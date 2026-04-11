@@ -1,3 +1,6 @@
-_papers
-.venv
 .env
+.venv
+*.pyc
+_logs
+_papers
+_references

@@ -1,0 +1,35 @@
+from typing import Optional
+from functools import lru_cache
+from pydantic import AliasChoices, AnyHttpUrl, Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def env_alias(*names: str) -> AliasChoices:
+    return AliasChoices(*names)
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env", case_sensitive=True, extra="ignore", populate_by_name=True
+    )
+
+    env: str = Field(default="dev", validation_alias=env_alias("ENVIRONMENT", "env"))
+
+    # === API KEYS ===
+    anthropic_api_key: Optional[str] = Field(
+        default=None,
+        validation_alias=env_alias("ANTHROPIC_API_KEY", "anthropic_api_key"),
+    )
+
+    anthropic_model: str = Field(
+        default="claude-3-5-haiku-latest",
+        validation_alias=env_alias("ANTHROPIC_MODEL", "anthropic_model"),
+    )
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
+
+
+settings = get_settings()

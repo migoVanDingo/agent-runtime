@@ -104,7 +104,9 @@ tools = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Directory path"}
+                "path": {
+                    "type": "string", "description": "Directory path"
+                    }
             },
             "required": ["path"]
         }

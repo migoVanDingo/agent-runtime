@@ -1,5 +1,6 @@
 import subprocess
 from tools.base import BaseTool, InputSchema, ToolProperty
+from app_config import config
 
 
 class BashExecTool(BaseTool):
@@ -20,7 +21,7 @@ class BashExecTool(BaseTool):
     def execute(self, tool_input: dict) -> str:
         command = tool_input["command"]
         result = subprocess.run(
-            command, shell=True, capture_output=True, text=True, timeout=30
+            command, shell=True, capture_output=True, text=True, timeout=config.timeouts.default
         )
         output = result.stdout
         if result.stderr:

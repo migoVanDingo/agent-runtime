@@ -26,6 +26,43 @@ class Settings(BaseSettings):
         validation_alias=env_alias("ANTHROPIC_MODEL", "anthropic_model"),
     )
 
+    openai_api_key: Optional[str] = Field(
+        default=None,
+        validation_alias=env_alias("OPENAI_API_KEY", "openai_api_key"),
+    )
+
+    openai_model: str = Field(
+        default="gpt-4o-mini",
+        validation_alias=env_alias("OPENAI_MODEL", "openai_model"),
+    )
+
+    # === LLM PROVIDER ===
+    llm_provider: str = Field(
+        default="anthropic",
+        validation_alias=env_alias("LLM_PROVIDER", "llm_provider"),
+    )
+
+    ollama_base_url: str = Field(
+        default="http://localhost:11434/v1",
+        validation_alias=env_alias("OLLAMA_BASE_URL", "ollama_base_url"),
+    )
+
+    ollama_model: str = Field(
+        default="llama3.2",
+        validation_alias=env_alias("OLLAMA_MODEL", "ollama_model"),
+    )
+
+    # === RUNTIME LAYER ===
+    runtime_provider: Optional[str] = Field(
+        default=None,
+        validation_alias=env_alias("RUNTIME_PROVIDER", "runtime_provider"),
+    )
+
+    runtime_model: Optional[str] = Field(
+        default=None,
+        validation_alias=env_alias("RUNTIME_MODEL", "runtime_model"),
+    )
+
 
 @lru_cache
 def get_settings() -> Settings:

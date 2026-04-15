@@ -1,5 +1,8 @@
 import sys
+import os
 import argparse
+
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 from pathlib import Path
 from utils import generate_id
 from logger import configure_logging, LOGS_DIR, get_logger
@@ -36,7 +39,7 @@ def main():
     print_session_banner(session_id)
     print("Type 'exit' or 'quit' to end the session.\n")
 
-    agent = Agent()
+    agent = Agent(verbose=args.verbose)
 
     while True:
         try:

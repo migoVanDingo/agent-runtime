@@ -1,0 +1,64 @@
+llm:
+  max_tokens: 4096
+
+timeouts:
+  default: 30
+  analysis: 60
+  fast: 10
+
+tools:
+  strings_min_length: "4"
+  hexdump_default_bytes: "256"
+
+routing:
+  embedding_model: "all-MiniLM-L6-v2"
+  embedding_threshold: 0.35
+  default_toolsets:
+    - file_io
+    - shell
+  toolset_descriptions:
+    analysis: "reverse engineering binary analysis disassembly executable symbols objdump strings hexdump elf shared library segments sections"
+    file_io: "read write files directories search filesystem copy move delete create list walk directory contents"
+    crypto: "hash encode decode encrypt decrypt base64 xor md5 sha checksum hex bytes cryptography"
+    shell: "run execute bash shell command terminal subprocess script process environment"
+
+agent:
+  system_prompt: >-
+    You are a helpful assistant with access to tools for file system operations,
+    shell execution, binary analysis, and cryptanalysis. Use these tools when needed
+    to answer the user's questions.
+
+planning:
+  enabled: true
+  model: null
+  max_steps: 8
+  retry_on_invalid: true
+  gate:
+    min_message_length: 20
+    indicator_words:
+      - "and then"
+      - "once you"
+      - "followed by"
+      - then
+      - after
+      - next
+      - finally
+      - first
+
+runtime:
+  intent_classifier:
+    enabled: true
+    context_window: 6
+  plan_validator:
+    enabled: true
+  execution_monitor:
+    enabled: true
+    max_step_retries: 2
+    max_defers_per_step: 1
+  context_manager:
+    enabled: true
+    message_budget_tokens: 16384
+    half_life_turns: 10
+    threshold_high: 0.45
+    threshold_mid: 0.25
+    compressed_max_chars: 300

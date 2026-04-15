@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "arc"
+version = "0.1.0"
+requires-python = ">=3.10"
+
+[project.scripts]
+arc = "main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "src"

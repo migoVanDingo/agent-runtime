@@ -5,6 +5,16 @@ from pathlib import Path
 LOGS_DIR = Path(__file__).resolve().parent.parent / "_logs"
 
 
+_NOISY_LOGGERS = [
+    "httpx",
+    "httpcore",
+    "sentence_transformers",
+    "huggingface_hub",
+    "transformers",
+    "torch",
+]
+
+
 def configure_logging(session_id: str, verbose: bool = False) -> None:
     LOGS_DIR.mkdir(exist_ok=True)
 
@@ -23,6 +33,9 @@ def configure_logging(session_id: str, verbose: bool = False) -> None:
         stream_handler = logging.StreamHandler(sys.stdout)
         stream_handler.setFormatter(formatter)
         root.addHandler(stream_handler)
+
+    for name in _NOISY_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 def get_logger(name: str) -> logging.Logger:

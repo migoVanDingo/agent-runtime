@@ -1,0 +1,24 @@
+import os
+from tools.base import BaseTool, InputSchema, ToolProperty
+
+
+class MakeDirectoryTool(BaseTool):
+    name = "make_directory"
+    description = "Create a directory and any missing parent directories."
+
+    @property
+    def input_schema(self) -> InputSchema:
+        return InputSchema(
+            properties={
+                "path": ToolProperty(type="string", description="Path of the directory to create"),
+            },
+            required=["path"],
+        )
+
+    def execute(self, tool_input: dict) -> str:
+        path = tool_input["path"]
+        try:
+            os.makedirs(path, exist_ok=True)
+            return f"Created directory: {path}"
+        except Exception as e:
+            return f"Error: {e}"

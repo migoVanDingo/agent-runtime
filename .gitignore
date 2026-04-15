@@ -4,3 +4,5 @@
 _logs
 _papers
 _references
+_tests
+src/arc.egg*

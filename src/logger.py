@@ -15,6 +15,15 @@ _NOISY_LOGGERS = [
 ]
 
 
+def _log_session_banner(logger_instance: logging.Logger, session_id: str, label: str) -> None:
+    """Write a formatted session banner to the log."""
+    w = 56
+    logger_instance.info("=" * w)
+    logger_instance.info(f"  {label}")
+    logger_instance.info(f"  Session ID : {session_id}")
+    logger_instance.info("=" * w)
+
+
 def configure_logging(session_id: str, verbose: bool = False) -> None:
     LOGS_DIR.mkdir(exist_ok=True)
 
@@ -22,7 +31,7 @@ def configure_logging(session_id: str, verbose: bool = False) -> None:
     root.setLevel(logging.INFO)
 
     formatter = logging.Formatter(
-        f"%(asctime)s [{session_id}] [%(levelname)s] %(name)s: %(message)s"
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     )
 
     file_handler = logging.FileHandler(LOGS_DIR / f"{session_id}.log")
@@ -36,6 +45,13 @@ def configure_logging(session_id: str, verbose: bool = False) -> None:
 
     for name in _NOISY_LOGGERS:
         logging.getLogger(name).setLevel(logging.WARNING)
+
+    _log_session_banner(logging.getLogger("main"), session_id, "Session Started")
+
+
+def log_session_end(session_id: str) -> None:
+    """Write the session end banner to the log."""
+    _log_session_banner(logging.getLogger("main"), session_id, "Session Ended")
 
 
 def get_logger(name: str) -> logging.Logger:

@@ -21,6 +21,18 @@ logger = get_logger(__name__)
 
 _W = 56  # log banner width
 
+import re
+
+_ERROR_INDICATORS = re.compile(
+    r"(?i)(error:|Error:|failed|File not found|No such file|"
+    r"Permission denied|command not found|not found)"
+)
+
+
+def _has_error_indicator(text: str) -> bool:
+    """Check if a tool result contains error indicators."""
+    return bool(_ERROR_INDICATORS.search(text[:500]))
+
 
 def _banner(text: str) -> str:
     prefix = f"── {text} "
@@ -119,6 +131,7 @@ class Agent:
         max_defers = config.runtime.execution_monitor.max_defers_per_step
         queue = list(plan.steps)
         idx = 0
+        plan_start_index = len(self.messenger.get_messages())
 
         while idx < len(queue):
             step = queue[idx]
@@ -138,8 +151,10 @@ class Agent:
                     )
                 else:
                     prev = queue[idx - 1]
+                    prev_result = prev.result or "(no result captured)"
                     self.messenger.add_user_message(
-                        f"Step {prev.step} complete. Now execute step {step.step}: {step.description}"
+                        f"Step {prev.step} complete. Result:\n{prev_result}\n\n"
+                        f"Now execute step {step.step}: {step.description}"
                     )
 
             if step.action_type == ActionType.CONVERSATION:
@@ -161,9 +176,9 @@ class Agent:
                 result = f"Step requires user approval (not yet implemented): {step.description}"
             else:
                 system = self._step_system(plan, step)
-                result = self._run_step(step, n_total, tools, system, query=plan.original_query)
+                result = self._run_step(step, n_total, tools, system, query=plan.original_query, plan_start_index=plan_start_index)
 
-            step.result = result[:500] if result else None
+            step.result = result[:1000] if result else None
 
             # ── Monitor assessment ──
             logger.info(_banner(f"Monitor: Step {step.step}/{n_total}"))
@@ -246,11 +261,11 @@ class Agent:
         )
         return last_completed.result if last_completed else ""
 
-    def _run_step(self, step: Step, n_total: int, tools: list[dict], system: str, query: str = "") -> str:
+    def _run_step(self, step: Step, n_total: int, tools: list[dict], system: str, query: str = "", plan_start_index: int | None = None) -> str:
         desc_short = step.description[:40] + "..." if len(step.description) > 40 else step.description
 
         while True:
-            packed = self.context_mgr.pack(self.messenger.get_messages(), query or step.description)
+            packed = self.context_mgr.pack(self.messenger.get_messages(), query or step.description, plan_start_index=plan_start_index)
             response = self.provider.chat(
                 messages=packed,
                 tools=tools,
@@ -284,7 +299,7 @@ class Agent:
                         else:
                             self.spinner.update(f"Running {block.name}...")
                             tool = self.registry.get(block.name)
-                            result = tool.execute(block.input)
+                            result = tool.safe_execute(block.input)
 
                         logger.info(f"  ← {_fmt_result(result)}")
                         tool_results.append({
@@ -297,6 +312,8 @@ class Agent:
 
     def _run_loop(self, user_message: str, system: str) -> str:
         iteration = 0
+        last_had_errors = False
+        error_correction_sent = False
         while True:
             iteration += 1
             selected = self.router.select(user_message, self.messenger.get_messages())
@@ -311,6 +328,20 @@ class Agent:
             )
 
             if response.stop_reason in ("end_turn", "max_tokens"):
+                # ── Runtime check: did previous tool calls error? ──
+                if last_had_errors and not error_correction_sent:
+                    logger.info("  runtime: model ended turn after tool errors — injecting correction")
+                    self.messenger.add_assistant_message(response.content)
+                    self.messenger.add_user_message(
+                        "One or more of your previous tool calls returned errors. "
+                        "Do not claim success if the operation failed. "
+                        "Review the errors and either retry with corrected parameters or "
+                        "acknowledge the failure to the user."
+                    )
+                    error_correction_sent = True
+                    last_had_errors = False
+                    continue
+
                 self.spinner.stop()
                 self.messenger.add_assistant_message(response.content)
                 if response.stop_reason == "max_tokens":
@@ -339,7 +370,7 @@ class Agent:
                         else:
                             self.spinner.update(f"Running {block.name}...")
                             tool = self.registry.get(block.name)
-                            result = tool.execute(block.input)
+                            result = tool.safe_execute(block.input)
 
                         logger.info(f"  ← {_fmt_result(result)}")
                         tool_results.append({
@@ -347,6 +378,14 @@ class Agent:
                             "tool_use_id": block.id,
                             "content": result,
                         })
+                # Check for tool errors — flag them so the model can't ignore
+                last_had_errors = any(
+                    _has_error_indicator(r["content"]) for r in tool_results
+                )
+                if last_had_errors:
+                    logger.info("  ⚠ tool error(s) detected in results")
+                    error_correction_sent = False
+
                 self.spinner.update("Thinking...")
                 self.messenger.add_tool_results(tool_results)
 

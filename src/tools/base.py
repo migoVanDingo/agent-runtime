@@ -26,6 +26,16 @@ class BaseTool(ABC):
     def execute(self, tool_input: dict) -> str:
         pass
 
+    def safe_execute(self, tool_input: dict) -> str:
+        """Execute with input validation. Returns error string instead of crashing."""
+        missing = [f for f in self.input_schema.required if f not in tool_input]
+        if missing:
+            return f"Error: missing required field(s): {', '.join(missing)}"
+        try:
+            return self.execute(tool_input)
+        except Exception as e:
+            return f"Error: {type(e).__name__}: {e}"
+
     def to_api_schema(self) -> dict:
         return {
             "name": self.name,

@@ -5,7 +5,7 @@ import argparse
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 from pathlib import Path
 from utils import generate_id
-from logger import configure_logging, LOGS_DIR, get_logger
+from logger import configure_logging, log_session_end, LOGS_DIR, get_logger
 from agent import Agent
 
 logger = get_logger(__name__)
@@ -34,7 +34,6 @@ def main():
 
     session_id = generate_id("session")
     configure_logging(session_id, verbose=args.verbose)
-    logger.info("Session started")
 
     print_session_banner(session_id)
     print("Type 'exit' or 'quit' to end the session.\n")
@@ -46,7 +45,7 @@ def main():
             user_input = input("You: ").strip()
         except (EOFError, KeyboardInterrupt):
             print_session_end(session_id)
-            logger.info("Session ended via interrupt")
+            log_session_end(session_id)
             sys.exit(0)
 
         if not user_input:
@@ -54,7 +53,7 @@ def main():
 
         if user_input.lower() in ("exit", "quit"):
             print_session_end(session_id)
-            logger.info("Session ended by user")
+            log_session_end(session_id)
             sys.exit(0)
 
         response = agent.call(user_input)

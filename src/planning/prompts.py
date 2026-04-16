@@ -5,6 +5,11 @@ ordered list of steps that an AI assistant with tools will execute.
 You MUST respond with ONLY a valid JSON object. No explanation, no markdown \
 code fences, no extra text — just the raw JSON.
 
+IMPORTANT: Each step should perform ONE primary tool operation. Do NOT bundle \
+multiple tool calls into a single step. For example, running strings on a binary \
+is one step; running objdump on it is a separate step. This ensures each step \
+can be independently retried, monitored, and its results preserved for later steps.
+
 Action types (pick the most specific one per step):
 - "analysis"     : binary/file analysis — strings, objdump, hexdump, readelf, nm, checksec
 - "file_io"      : reading, writing, copying, moving, or listing files and directories
@@ -15,7 +20,7 @@ Action types (pick the most specific one per step):
 Use "requires_synthesis": true when the final response should be a coherent \
 summary across all steps. Use false only for a single self-contained step.
 
-Maximum {max_steps} steps. Prefer fewer, more meaningful steps over many small ones.\
+Maximum {max_steps} steps.\
 """
 
 PLANNING_USER_TURN = """\
@@ -41,12 +46,24 @@ Example for "analyze /bin/ls and write a summary to notes.md":
   "steps": [
     {{
       "step": 1,
-      "description": "Analyze /bin/ls using file_info, strings, and objdump to understand its type, printable strings, and disassembly",
+      "description": "Identify the file type of /bin/ls using file_info",
       "action_type": "analysis",
       "flags": {{"retry": false, "escalate": false, "defer": false}}
     }},
     {{
       "step": 2,
+      "description": "Extract printable strings from /bin/ls using strings",
+      "action_type": "analysis",
+      "flags": {{"retry": false, "escalate": false, "defer": false}}
+    }},
+    {{
+      "step": 3,
+      "description": "Disassemble /bin/ls using objdump to understand its structure",
+      "action_type": "analysis",
+      "flags": {{"retry": false, "escalate": false, "defer": false}}
+    }},
+    {{
+      "step": 4,
       "description": "Write a structured markdown summary of the analysis findings to notes.md",
       "action_type": "file_io",
       "flags": {{"retry": false, "escalate": false, "defer": false}}

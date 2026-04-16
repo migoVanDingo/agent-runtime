@@ -1,3 +1,4 @@
+import re
 from planning.schema import Plan, ActionType
 from runtime.schema import ValidationStatus, ValidationResult
 from app_config import config
@@ -7,6 +8,17 @@ logger = get_logger(__name__)
 
 # Action types that map to real toolsets (conversation is toolless, so it's always valid)
 _TOOLSET_ACTION_TYPES = {a for a in ActionType if a != ActionType.CONVERSATION}
+
+# Tool names that indicate multiple tools bundled into one step
+_TOOL_NAMES = [
+    "file_info", "strings", "objdump", "hexdump", "readelf", "nm",
+    "checksec", "strace", "ltrace", "grep_binary",
+    "read_file", "write_file", "list_files", "bash_exec", "search_files",
+    "hash_file", "base64_encode", "base64_decode", "xor_decode",
+]
+_MULTI_TOOL_PATTERN = re.compile(
+    r"\b(" + "|".join(re.escape(t) for t in _TOOL_NAMES) + r")\b", re.IGNORECASE
+)
 
 
 class PlanValidator:
@@ -64,6 +76,17 @@ class PlanValidator:
                 errors.append(
                     f"Steps {plan.steps[i-1].step} and {plan.steps[i].step} "
                     f"have identical descriptions."
+                )
+
+        # 6. Multi-tool steps — each step should use one primary tool
+        for step in plan.steps:
+            if step.action_type == ActionType.CONVERSATION:
+                continue
+            tools_mentioned = set(_MULTI_TOOL_PATTERN.findall(step.description.lower()))
+            if len(tools_mentioned) > 1:
+                errors.append(
+                    f"Step {step.step}: bundles multiple tools ({', '.join(sorted(tools_mentioned))}). "
+                    f"Split into one tool per step."
                 )
 
         if errors:

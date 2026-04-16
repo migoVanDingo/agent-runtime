@@ -66,10 +66,14 @@ class ContextManager:
         self._threshold_mid = cfg.threshold_mid
         self._compressed_max = cfg.compressed_max_chars
 
-    def pack(self, messages: list[dict], current_query: str) -> list[dict]:
+    def pack(self, messages: list[dict], current_query: str, plan_start_index: int | None = None) -> list[dict]:
         """Return a budget-constrained version of the message history.
 
         If total tokens are under budget, returns messages unchanged.
+
+        Args:
+            plan_start_index: if set, messages from this index onward are part of
+                the current plan execution and will be boosted in importance.
         """
         if not config.runtime.context_manager.enabled:
             return messages
@@ -84,7 +88,7 @@ class ContextManager:
 
         logger.info(f"  context_manager: {total} tokens est. > budget {self._budget} — packing")
 
-        scored = self._score_messages(messages, current_query)
+        scored = self._score_messages(messages, current_query, plan_start_index)
         self._assign_fidelity(scored)
         packed = self._pack_chronological(scored)
 
@@ -96,7 +100,7 @@ class ContextManager:
 
         return [s.message for s in packed]
 
-    def _score_messages(self, messages: list[dict], current_query: str) -> list[ScoredMessage]:
+    def _score_messages(self, messages: list[dict], current_query: str, plan_start_index: int | None = None) -> list[ScoredMessage]:
         """Score each message on similarity, recency, and importance."""
         n = len(messages)
 
@@ -109,6 +113,13 @@ class ContextManager:
         scored = []
         for i, msg in enumerate(messages):
             importance = self._classify_importance(msg, i, n)
+
+            # Boost messages from current plan execution
+            if plan_start_index is not None and i >= plan_start_index:
+                if importance == Importance.LOW:
+                    importance = Importance.HIGH
+                elif importance == Importance.MEDIUM:
+                    importance = Importance.HIGH
 
             # Critical messages always get max score
             if importance == Importance.CRITICAL:

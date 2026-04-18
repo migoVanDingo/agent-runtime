@@ -1,7 +1,7 @@
 import json
 from messenger import Messenger
 from providers.base import BaseProvider, TextBlock
-from planning.schema import Plan, Step, StepStatus, ActionType
+from planning.schema import Plan, Step, StepStatus, ActionType, PLAN_JSON_SCHEMA
 from planning.prompts import PLANNING_SYSTEM_PROMPT, PLANNING_USER_TURN
 from app_config import config
 from logger import get_logger
@@ -14,11 +14,22 @@ class Planner:
     def __init__(self, provider: BaseProvider):
         self._provider = provider
 
-    def plan(self, user_message: str) -> Plan | None:
+    def plan(self, user_message: str, context: str | None = None) -> Plan | None:
         messenger = Messenger()
 
         system = PLANNING_SYSTEM_PROMPT.format(max_steps=config.planning.max_steps)
-        user_turn = PLANNING_USER_TURN.format(user_message=user_message)
+        if context:
+            context_block = (
+                "Recent conversation (use this to resolve references like "
+                "'the same file', 'that binary', 'the previous output', etc.):\n"
+                f"{context}\n\n"
+            )
+        else:
+            context_block = ""
+        user_turn = PLANNING_USER_TURN.format(
+            user_message=user_message,
+            context_block=context_block,
+        )
 
         messenger.add_user_message(user_turn)
 
@@ -26,6 +37,7 @@ class Planner:
             messages=messenger.get_messages(),
             tools=[],
             system=system,
+            json_schema=PLAN_JSON_SCHEMA,
         )
 
         raw = next(
@@ -44,6 +56,7 @@ class Planner:
                 messages=messenger.get_messages(),
                 tools=[],
                 system=system,
+                json_schema=PLAN_JSON_SCHEMA,
             )
             raw = next(
                 (b.text for b in response.content if isinstance(b, TextBlock)), ""
@@ -56,6 +69,73 @@ class Planner:
 
         plan.original_query = user_message
         return plan
+
+    def revise(self, plan: Plan, challenges_text: str) -> Plan | None:
+        """Revise a plan in response to critic challenges. Returns revised plan or None."""
+        messenger = Messenger()
+        system = PLANNING_SYSTEM_PROMPT.format(max_steps=config.planning.max_steps)
+
+        # Format current plan for context
+        plan_lines = []
+        for s in plan.steps:
+            tool_label = s.tool or "none"
+            plan_lines.append(f"  Step {s.step} [{s.action_type.value}] tool={tool_label}: {s.description}")
+
+        user_turn = (
+            f"Your plan was reviewed by an adversarial critic. Address each challenge below.\n\n"
+            f"Original request: {plan.original_query}\n\n"
+            f"Your original plan:\n" + "\n".join(plan_lines) + "\n\n"
+            f"Critic challenges:\n{challenges_text}\n\n"
+            f"For each challenged step, either:\n"
+            f"- Remove it if the critic is right\n"
+            f"- Replace the tool with a lighter alternative\n"
+            f"- Keep it, but only if you can name the specific fact it reveals that "
+            f"will appear in the final output\n\n"
+            f"Vague defenses like 'provides additional context' are not acceptable. "
+            f"Name the specific fact the tool reveals.\n\n"
+            f"Return a revised plan as JSON. Same format as before."
+        )
+
+        messenger.add_user_message(user_turn)
+
+        response = self._provider.chat(
+            messages=messenger.get_messages(),
+            tools=[],
+            system=system,
+            json_schema=PLAN_JSON_SCHEMA,
+        )
+
+        raw = next(
+            (b.text for b in response.content if isinstance(b, TextBlock)), ""
+        )
+
+        revised = self._parse(raw)
+        if revised is None:
+            # Retry once with feedback
+            logger.info("Planner.revise: invalid response — retrying once")
+            messenger.add_assistant_message(response.content)
+            messenger.add_user_message(
+                "Your response was not valid JSON or was missing required fields. "
+                "Return ONLY the raw JSON plan object, nothing else."
+            )
+            response = self._provider.chat(
+                messages=messenger.get_messages(),
+                tools=[],
+                system=system,
+                json_schema=PLAN_JSON_SCHEMA,
+            )
+            raw = next(
+                (b.text for b in response.content if isinstance(b, TextBlock)), ""
+            )
+            revised = self._parse(raw)
+
+        if revised is None:
+            logger.info("Planner.revise: failed to produce valid revised plan after retry")
+            return None
+
+        revised.original_query = plan.original_query
+        logger.info(f"Planner.revise: revised plan has {len(revised.steps)} steps")
+        return revised
 
     def replan(self, plan: Plan, failed_step: Step, reason: str) -> list[Step] | None:
         """Re-plan remaining steps after a failure. Returns new steps or None."""
@@ -93,6 +173,7 @@ class Planner:
             messages=messenger.get_messages(),
             tools=[],
             system=system,
+            json_schema=PLAN_JSON_SCHEMA,
         )
 
         raw = next(

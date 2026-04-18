@@ -1,10 +1,11 @@
 import shutil
-from tools.base import BaseTool, InputSchema, ToolProperty
+from tools.base import BaseTool, InputSchema, ToolProperty, ToolWeight
 
 
 class MoveFileTool(BaseTool):
     name = "move_file"
     description = "Move or rename a file or directory."
+    weight = ToolWeight.LIGHTWEIGHT
 
     @property
     def input_schema(self) -> InputSchema:

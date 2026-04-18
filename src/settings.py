@@ -52,6 +52,39 @@ class Settings(BaseSettings):
         validation_alias=env_alias("OLLAMA_MODEL", "ollama_model"),
     )
 
+    # === GROK (xAI) ===
+    grok_api_key: Optional[str] = Field(
+        default=None,
+        validation_alias=env_alias("GROK_API_KEY", "grok_api_key"),
+    )
+
+    grok_model: str = Field(
+        default="grok-3-mini",
+        validation_alias=env_alias("GROK_MODEL", "grok_model"),
+    )
+
+    # === DEEPSEEK ===
+    deepseek_api_key: Optional[str] = Field(
+        default=None,
+        validation_alias=env_alias("DEEPSEEK_API_KEY", "deepseek_api_key"),
+    )
+
+    deepseek_model: str = Field(
+        default="deepseek-chat",
+        validation_alias=env_alias("DEEPSEEK_MODEL", "deepseek_model"),
+    )
+
+    # === GEMINI ===
+    gemini_api_key: Optional[str] = Field(
+        default=None,
+        validation_alias=env_alias("GEMINI_API_KEY", "gemini_api_key"),
+    )
+
+    gemini_model: str = Field(
+        default="gemini-2.0-flash",
+        validation_alias=env_alias("GEMINI_MODEL", "gemini_model"),
+    )
+
     # === RUNTIME LAYER ===
     runtime_provider: Optional[str] = Field(
         default=None,

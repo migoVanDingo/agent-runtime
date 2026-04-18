@@ -18,6 +18,7 @@ class OpenAICompatibleProvider(BaseProvider):
         messages: list[dict],
         tools: list[dict],
         system: str,
+        json_schema: dict | None = None,
     ) -> ProviderResponse:
         openai_messages = self._translate_messages(messages, system)
         openai_tools = self._translate_tools(tools)
@@ -29,6 +30,8 @@ class OpenAICompatibleProvider(BaseProvider):
         }
         if openai_tools:
             kwargs["tools"] = openai_tools
+        if json_schema is not None:
+            kwargs["response_format"] = {"type": "json_schema", "json_schema": json_schema}
 
         response = self.client.chat.completions.create(**kwargs)
         return self._translate_response(response)
@@ -96,7 +99,12 @@ class OpenAICompatibleProvider(BaseProvider):
         message = choice.message
         finish_reason = choice.finish_reason
 
-        stop_reason = "tool_use" if finish_reason == "tool_calls" else "end_turn"
+        if finish_reason == "tool_calls":
+            stop_reason = "tool_use"
+        elif finish_reason == "length":
+            stop_reason = "max_tokens"
+        else:
+            stop_reason = "end_turn"
 
         content = []
 

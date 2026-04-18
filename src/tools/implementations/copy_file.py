@@ -1,10 +1,11 @@
 import shutil
-from tools.base import BaseTool, InputSchema, ToolProperty
+from tools.base import BaseTool, InputSchema, ToolProperty, ToolWeight
 
 
 class CopyFileTool(BaseTool):
     name = "copy_file"
     description = "Copy a file from source to destination."
+    weight = ToolWeight.LIGHTWEIGHT
 
     @property
     def input_schema(self) -> InputSchema:

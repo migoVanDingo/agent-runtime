@@ -1,10 +1,11 @@
 import os
-from tools.base import BaseTool, InputSchema, ToolProperty
+from tools.base import BaseTool, InputSchema, ToolProperty, ToolWeight
 
 
 class GetWorkingDirectoryTool(BaseTool):
     name = "get_working_directory"
     description = "Return the current working directory."
+    weight = ToolWeight.LIGHTWEIGHT
 
     @property
     def input_schema(self) -> InputSchema:

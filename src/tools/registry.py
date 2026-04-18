@@ -47,8 +47,25 @@ class ToolRegistry:
                     schemas.append(tool.to_api_schema())
         return schemas
 
+    def tool_names(self) -> set[str]:
+        return set(self._tools.keys())
+
     def toolset_names(self) -> list[str]:
         return list(self._toolsets.keys())
+
+    def get_tool_schema(self, tool_name: str) -> list[dict]:
+        """Get API schema for a single tool. Returns a list for API compatibility."""
+        tool = self._tools.get(tool_name)
+        if tool is None:
+            return []
+        return [tool.to_api_schema()]
+
+    def get_tool_description(self, tool_name: str) -> str:
+        """Get a tool's description with weight annotation."""
+        tool = self._tools.get(tool_name)
+        if not tool:
+            return ""
+        return f"[{tool.weight.value}] {tool.description}"
 
     def get_all_rules(self) -> list[RoutingRule]:
         rules = []

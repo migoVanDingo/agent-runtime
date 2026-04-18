@@ -1,10 +1,11 @@
 import hashlib
-from tools.base import BaseTool, InputSchema, ToolProperty
+from tools.base import BaseTool, InputSchema, ToolProperty, ToolWeight
 
 
 class HashFileTool(BaseTool):
     name = "hash_file"
     description = "Compute the hash of a file. Supports MD5, SHA1, SHA256, SHA512."
+    weight = ToolWeight.LIGHTWEIGHT
 
     @property
     def input_schema(self) -> InputSchema:

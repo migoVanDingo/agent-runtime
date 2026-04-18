@@ -15,6 +15,7 @@ import json
 import math
 from runtime.schema import FidelityLevel, Importance, ScoredMessage
 from runtime import compressor
+from providers.base import BaseProvider, TextBlock
 from app_config import config
 from logger import get_logger
 
@@ -54,17 +55,31 @@ class ContextManager:
     def __init__(self, embedding_model=None):
         """
         Args:
-            embedding_model: a SentenceTransformer instance (shared with router).
-                             If None, similarity scoring is disabled — only recency
-                             and importance are used.
+            embedding_model: deprecated, ignored. Uses shared embedding model
+                             from embeddings module. If embedding model is not
+                             available, similarity scoring is disabled — only
+                             recency and importance are used.
         """
-        self._model = embedding_model
+        self._model = None  # lazy-loaded from shared embeddings
         cfg = config.runtime.context_manager
         self._budget = cfg.message_budget_tokens
         self._half_life = cfg.half_life_turns
         self._threshold_high = cfg.threshold_high
         self._threshold_mid = cfg.threshold_mid
         self._compressed_max = cfg.compressed_max_chars
+        # LLM-assigned importance overrides (message_index -> Importance)
+        self._importance_overrides: dict[int, Importance] = {}
+        # LLM summarization cache (content_hash -> summary)
+        self._summary_cache: dict[str, str] = {}
+        self._summarizer: BaseProvider | None = None
+
+    def set_summarizer(self, provider: BaseProvider) -> None:
+        """Set the provider for LLM-based compression summarization."""
+        self._summarizer = provider
+
+    def set_importance(self, message_index: int, importance: Importance) -> None:
+        """Set an LLM-assigned importance override for a message at the given index."""
+        self._importance_overrides[message_index] = importance
 
     def pack(self, messages: list[dict], current_query: str, plan_start_index: int | None = None) -> list[dict]:
         """Return a budget-constrained version of the message history.
@@ -89,7 +104,7 @@ class ContextManager:
         logger.info(f"  context_manager: {total} tokens est. > budget {self._budget} — packing")
 
         scored = self._score_messages(messages, current_query, plan_start_index)
-        self._assign_fidelity(scored)
+        self._assign_fidelity(scored, plan_start_index=plan_start_index)
         packed = self._pack_chronological(scored)
 
         packed_total = sum(s.token_estimate for s in packed)
@@ -103,6 +118,11 @@ class ContextManager:
     def _score_messages(self, messages: list[dict], current_query: str, plan_start_index: int | None = None) -> list[ScoredMessage]:
         """Score each message on similarity, recency, and importance."""
         n = len(messages)
+
+        # Lazy-load shared embedding model
+        if self._model is None:
+            from embeddings import get_embedding_model
+            self._model = get_embedding_model()
 
         # Compute embeddings if model available
         if self._model is not None and current_query:
@@ -160,7 +180,11 @@ class ContextManager:
         return scored
 
     def _classify_importance(self, msg: dict, index: int, total: int) -> Importance:
-        """Rule-based importance classification."""
+        """Importance classification. Checks LLM overrides first, then rule-based."""
+        # LLM-assigned override takes precedence
+        if index in self._importance_overrides:
+            return self._importance_overrides[index]
+
         role = msg["role"]
         content = msg["content"]
 
@@ -194,8 +218,15 @@ class ContextManager:
 
         return Importance.MEDIUM
 
-    def _assign_fidelity(self, scored: list[ScoredMessage]) -> None:
-        """Assign intended fidelity based on score thresholds."""
+    def _assign_fidelity(self, scored: list[ScoredMessage], plan_start_index: int | None = None) -> None:
+        """Assign intended fidelity based on score thresholds.
+
+        Messages produced during the current plan execution (index >=
+        plan_start_index) get a minimum fidelity of COMPRESSED — never
+        PLACEHOLDER. Semantic similarity can be low for intermediate results
+        (e.g. a base64 string when the next step writes to a file), but the
+        data is still required for correct execution.
+        """
         for s in scored:
             if s.score >= self._threshold_high:
                 s.fidelity = FidelityLevel.FULL
@@ -203,6 +234,12 @@ class ContextManager:
                 s.fidelity = FidelityLevel.COMPRESSED
             else:
                 s.fidelity = FidelityLevel.PLACEHOLDER
+
+            # Enforce minimum COMPRESSED for current-plan messages
+            if (plan_start_index is not None
+                    and s.index >= plan_start_index
+                    and s.fidelity == FidelityLevel.PLACEHOLDER):
+                s.fidelity = FidelityLevel.COMPRESSED
 
     def _pack_chronological(self, scored: list[ScoredMessage]) -> list[ScoredMessage]:
         """Pack messages chronologically under the token budget.
@@ -349,10 +386,11 @@ class ContextManager:
             for block in content:
                 if block.get("type") == "tool_result":
                     original = block.get("content", "")
+                    compressed = self._compress_tool_result(original, max_chars)
                     compressed_blocks.append({
                         "type": "tool_result",
                         "tool_use_id": block["tool_use_id"],
-                        "content": compressor.compress_tool_result(original, max_chars),
+                        "content": compressed,
                     })
                 else:
                     compressed_blocks.append(block)
@@ -380,6 +418,42 @@ class ContextManager:
             return {"role": "assistant", "content": compressed_blocks}
 
         return msg
+
+    def _compress_tool_result(self, content: str, max_chars: int) -> str:
+        """Compress a tool result. Uses LLM summarization if available and content is large enough."""
+        # If content is small, use mechanical compression
+        if len(content) <= max_chars * 2 or self._summarizer is None:
+            return compressor.compress_tool_result(content, max_chars)
+
+        # Check cache
+        cache_key = content[:200]
+        if cache_key in self._summary_cache:
+            return self._summary_cache[cache_key]
+
+        # LLM summarization
+        try:
+            from messenger import Messenger
+            messenger = Messenger()
+            messenger.add_user_message(
+                f"Summarize this tool output in under {max_chars} characters, "
+                f"preserving key facts, values, and any errors:\n\n{content[:2000]}"
+            )
+            response = self._summarizer.chat(
+                messages=messenger.get_messages(),
+                tools=[],
+                system="You are a concise summarizer. Return ONLY the summary, nothing else.",
+            )
+            summary = next(
+                (b.text for b in response.content if isinstance(b, TextBlock)), ""
+            )
+            if summary and len(summary) <= max_chars * 1.5:
+                self._summary_cache[cache_key] = summary
+                return summary
+        except Exception as e:
+            logger.debug(f"  context_manager: LLM summarization failed — {e}")
+
+        # Fallback to mechanical compression
+        return compressor.compress_tool_result(content, max_chars)
 
     def _placeholder_message(self, msg: dict, index: int) -> dict:
         """Produce a placeholder stub for a message."""

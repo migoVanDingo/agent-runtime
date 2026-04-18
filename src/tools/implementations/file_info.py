@@ -1,11 +1,12 @@
 import subprocess
-from tools.base import BaseTool, InputSchema, ToolProperty
+from tools.base import BaseTool, InputSchema, ToolProperty, ToolWeight
 from app_config import config
 
 
 class FileInfoTool(BaseTool):
     name = "file_info"
     description = "Determine the type of a file using the 'file' command. Works on binaries, scripts, archives, and more."
+    weight = ToolWeight.LIGHTWEIGHT
 
     @property
     def input_schema(self) -> InputSchema:

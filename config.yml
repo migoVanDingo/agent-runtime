@@ -33,17 +33,6 @@ planning:
   model: null
   max_steps: 8
   retry_on_invalid: true
-  gate:
-    min_message_length: 20
-    indicator_words:
-      - "and then"
-      - "once you"
-      - "followed by"
-      - then
-      - after
-      - next
-      - finally
-      - first
 
 runtime:
   intent_classifier:
@@ -51,10 +40,16 @@ runtime:
     context_window: 6
   plan_validator:
     enabled: true
+  plan_critic:
+    enabled: true
+    skip_low_risk: false
+    consensus_on_high_risk: true
   execution_monitor:
     enabled: true
     max_step_retries: 2
     max_defers_per_step: 1
+    step_max_tool_calls: 10
+    error_recovery_clears_step_error: true
   context_manager:
     enabled: true
     message_budget_tokens: 16384

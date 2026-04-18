@@ -1,9 +1,10 @@
-from tools.base import BaseTool, InputSchema, ToolProperty
+from tools.base import BaseTool, InputSchema, ToolProperty, ToolWeight
 
 
 class ReadFileLinesTool(BaseTool):
     name = "read_file_lines"
     description = "Read a specific range of lines from a file. Useful for inspecting large files without loading the entire contents."
+    weight = ToolWeight.MODERATE
 
     @property
     def input_schema(self) -> InputSchema:

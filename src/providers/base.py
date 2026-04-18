@@ -30,5 +30,6 @@ class BaseProvider(ABC):
         messages: list[dict],
         tools: list[dict],
         system: str,
+        json_schema: dict | None = None,
     ) -> ProviderResponse:
         pass

@@ -41,6 +41,52 @@ _DANGEROUS_COMMANDS = re.compile(
 
 _SUDO_PATTERN = re.compile(r"(?:^|\s|;|&&|\|\|)sudo\s", re.IGNORECASE)
 
+# ── Package manager / installer patterns → ESCALATE ────────────────
+
+_PACKAGE_MANAGERS = re.compile(
+    r"(?:^|\s|;|&&|\|\||`|\$\()"
+    r"("
+    r"brew\s+(?:install|uninstall|remove|upgrade)\b"
+    r"|pip3?\s+(?:install|uninstall)\b"
+    r"|apt(?:-get)?\s+(?:install|remove|purge|upgrade)\b"
+    r"|dnf\s+(?:install|remove|upgrade)\b"
+    r"|yum\s+(?:install|remove|upgrade)\b"
+    r"|npm\s+(?:install\s+-g|uninstall\s+-g)\b"
+    r"|yarn\s+global\s+(?:add|remove)\b"
+    r"|gem\s+(?:install|uninstall)\b"
+    r"|cargo\s+install\b"
+    r"|go\s+install\b"
+    r")",
+    re.IGNORECASE,
+)
+
+# ── Arbitrary code execution patterns → ESCALATE ───────────────────
+
+_CODE_EXECUTION = re.compile(
+    r"(?:^|\s|;|&&|\|\||`|\$\()"
+    r"("
+    r"python[23]?\s+-c\b"
+    r"|ruby\s+-e\b"
+    r"|perl\s+-e\b"
+    r"|node\s+-e\b"
+    r")",
+    re.IGNORECASE,
+)
+
+# ── Script file execution → ESCALATE ───────────────────────────────
+# Matches: interpreter followed by a file path argument (contains . or /)
+# Distinct from inline code (-c flag) which _CODE_EXECUTION already catches.
+
+_SCRIPT_EXECUTION = re.compile(
+    r"(?:^|\s|;|&&|\|\||`|\$\()"
+    r"(?:python[23]?|bash|sh|zsh|node|ruby|perl)"
+    r"\s+"
+    r"(?!-)"           # not a flag
+    r"[\w./\-]+"       # file path token (contains word chars, dots, slashes, hyphens)
+    r"(?:\.py|\.sh|\.js|\.rb|\.pl|\.ts|[/][\w./\-]*)",  # must look like a file
+    re.IGNORECASE,
+)
+
 # ── Sensitive paths ─────────────────────────────────────────────────
 
 _SENSITIVE_PATHS = re.compile(
@@ -54,11 +100,51 @@ _SENSITIVE_PATHS = re.compile(
 )
 
 
+def _approval_key(tool_name: str, tool_input: dict) -> str | None:
+    """Derive a cache key for an escalation approval.
+
+    Returns a string key that covers all equivalent invocations the user
+    would consider the same approval, or None if not cacheable.
+    """
+    if tool_name == "bash_exec":
+        command = tool_input.get("command", "")
+        # Key on the script path for interpreter+file commands
+        m = _SCRIPT_EXECUTION.search(command)
+        if m:
+            # Extract the file token from the match
+            tokens = m.group(0).strip().split()
+            if len(tokens) >= 2:
+                return f"bash_exec:script:{tokens[-1]}"
+        # For other escalated shell patterns, key on full command
+        return f"bash_exec:{command}"
+    if tool_name == "delete_file":
+        return f"delete_file:{tool_input.get('path', '')}"
+    if tool_name in ("strace", "ltrace"):
+        return f"{tool_name}:pid:{tool_input.get('pid', '')}"
+    if tool_name == "write_file":
+        return f"write_file:{tool_input.get('path', '')}"
+    if tool_name == "move_file":
+        return f"move_file:{tool_input.get('source', '')}:{tool_input.get('destination', '')}"
+    return None
+
+
 class ActionGuard:
     """Pre-execution safety gate. Code-only, no LLM calls.
 
     Inspects tool calls before execution and returns ALLOW, BLOCK, or ESCALATE.
+    Approved escalations are cached per session so the user is not asked
+    repeatedly for the same operation.
     """
+
+    def __init__(self):
+        self._approved: set[str] = set()
+
+    def record_approval(self, tool_name: str, tool_input: dict) -> None:
+        """Record that the user approved this tool call. Suppresses future escalations."""
+        key = _approval_key(tool_name, tool_input)
+        if key:
+            self._approved.add(key)
+            logger.info(f"  guard: approval cached — {key}")
 
     def check_step(self, description: str, action_type: str) -> GuardDecision:
         """Pre-flight check on a step description before it starts."""
@@ -74,7 +160,13 @@ class ActionGuard:
         """Check a specific tool invocation before execution.
 
         Returns (decision, reason). Reason is empty for ALLOW.
+        Cached approvals short-circuit to ALLOW with a log note.
         """
+        # ── Approval cache: user already approved this pattern ──
+        key = _approval_key(tool_name, tool_input)
+        if key and key in self._approved:
+            logger.info(f"  guard: ✓ approved (cached): {key}")
+            return GuardDecision.ALLOW, ""
 
         # ── bash_exec: most dangerous surface ──
         if tool_name == "bash_exec":
@@ -117,7 +209,22 @@ class ActionGuard:
 
         # Sudo → ESCALATE (not auto-block — might be intentional)
         if _SUDO_PATTERN.search(command):
-            return GuardDecision.ESCALATE, f"command uses sudo"
+            return GuardDecision.ESCALATE, "command uses sudo"
+
+        # Package managers → ESCALATE (installing/removing software)
+        pkg_match = _PACKAGE_MANAGERS.search(command)
+        if pkg_match:
+            return GuardDecision.ESCALATE, f"package manager operation: '{pkg_match.group(0).strip()}'"
+
+        # Arbitrary code execution → ESCALATE
+        code_match = _CODE_EXECUTION.search(command)
+        if code_match:
+            return GuardDecision.ESCALATE, f"inline code execution: '{code_match.group(0).strip()}'"
+
+        # Script file execution → ESCALATE
+        script_match = _SCRIPT_EXECUTION.search(command)
+        if script_match:
+            return GuardDecision.ESCALATE, f"script execution: '{script_match.group(0).strip()}'"
 
         # Sensitive path targets → ESCALATE
         # Only check if command is writing/modifying (not reading)

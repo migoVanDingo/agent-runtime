@@ -1,11 +1,12 @@
 import urllib.request
 import urllib.error
-from tools.base import BaseTool, InputSchema, ToolProperty
+from tools.base import BaseTool, InputSchema, ToolProperty, ToolWeight
 
 
 class DownloadFileTool(BaseTool):
     name = "download_file"
     description = "Download a file from a URL to a local path."
+    weight = ToolWeight.MODERATE
 
     @property
     def input_schema(self) -> InputSchema:

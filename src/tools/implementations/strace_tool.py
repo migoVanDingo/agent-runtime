@@ -1,11 +1,12 @@
 import subprocess
-from tools.base import BaseTool, InputSchema, ToolProperty
+from tools.base import BaseTool, InputSchema, ToolProperty, ToolWeight
 from app_config import config
 
 
 class StraceTool(BaseTool):
     name = "strace"
     description = "Trace system calls made by a program. Linux only — not available on macOS."
+    weight = ToolWeight.HEAVY
 
     @property
     def input_schema(self) -> InputSchema:

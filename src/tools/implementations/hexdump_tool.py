@@ -1,11 +1,12 @@
 import subprocess
-from tools.base import BaseTool, InputSchema, ToolProperty
+from tools.base import BaseTool, InputSchema, ToolProperty, ToolWeight
 from app_config import config
 
 
 class HexdumpTool(BaseTool):
     name = "hexdump"
     description = "Display a hex dump of a file. Useful for inspecting binary files, file headers, and low-level data."
+    weight = ToolWeight.HEAVY
 
     @property
     def input_schema(self) -> InputSchema:

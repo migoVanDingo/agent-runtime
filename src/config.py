@@ -35,18 +35,11 @@ class AgentConfig:
 
 
 @dataclass
-class PlanningGateConfig:
-    min_message_length: int
-    indicator_words: list[str]
-
-
-@dataclass
 class PlanningConfig:
     enabled: bool
     model: str | None
     max_steps: int
     retry_on_invalid: bool
-    gate: PlanningGateConfig
 
 
 @dataclass
@@ -65,6 +58,8 @@ class ExecutionMonitorConfig:
     enabled: bool
     max_step_retries: int
     max_defers_per_step: int
+    step_max_tool_calls: int = 10
+    error_recovery_clears_step_error: bool = True
 
 
 @dataclass
@@ -78,9 +73,17 @@ class ContextManagerConfig:
 
 
 @dataclass
+class PlanCriticConfig:
+    enabled: bool
+    skip_low_risk: bool = False
+    consensus_on_high_risk: bool = True
+
+
+@dataclass
 class RuntimeConfig:
     intent_classifier: IntentClassifierConfig
     plan_validator: PlanValidatorConfig
+    plan_critic: PlanCriticConfig
     execution_monitor: ExecutionMonitorConfig
     context_manager: ContextManagerConfig
 
@@ -109,13 +112,13 @@ def load_config() -> AppConfig:
         model=planning_raw["model"],
         max_steps=planning_raw["max_steps"],
         retry_on_invalid=planning_raw["retry_on_invalid"],
-        gate=PlanningGateConfig(**planning_raw["gate"]),
     )
 
     rt = raw["runtime"]
     runtime = RuntimeConfig(
         intent_classifier=IntentClassifierConfig(**rt["intent_classifier"]),
         plan_validator=PlanValidatorConfig(**rt["plan_validator"]),
+        plan_critic=PlanCriticConfig(**rt["plan_critic"]),
         execution_monitor=ExecutionMonitorConfig(**rt["execution_monitor"]),
         context_manager=ContextManagerConfig(**rt["context_manager"]),
     )

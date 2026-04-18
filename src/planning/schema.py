@@ -2,6 +2,49 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
+# JSON schema for structured output enforcement (OpenAI response_format).
+# Keeps the revision/planning loop from producing structurally invalid JSON.
+PLAN_JSON_SCHEMA = {
+    "name": "plan",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "properties": {
+            "original_query": {"type": "string"},
+            "requires_synthesis": {"type": "boolean"},
+            "steps": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "step": {"type": "integer"},
+                        "description": {"type": "string"},
+                        "action_type": {
+                            "type": "string",
+                            "enum": ["analysis", "file_io", "shell", "crypto", "conversation"],
+                        },
+                        "tool": {"type": ["string", "null"]},
+                        "flags": {
+                            "type": "object",
+                            "properties": {
+                                "retry": {"type": "boolean"},
+                                "escalate": {"type": "boolean"},
+                                "defer": {"type": "boolean"},
+                            },
+                            "required": ["retry", "escalate", "defer"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "required": ["step", "description", "action_type", "tool", "flags"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["original_query", "requires_synthesis", "steps"],
+        "additionalProperties": False,
+    },
+}
+
 
 class ActionType(str, Enum):
     ANALYSIS = "analysis"
@@ -54,6 +97,7 @@ class Step:
     step: int
     description: str
     action_type: ActionType
+    tool: str | None = None
     status: StepStatus = StepStatus.PENDING
     result: str | None = None
     error: str | None = None
@@ -64,6 +108,7 @@ class Step:
             "step": self.step,
             "description": self.description,
             "action_type": self.action_type.value,
+            "tool": self.tool,
             "status": self.status.value,
             "result": self.result,
             "error": self.error,
@@ -76,6 +121,7 @@ class Step:
             step=data["step"],
             description=data["description"],
             action_type=ActionType(data["action_type"]),
+            tool=data.get("tool"),
             status=StepStatus(data.get("status", StepStatus.PENDING)),
             result=data.get("result"),
             error=data.get("error"),
@@ -88,6 +134,7 @@ class Plan:
     original_query: str
     steps: list[Step]
     requires_synthesis: bool = True
+    risk: str = "low"  # "low", "moderate", "high" — set by classifier
 
     def to_dict(self) -> dict:
         return {

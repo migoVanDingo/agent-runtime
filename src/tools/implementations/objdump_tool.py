@@ -1,11 +1,12 @@
 import subprocess
-from tools.base import BaseTool, InputSchema, ToolProperty
+from tools.base import BaseTool, InputSchema, ToolProperty, ToolWeight
 from app_config import config
 
 
 class ObjdumpTool(BaseTool):
     name = "objdump"
     description = "Disassemble and analyze object files or binaries. Useful for reverse engineering."
+    weight = ToolWeight.HEAVY
 
     @property
     def input_schema(self) -> InputSchema:

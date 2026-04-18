@@ -13,10 +13,10 @@ class IntentClassifier:
         self._provider = provider
         self._context_window = config.runtime.intent_classifier.context_window
 
-    def classify(self, message: str, history: list[dict]) -> str:
-        """Return 'plan' or 'direct'."""
+    def classify(self, message: str, history: list[dict]) -> tuple[str, str]:
+        """Return (mode, risk) where mode is 'plan'|'direct' and risk is 'low'|'moderate'|'high'."""
         if not config.runtime.intent_classifier.enabled:
-            return "direct"
+            return "direct", "low"
 
         context = self._build_context(history)
         user_turn = CLASSIFIER_USER_TEMPLATE.format(context=context, message=message)
@@ -35,9 +35,9 @@ class IntentClassifier:
             (b.text for b in response.content if isinstance(b, TextBlock)), ""
         )
 
-        mode, reason = self._parse(raw)
-        logger.info(f"  mode: {mode}  reason: {reason}")
-        return mode
+        mode, risk, reason = self._parse(raw)
+        logger.info(f"  mode: {mode}  risk: {risk}  reason: {reason}")
+        return mode, risk
 
     def _build_context(self, history: list[dict]) -> str:
         """Format the last N messages as context for the classifier."""
@@ -72,8 +72,8 @@ class IntentClassifier:
 
         return "Recent conversation:\n" + "\n".join(lines) + "\n\n"
 
-    def _parse(self, raw: str) -> tuple[str, str]:
-        """Parse classifier response. Returns (mode, reason)."""
+    def _parse(self, raw: str) -> tuple[str, str, str]:
+        """Parse classifier response. Returns (mode, risk, reason)."""
         text = raw.strip()
 
         if text.startswith("```"):
@@ -84,11 +84,15 @@ class IntentClassifier:
         try:
             data = json.loads(text)
             mode = data.get("mode", "direct")
+            risk = data.get("risk", "low")
             reason = data.get("reason", "")
             if mode not in ("plan", "direct"):
                 logger.info(f"  classifier returned invalid mode '{mode}' — defaulting to direct")
                 mode = "direct"
-            return mode, reason
+            if risk not in ("low", "moderate", "high"):
+                logger.info(f"  classifier returned invalid risk '{risk}' — defaulting to low")
+                risk = "low"
+            return mode, risk, reason
         except (json.JSONDecodeError, AttributeError):
             logger.info(f"  classifier parse failed — defaulting to direct")
-            return "direct", "parse error"
+            return "direct", "low", "parse error"

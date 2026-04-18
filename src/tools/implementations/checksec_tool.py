@@ -1,11 +1,12 @@
 import subprocess
-from tools.base import BaseTool, InputSchema, ToolProperty
+from tools.base import BaseTool, InputSchema, ToolProperty, ToolWeight
 from app_config import config
 
 
 class ChecksecTool(BaseTool):
     name = "checksec"
     description = "Check binary security properties: NX, ASLR, stack canaries, PIE, RELRO. Requires checksec (brew install checksec on macOS)."
+    weight = ToolWeight.HEAVY
 
     @property
     def input_schema(self) -> InputSchema:

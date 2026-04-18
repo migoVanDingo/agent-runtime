@@ -1,11 +1,12 @@
 import subprocess
-from tools.base import BaseTool, InputSchema, ToolProperty
+from tools.base import BaseTool, InputSchema, ToolProperty, ToolWeight
 from app_config import config
 
 
 class NmTool(BaseTool):
     name = "nm"
     description = "List symbols from an object file or binary. Useful for reverse engineering and understanding binary structure."
+    weight = ToolWeight.MODERATE
 
     @property
     def input_schema(self) -> InputSchema:

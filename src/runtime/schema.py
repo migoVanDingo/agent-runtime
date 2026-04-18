@@ -19,6 +19,7 @@ class StepAssessment:
     decision: StepDecision
     reason: str
     suggestion: str | None = None
+    confidence: float = 1.0  # 0.0-1.0, how confident the monitor is in this decision
 
 
 # ── Plan Validator ───────────────────────────────────────────────────
@@ -32,6 +33,28 @@ class ValidationStatus(str, Enum):
 class ValidationResult:
     status: ValidationStatus
     feedback: str | None = None
+
+
+# ── Plan Critic ─────────────────────────────────────────────────────
+
+class CriticVerdict(str, Enum):
+    APPROVED   = "approved"
+    CHALLENGED = "challenged"
+
+
+@dataclass
+class CriticChallenge:
+    step: int
+    tool: str | None
+    challenge: str
+    suggestion: str  # "drop", "replace", "justify"
+
+
+@dataclass
+class CriticResult:
+    verdict: CriticVerdict
+    reasoning: str | None = None
+    challenges: list[CriticChallenge] | None = None
 
 
 # ── Context Manager (AFM-inspired) ──────────────────────────────────

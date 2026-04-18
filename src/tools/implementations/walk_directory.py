@@ -1,10 +1,11 @@
 import os
-from tools.base import BaseTool, InputSchema, ToolProperty
+from tools.base import BaseTool, InputSchema, ToolProperty, ToolWeight
 
 
 class WalkDirectoryTool(BaseTool):
     name = "walk_directory"
     description = "Recursively walk a directory tree and return all file paths."
+    weight = ToolWeight.MODERATE
 
     @property
     def input_schema(self) -> InputSchema:

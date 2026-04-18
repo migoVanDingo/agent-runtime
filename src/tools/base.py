@@ -1,5 +1,12 @@
 from abc import ABC, abstractmethod
+from enum import Enum
 from pydantic import BaseModel
+
+
+class ToolWeight(str, Enum):
+    LIGHTWEIGHT = "lightweight"  # ~100-1000 chars output, fast
+    MODERATE    = "moderate"     # ~1K-50K chars output
+    HEAVY       = "heavy"       # ~50K+ chars output, or requires installation
 
 
 class ToolProperty(BaseModel):
@@ -16,6 +23,7 @@ class InputSchema(BaseModel):
 class BaseTool(ABC):
     name: str
     description: str
+    weight: ToolWeight = ToolWeight.MODERATE  # default; tools override as needed
 
     @property
     @abstractmethod

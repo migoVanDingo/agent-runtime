@@ -14,6 +14,7 @@ class AnthropicProvider(BaseProvider):
         messages: list[dict],
         tools: list[dict],
         system: str,
+        json_schema: dict | None = None,
     ) -> ProviderResponse:
         response = self.client.messages.create(
             model=self.model,

@@ -1,11 +1,12 @@
 import subprocess
-from tools.base import BaseTool, InputSchema, ToolProperty
+from tools.base import BaseTool, InputSchema, ToolProperty, ToolWeight
 from app_config import config
 
 
 class LtraceTool(BaseTool):
     name = "ltrace"
     description = "Trace library calls made by a program. Useful for dynamic analysis. Note: not available on macOS — use Linux."
+    weight = ToolWeight.HEAVY
 
     @property
     def input_schema(self) -> InputSchema:

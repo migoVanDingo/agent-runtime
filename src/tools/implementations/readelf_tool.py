@@ -1,11 +1,12 @@
 import subprocess
-from tools.base import BaseTool, InputSchema, ToolProperty
+from tools.base import BaseTool, InputSchema, ToolProperty, ToolWeight
 from app_config import config
 
 
 class ReadElfTool(BaseTool):
     name = "readelf"
     description = "Display information about ELF binaries: headers, sections, symbols, dynamic dependencies. Requires binutils (Linux native, macOS via brew install binutils)."
+    weight = ToolWeight.HEAVY
 
     @property
     def input_schema(self) -> InputSchema:

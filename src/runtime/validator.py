@@ -1,4 +1,3 @@
-import re
 from planning.schema import Plan, ActionType
 from runtime.schema import ValidationStatus, ValidationResult
 from app_config import config
@@ -9,22 +8,12 @@ logger = get_logger(__name__)
 # Action types that map to real toolsets (conversation is toolless, so it's always valid)
 _TOOLSET_ACTION_TYPES = {a for a in ActionType if a != ActionType.CONVERSATION}
 
-# Tool names that indicate multiple tools bundled into one step
-_TOOL_NAMES = [
-    "file_info", "strings", "objdump", "hexdump", "readelf", "nm",
-    "checksec", "strace", "ltrace", "grep_binary",
-    "read_file", "write_file", "list_files", "bash_exec", "search_files",
-    "hash_file", "base64_encode", "base64_decode", "xor_decode",
-]
-_MULTI_TOOL_PATTERN = re.compile(
-    r"\b(" + "|".join(re.escape(t) for t in _TOOL_NAMES) + r")\b", re.IGNORECASE
-)
-
 
 class PlanValidator:
 
-    def __init__(self, registered_toolsets: set[str]):
-        self._registered = registered_toolsets
+    def __init__(self, registered_toolsets: set[str], registered_tools: set[str]):
+        self._registered_toolsets = registered_toolsets
+        self._registered_tools = registered_tools
 
     def validate(self, plan: Plan) -> ValidationResult:
         """Structural validation of a plan. No LLM call."""
@@ -57,10 +46,10 @@ class PlanValidator:
         # 3. Action types exist as registered toolsets
         for step in plan.steps:
             if step.action_type in _TOOLSET_ACTION_TYPES:
-                if step.action_type.value not in self._registered:
+                if step.action_type.value not in self._registered_toolsets:
                     errors.append(
                         f"Step {step.step}: action_type '{step.action_type.value}' "
-                        f"is not a registered toolset. Available: {sorted(self._registered)}"
+                        f"is not a registered toolset. Available: {sorted(self._registered_toolsets)}"
                     )
 
         # 4. Non-empty descriptions
@@ -78,15 +67,18 @@ class PlanValidator:
                     f"have identical descriptions."
                 )
 
-        # 6. Multi-tool steps — each step should use one primary tool
+        # 6. Tool field validation — must be a real registered tool or null
         for step in plan.steps:
             if step.action_type == ActionType.CONVERSATION:
                 continue
-            tools_mentioned = set(_MULTI_TOOL_PATTERN.findall(step.description.lower()))
-            if len(tools_mentioned) > 1:
+            if step.tool is None:
                 errors.append(
-                    f"Step {step.step}: bundles multiple tools ({', '.join(sorted(tools_mentioned))}). "
-                    f"Split into one tool per step."
+                    f"Step {step.step}: non-conversation step must declare a 'tool' field."
+                )
+            elif step.tool not in self._registered_tools:
+                errors.append(
+                    f"Step {step.step}: tool '{step.tool}' is not registered. "
+                    f"Available: {sorted(self._registered_tools)}"
                 )
 
         if errors:

@@ -1,9 +1,10 @@
-from tools.base import BaseTool, InputSchema, ToolProperty
+from tools.base import BaseTool, InputSchema, ToolProperty, ToolWeight
 
 
 class WriteFileTool(BaseTool):
     name = "write_file"
     description = "Write content to a file. Creates the file if it does not exist, overwrites if it does."
+    weight = ToolWeight.LIGHTWEIGHT
 
     @property
     def input_schema(self) -> InputSchema:

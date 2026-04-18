@@ -91,7 +91,14 @@ class ExecutionMonitor:
         )
 
         assessment = self._parse(raw)
-        logger.info(f"  monitor LLM: {assessment.decision.value} — {assessment.reason}")
+        logger.info(f"  monitor LLM: {assessment.decision.value} (confidence={assessment.confidence:.2f}) — {assessment.reason}")
+
+        # Low-confidence RETRY → skip instead (don't waste a retry on uncertainty)
+        if assessment.decision == StepDecision.RETRY and assessment.confidence < 0.5:
+            logger.info("  monitor: low confidence retry → skipping instead")
+            assessment.decision = StepDecision.SKIP
+            assessment.reason = f"low confidence retry ({assessment.confidence:.2f}) — skipping"
+
         return assessment
 
     def _parse(self, raw: str) -> StepAssessment:
@@ -112,10 +119,18 @@ class ExecutionMonitor:
                 logger.info(f"  monitor: invalid decision '{decision_str}' — defaulting to continue")
                 decision = StepDecision.CONTINUE
 
+            confidence = data.get("confidence", 1.0)
+            try:
+                confidence = float(confidence)
+                confidence = max(0.0, min(1.0, confidence))
+            except (TypeError, ValueError):
+                confidence = 1.0
+
             return StepAssessment(
                 decision=decision,
                 reason=data.get("reason", ""),
                 suggestion=data.get("suggestion"),
+                confidence=confidence,
             )
         except (json.JSONDecodeError, AttributeError):
             logger.info("  monitor: parse failed — defaulting to continue")

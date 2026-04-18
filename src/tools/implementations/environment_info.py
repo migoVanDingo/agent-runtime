@@ -1,12 +1,13 @@
 import os
 import sys
 import platform
-from tools.base import BaseTool, InputSchema, ToolProperty
+from tools.base import BaseTool, InputSchema, ToolProperty, ToolWeight
 
 
 class EnvironmentInfoTool(BaseTool):
     name = "environment_info"
     description = "Return information about the current system environment: OS, Python version, shell, hostname, and user."
+    weight = ToolWeight.LIGHTWEIGHT
 
     @property
     def input_schema(self) -> InputSchema:

@@ -1,10 +1,11 @@
 import os
-from tools.base import BaseTool, InputSchema, ToolProperty
+from tools.base import BaseTool, InputSchema, ToolProperty, ToolWeight
 
 
 class MakeDirectoryTool(BaseTool):
     name = "make_directory"
     description = "Create a directory and any missing parent directories."
+    weight = ToolWeight.LIGHTWEIGHT
 
     @property
     def input_schema(self) -> InputSchema:

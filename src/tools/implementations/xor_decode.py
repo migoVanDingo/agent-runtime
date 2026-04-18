@@ -1,9 +1,10 @@
-from tools.base import BaseTool, InputSchema, ToolProperty
+from tools.base import BaseTool, InputSchema, ToolProperty, ToolWeight
 
 
 class XorDecodeTool(BaseTool):
     name = "xor_decode"
     description = "XOR a hex-encoded byte string against a key. Key can be a single byte or multi-byte (repeating). Returns hex and attempted UTF-8 decode."
+    weight = ToolWeight.LIGHTWEIGHT
 
     @property
     def input_schema(self) -> InputSchema:

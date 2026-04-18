@@ -1,10 +1,11 @@
 import base64
-from tools.base import BaseTool, InputSchema, ToolProperty
+from tools.base import BaseTool, InputSchema, ToolProperty, ToolWeight
 
 
 class Base64EncodeTool(BaseTool):
     name = "base64_encode"
     description = "Base64-encode a string or hex bytes."
+    weight = ToolWeight.LIGHTWEIGHT
 
     @property
     def input_schema(self) -> InputSchema:
@@ -29,6 +30,7 @@ class Base64EncodeTool(BaseTool):
 class Base64DecodeTool(BaseTool):
     name = "base64_decode"
     description = "Decode a base64-encoded string. Returns decoded text or hex if output is not valid UTF-8."
+    weight = ToolWeight.LIGHTWEIGHT
 
     @property
     def input_schema(self) -> InputSchema:

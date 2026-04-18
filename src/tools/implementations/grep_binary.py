@@ -1,11 +1,12 @@
 import subprocess
-from tools.base import BaseTool, InputSchema, ToolProperty
+from tools.base import BaseTool, InputSchema, ToolProperty, ToolWeight
 from app_config import config
 
 
 class GrepBinaryTool(BaseTool):
     name = "grep_binary"
     description = "Search for a pattern in a binary file, treating it as text. Useful for finding strings, signatures, or patterns in compiled binaries."
+    weight = ToolWeight.MODERATE
 
     @property
     def input_schema(self) -> InputSchema:

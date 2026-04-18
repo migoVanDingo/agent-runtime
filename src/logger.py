@@ -15,12 +15,15 @@ _NOISY_LOGGERS = [
 ]
 
 
-def _log_session_banner(logger_instance: logging.Logger, session_id: str, label: str) -> None:
+def _log_session_banner(logger_instance: logging.Logger, session_id: str, label: str, extra_lines: list[str] | None = None) -> None:
     """Write a formatted session banner to the log."""
     w = 56
     logger_instance.info("=" * w)
     logger_instance.info(f"  {label}")
     logger_instance.info(f"  Session ID : {session_id}")
+    if extra_lines:
+        for line in extra_lines:
+            logger_instance.info(f"  {line}")
     logger_instance.info("=" * w)
 
 
@@ -46,7 +49,17 @@ def configure_logging(session_id: str, verbose: bool = False) -> None:
     for name in _NOISY_LOGGERS:
         logging.getLogger(name).setLevel(logging.WARNING)
 
-    _log_session_banner(logging.getLogger("main"), session_id, "Session Started")
+    # Build provider info for the banner
+    from settings import settings
+    provider = settings.llm_provider
+    if provider == "ollama":
+        provider_line = f"Provider   : ollama ({settings.ollama_model})"
+    else:
+        rt_provider = settings.runtime_provider or provider
+        rt_model = settings.runtime_model or "(default)"
+        provider_line = f"Provider   : {provider}  |  Runtime: {rt_provider} ({rt_model})"
+
+    _log_session_banner(logging.getLogger("main"), session_id, "Session Started", [provider_line])
 
 
 def log_session_end(session_id: str) -> None:

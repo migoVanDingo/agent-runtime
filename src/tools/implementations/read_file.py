@@ -1,9 +1,10 @@
-from tools.base import BaseTool, InputSchema, ToolProperty
+from tools.base import BaseTool, InputSchema, ToolProperty, ToolWeight
 
 
 class ReadFileTool(BaseTool):
     name = "read_file"
     description = "Read the contents of a file"
+    weight = ToolWeight.MODERATE
 
     @property
     def input_schema(self) -> InputSchema:

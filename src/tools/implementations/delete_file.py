@@ -1,10 +1,11 @@
 import os
-from tools.base import BaseTool, InputSchema, ToolProperty
+from tools.base import BaseTool, InputSchema, ToolProperty, ToolWeight
 
 
 class DeleteFileTool(BaseTool):
     name = "delete_file"
     description = "Delete a file. This is irreversible — use with caution."
+    weight = ToolWeight.LIGHTWEIGHT
 
     @property
     def input_schema(self) -> InputSchema:

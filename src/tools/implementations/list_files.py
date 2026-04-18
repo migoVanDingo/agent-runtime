@@ -1,10 +1,11 @@
 import os
-from tools.base import BaseTool, InputSchema, ToolProperty
+from tools.base import BaseTool, InputSchema, ToolProperty, ToolWeight
 
 
 class ListFilesTool(BaseTool):
     name = "list_files"
     description = "List files in a directory"
+    weight = ToolWeight.LIGHTWEIGHT
 
     @property
     def input_schema(self) -> InputSchema:

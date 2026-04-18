@@ -2,6 +2,9 @@ from providers.base import BaseProvider
 from providers.anthropic import AnthropicProvider
 from providers.ollama import OllamaProvider
 from providers.openai_provider import OpenAIProvider
+from providers.grok import GrokProvider
+from providers.deepseek import DeepSeekProvider
+from providers.gemini import GeminiProvider
 from settings import get_settings
 
 
@@ -9,7 +12,7 @@ def get_provider(provider_name: str | None = None, model_override: str | None = 
     """Build a provider instance.
 
     Args:
-        provider_name: "anthropic", "openai", or "ollama".
+        provider_name: "anthropic", "openai", "ollama", "grok", "deepseek", or "gemini".
                        None = use settings.llm_provider (the main provider).
         model_override: Override the default model for this provider.
                         None = use the provider's default from settings.
@@ -35,8 +38,27 @@ def get_provider(provider_name: str | None = None, model_override: str | None = 
             model=model_override or settings.ollama_model,
         )
 
+    if name == "grok":
+        return GrokProvider(
+            api_key=settings.grok_api_key,
+            model=model_override or settings.grok_model,
+        )
+
+    if name == "deepseek":
+        return DeepSeekProvider(
+            api_key=settings.deepseek_api_key,
+            model=model_override or settings.deepseek_model,
+        )
+
+    if name == "gemini":
+        return GeminiProvider(
+            api_key=settings.gemini_api_key,
+            model=model_override or settings.gemini_model,
+        )
+
     raise ValueError(
-        f"Unknown LLM provider: '{name}'. Expected 'anthropic', 'openai', or 'ollama'."
+        f"Unknown LLM provider: '{name}'. "
+        f"Expected 'anthropic', 'openai', 'ollama', 'grok', 'deepseek', or 'gemini'."
     )
 
 

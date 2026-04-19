@@ -19,6 +19,8 @@ class MakeDirectoryTool(BaseTool):
     def execute(self, tool_input: dict) -> str:
         path = tool_input["path"]
         try:
+            if os.path.isdir(path):
+                return f"Directory already exists: {path}"
             os.makedirs(path, exist_ok=True)
             return f"Created directory: {path}"
         except Exception as e:

@@ -28,14 +28,22 @@ _W = 56  # log banner width
 
 import re
 
+# Same logic as monitor._TOOL_ERROR_RE — match tool failure formats, not content.
 _ERROR_INDICATORS = re.compile(
-    r"(?i)(error:|Error:|failed|File not found|No such file|"
-    r"Permission denied|command not found|not found)"
+    r"(?im)("
+    r"^Error[:\s]|"
+    r"^STDERR:|"
+    r"^File not found:|"
+    r"^Tool call (?:blocked|denied)|"
+    r"command not found|"
+    r"Traceback \(most recent call last\)|"
+    r"I don't have|I cannot|I'm unable"
+    r")"
 )
 
 
 def _has_error_indicator(text: str) -> bool:
-    """Check if a tool result contains error indicators."""
+    """Check if a tool result contains a tool-level error (not content that mentions errors)."""
     return bool(_ERROR_INDICATORS.search(text[:500]))
 
 
@@ -115,7 +123,7 @@ class Agent:
         self.context_mgr.set_summarizer(get_runtime_provider())
         self.classifier = IntentClassifier(get_runtime_provider())
         self.validator = PlanValidator(set(self.registry.toolset_names()), self.registry.tool_names())
-        self.critic = PlanCritic(get_runtime_provider(), self.registry, consensus_provider=self.provider)
+        self.critic = PlanCritic(self.registry)
         self.guard = ActionGuard()
         self.user_gate = user_gate or CLIUserGate()
         self.monitor = ExecutionMonitor(get_runtime_provider())
@@ -159,6 +167,7 @@ class Agent:
                             logger.info(f"  corrected: {msg}")
                     else:
                         logger.info("  no corrections needed")
+                logger.info(_banner(f"Plan ({len(plan.steps)} steps)"))
                 for s in plan.steps:
                     logger.info(f"  Step {s.step} [{s.action_type.value}] tool={s.tool}: {s.description}")
                 logger.info(_banner("Plan validation"))
@@ -403,6 +412,8 @@ class Agent:
         step_tool_errors: list[str] = []
         step_tool_calls = 0
         force_end = False
+        step.error = None  # reset per-attempt; prevents stale errors from prior retries misleading the monitor
+        _last_tool_sig: tuple | None = None  # (tool_name, frozen_input) of previous call
 
         while True:
             packed = self.context_mgr.pack(self.messenger.get_messages(), query or step.description, plan_start_index=plan_start_index)
@@ -487,6 +498,14 @@ class Agent:
                         elif step_tool_errors and config.runtime.execution_monitor.error_recovery_clears_step_error:
                             logger.info(f"  runtime: successful tool call after {len(step_tool_errors)} error(s) — clearing step errors")
                             step_tool_errors.clear()
+
+                        # Loop detection: same tool + same input called twice in a row
+                        # with a successful result → model is stuck; force wrap-up.
+                        cur_sig = (block.name, str(sorted(block.input.items())))
+                        if cur_sig == _last_tool_sig and not _has_error_indicator(result):
+                            logger.info(f"  runtime: repeated identical tool call detected ({block.name}) — forcing wrap-up")
+                            force_end = True
+                        _last_tool_sig = cur_sig
 
                         tool_results.append({
                             "type": "tool_result",
@@ -721,6 +740,12 @@ class Agent:
         tool_note = ""
         if current_step.tool:
             tool_note = f"\nYou have been given ONLY the '{current_step.tool}' tool for this step. Use it and stop.\n"
+            if current_step.tool == "write_file":
+                tool_note += (
+                    "\nWhen writing a report or analysis file: include your complete interpretation "
+                    "and insights — not just raw tool output. The file should be self-contained "
+                    "and tell the full story of what was found.\n"
+                )
 
         return (
             f"{config.agent.system_prompt}\n\n"

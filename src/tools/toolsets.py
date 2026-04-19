@@ -6,6 +6,7 @@ from tools.implementations.walk_directory import WalkDirectoryTool
 from tools.implementations.copy_file import CopyFileTool
 from tools.implementations.move_file import MoveFileTool
 from tools.implementations.delete_file import DeleteFileTool
+from tools.implementations.delete_directory import DeleteDirectoryTool
 from tools.implementations.make_directory import MakeDirectoryTool
 from tools.implementations.read_file_lines import ReadFileLinesTool
 from tools.implementations.get_working_directory import GetWorkingDirectoryTool
@@ -41,6 +42,7 @@ FILE_IO = Toolset(
         CopyFileTool(),
         MoveFileTool(),
         DeleteFileTool(),
+        DeleteDirectoryTool(),
         MakeDirectoryTool(),
         ReadFileLinesTool(),
         GetWorkingDirectoryTool(),

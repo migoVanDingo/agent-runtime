@@ -235,11 +235,24 @@ class ContextManager:
             else:
                 s.fidelity = FidelityLevel.PLACEHOLDER
 
-            # Enforce minimum COMPRESSED for current-plan messages
-            if (plan_start_index is not None
-                    and s.index >= plan_start_index
-                    and s.fidelity == FidelityLevel.PLACEHOLDER):
-                s.fidelity = FidelityLevel.COMPRESSED
+            # Enforce minimum fidelity for current-plan messages.
+            # Tool results are working data the model needs to make progress —
+            # stubbing them causes re-read loops. Protect them at FULL intent;
+            # budget packing (_try_fit) will downgrade only if space is truly
+            # exhausted. Other plan messages (user text, assistant turns) are
+            # floored at COMPRESSED to prevent placeholder stubs.
+            if plan_start_index is not None and s.index >= plan_start_index:
+                msg = s.message
+                is_tool_result = (
+                    msg["role"] == "user"
+                    and isinstance(msg.get("content"), list)
+                    and any(b.get("type") == "tool_result" for b in msg["content"])
+                )
+                if is_tool_result:
+                    if s.fidelity != FidelityLevel.FULL:
+                        s.fidelity = FidelityLevel.FULL
+                elif s.fidelity == FidelityLevel.PLACEHOLDER:
+                    s.fidelity = FidelityLevel.COMPRESSED
 
     def _pack_chronological(self, scored: list[ScoredMessage]) -> list[ScoredMessage]:
         """Pack messages chronologically under the token budget.

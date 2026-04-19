@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import yaml
 
@@ -79,6 +79,33 @@ class PlanCriticConfig:
     consensus_on_high_risk: bool = True
 
 
+# ── Council config ──────────────────────────────────────────────────────────
+
+@dataclass
+class CouncillorConfig:
+    provider: str
+    label: str
+    model: str | None = None
+
+
+@dataclass
+class DebateConfig:
+    max_rounds: int = 3
+    early_exit_on_consensus: bool = True
+
+
+@dataclass
+class CouncilConfig:
+    # same-provider N times → variance/noise reduction (self-consistency)
+    # different providers   → epistemic independence (different training, priors)
+    # mixed N+M            → both; labels distinguish councillors in logs/metrics
+    councillors: list[CouncillorConfig] = field(default_factory=list)
+    mode: str = "independent"           # independent | debate
+    debate: DebateConfig = field(default_factory=DebateConfig)
+    consensus_threshold: float = 0.60
+    max_workers: int | None = None      # None = len(councillors); 1 = sequential (debug)
+
+
 @dataclass
 class RuntimeConfig:
     intent_classifier: IntentClassifierConfig
@@ -86,6 +113,7 @@ class RuntimeConfig:
     plan_critic: PlanCriticConfig
     execution_monitor: ExecutionMonitorConfig
     context_manager: ContextManagerConfig
+    council: CouncilConfig = field(default_factory=CouncilConfig)
 
 
 @dataclass
@@ -115,12 +143,32 @@ def load_config() -> AppConfig:
     )
 
     rt = raw["runtime"]
+
+    council_raw = rt.get("council", {})
+    councillors = [
+        CouncillorConfig(
+            provider=c["provider"],
+            label=c["label"],
+            model=c.get("model"),
+        )
+        for c in council_raw.get("councillors", [])
+    ]
+    debate_raw = council_raw.get("debate", {})
+    council = CouncilConfig(
+        councillors=councillors,
+        mode=council_raw.get("mode", "independent"),
+        debate=DebateConfig(**debate_raw) if debate_raw else DebateConfig(),
+        consensus_threshold=council_raw.get("consensus_threshold", 0.60),
+        max_workers=council_raw.get("max_workers"),
+    )
+
     runtime = RuntimeConfig(
         intent_classifier=IntentClassifierConfig(**rt["intent_classifier"]),
         plan_validator=PlanValidatorConfig(**rt["plan_validator"]),
         plan_critic=PlanCriticConfig(**rt["plan_critic"]),
         execution_monitor=ExecutionMonitorConfig(**rt["execution_monitor"]),
         context_manager=ContextManagerConfig(**rt["context_manager"]),
+        council=council,
     )
 
     return AppConfig(

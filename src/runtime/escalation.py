@@ -20,6 +20,8 @@ class Escalation:
     source: str  # "guard", "monitor", "critic"
     tool_name: str | None = None
     tool_input: dict | None = None
+    council_run_id: str | None = None        # set when escalation originated from a council decision
+    council_councillor_labels: list[str] | None = None  # which councillors drove the challenge
 
 
 class UserGate(Protocol):
@@ -56,6 +58,23 @@ class CLIUserGate:
 
         approved = answer in ("y", "yes")
         logger.info(f"  escalation: user {'approved' if approved else 'denied'} — {escalation.reason}")
+
+        # Record user outcome against the originating council run (if any)
+        if escalation.council_run_id:
+            from runtime.council_metrics import get_metrics_writer
+            writer = get_metrics_writer()
+            if writer:
+                all_labels = escalation.council_councillor_labels or []
+                # "sided with" = models whose final recommendation matched the user's action
+                # For a critic escalation: challengers recommended blocking/modifying the step.
+                # If user approved → sided with approvers, overrode challengers (and vice versa).
+                writer.record_user_outcome(
+                    run_id=escalation.council_run_id,
+                    user_action="approved" if approved else "denied",
+                    sided_with=[],    # populated by caller who knows the challenge context
+                    overrode=all_labels,
+                )
+
         return approved
 
 

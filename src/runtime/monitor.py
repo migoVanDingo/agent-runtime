@@ -9,12 +9,28 @@ from logger import get_logger
 
 logger = get_logger(__name__)
 
-_ERROR_PATTERNS = re.compile(
-    r"(?i)\b("
-    r"error|failed|exception|traceback|permission denied|not found|"
-    r"no such file|command not found|cannot|unable to|I don't have|"
-    r"I cannot|I'm unable"
-    r")\b"
+# Matches tool-level failures — NOT content that happens to contain "error".
+# Our tools return errors in specific formats; legitimate output (e.g. strings
+# extracted from a binary) may contain words like "error" or "failed" as data.
+#
+# Rules:
+#   ^Error:          — standard tool error prefix (Error: [Errno 2] ..., Error: ...)
+#   ^STDERR:         — shell tools route stderr here
+#   ^File not found: — file tools (delete_file etc.)
+#   ^Tool call       — guard block/deny messages
+#   command not found — shell: unknown command (safe: won't appear in binary strings)
+#   Traceback (most recent call last): — unhandled Python exception in tool
+#   I don't have / I cannot / I'm unable — LLM capability refusal leaking into result
+_TOOL_ERROR_RE = re.compile(
+    r"(?im)("
+    r"^Error[:\s]|"
+    r"^STDERR:|"
+    r"^File not found:|"
+    r"^Tool call (?:blocked|denied)|"
+    r"command not found|"
+    r"Traceback \(most recent call last\)|"
+    r"I don't have|I cannot|I'm unable"
+    r")"
 )
 
 
@@ -44,9 +60,9 @@ class ExecutionMonitor:
         if not result or not result.strip():
             flags.append("empty result")
 
-        elif _ERROR_PATTERNS.search(result[:500]):
-            match = _ERROR_PATTERNS.search(result[:500])
-            flags.append(f"error indicator in result: '{match.group(0)}'")
+        elif _TOOL_ERROR_RE.search(result[:500]):
+            match = _TOOL_ERROR_RE.search(result[:500])
+            flags.append(f"error indicator in result: '{match.group(0).strip()}'")
 
         if step.error:
             flags.append(f"step error field set: {step.error[:100]}")

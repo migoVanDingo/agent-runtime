@@ -119,6 +119,8 @@ def _approval_key(tool_name: str, tool_input: dict) -> str | None:
         return f"bash_exec:{command}"
     if tool_name == "delete_file":
         return f"delete_file:{tool_input.get('path', '')}"
+    if tool_name == "delete_directory":
+        return f"delete_directory:{tool_input.get('path', '')}"
     if tool_name in ("strace", "ltrace"):
         return f"{tool_name}:pid:{tool_input.get('pid', '')}"
     if tool_name == "write_file":
@@ -173,10 +175,13 @@ class ActionGuard:
             command = tool_input.get("command", "")
             return self._check_shell_command(command)
 
-        # ── delete_file: always escalate ──
+        # ── delete_file / delete_directory: always escalate ──
         if tool_name == "delete_file":
             path = tool_input.get("path", "?")
             return GuardDecision.ESCALATE, f"delete_file on '{path}'"
+        if tool_name == "delete_directory":
+            path = tool_input.get("path", "?")
+            return GuardDecision.ESCALATE, f"delete_directory on '{path}' (recursive)"
 
         # ── write_file: check for sensitive paths ──
         if tool_name == "write_file":

@@ -94,6 +94,11 @@ class EntityCritic:
                 if path not in ctx_paths:
                     candidate = self._best_path_match(path, ctx_paths)
                     if candidate:
+                        # Don't strip a trailing filename: if the plan path is
+                        # candidate/newfile.ext, the directory is valid and the file
+                        # is new (to be created) — leave it alone.
+                        if path.startswith(candidate.rstrip("/") + "/"):
+                            continue
                         step.description = step.description.replace(path, candidate)
                         corrections.append(
                             f"step {step.step}: '{path}' → '{candidate}' (not in conversation context)"

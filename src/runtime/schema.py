@@ -55,6 +55,7 @@ class CriticResult:
     verdict: CriticVerdict
     reasoning: str | None = None
     challenges: list[CriticChallenge] | None = None
+    council_run_id: str | None = None   # set when result came from a council deliberation
 
 
 # ── Context Manager (AFM-inspired) ──────────────────────────────────

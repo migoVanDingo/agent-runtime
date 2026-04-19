@@ -2,6 +2,7 @@
 .venv
 *.pyc
 _logs
+_metrics
 _papers
 _references
 _tests

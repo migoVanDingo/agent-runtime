@@ -31,7 +31,7 @@ agent:
 planning:
   enabled: true
   model: null
-  max_steps: 8
+  max_steps: 12
   retry_on_invalid: true
 
 runtime:
@@ -42,7 +42,7 @@ runtime:
     enabled: true
   plan_critic:
     enabled: true
-    skip_low_risk: false
+    skip_low_risk: true
     consensus_on_high_risk: true
   execution_monitor:
     enabled: true
@@ -57,3 +57,31 @@ runtime:
     threshold_high: 0.45
     threshold_mid: 0.25
     compressed_max_chars: 300
+
+  # Council: multi-agent deliberation primitive.
+  # same-provider N times  → variance/noise reduction (self-consistency)
+  # different providers    → epistemic independence (different training, priors)
+  # mixed N+M              → both; labels distinguish councillors in logs/metrics
+  council:
+    councillors:
+      - provider: anthropic
+        model: claude-haiku-4-5
+        label: claude
+      - provider: openai
+        model: gpt-4o-mini
+        label: gpt
+
+    mode: independent   # independent | debate
+
+    debate:
+      max_rounds: 3
+      early_exit_on_consensus: true
+
+    # null = one worker per councillor (fully parallel); 1 = sequential (debug only)
+    max_workers: null
+
+    # Fraction of councillors that must challenge a step to keep suggestion at full strength.
+    # Below threshold → downgrade one level (drop→replace, replace→justify, justify→discard)
+    # With N=2: unanimous (2/2=100%) keeps full strength; split (1/2=50%) floors at justify.
+    # Lone-wolf discard only applies when N>2.
+    consensus_threshold: 0.60

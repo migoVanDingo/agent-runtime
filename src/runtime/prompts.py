@@ -1,13 +1,41 @@
+# ── Inline Routing Header ────────────────────────────────────────────
+# Added to the main agent system prompt for the initial routing call.
+# The model outputs this header first, then its response (direct) or stops (plan).
+
+ROUTING_HEADER_INSTRUCTIONS = """\
+Before doing anything else, output a single routing line:
+<route>{{"mode": "direct"|"plan", "risk": "low"|"moderate"|"high", "workflow": null|"<name>"}}</route>
+
+Mode:
+- "plan": the request requires any tool use — file reads, shell commands, binary analysis, directory listings, web fetches, HTTP requests, anything that needs real execution. Output ONLY the header — execution is handled separately.
+- "direct": purely conversational — a greeting, a follow-up question about prior output, an explanation from memory, or a factual answer you already know with no URL or external resource to look up. No tools needed. Output the header then respond normally.
+
+Important: if the message contains a URL or asks about an online resource (article, paper, webpage), always use "plan" — use read_url to fetch it, do not answer from memory.
+
+Risk:
+- "low": read-only, analysis, questions, explanations.
+- "moderate": writing or modifying files in the working directory.
+- "high": deletion, system changes, paths outside the working directory.
+
+Known workflows — use the exact name or null:
+{workflow_descriptions}
+
+Match workflows on intent, not keywords. If unsure, return null.
+"""
+
+
 # ── Intent Classifier ────────────────────────────────────────────────
 
 CLASSIFIER_SYSTEM_PROMPT = """\
 You classify user messages as requiring a multi-step plan or direct single-turn execution, \
-and assess the risk level of the requested operation.
+and assess the risk level of the requested operation. You also identify whether the request \
+matches a known workflow template.
 
-Return ONLY a JSON object with three fields:
+Return ONLY a JSON object with four fields:
   "mode": "plan" or "direct"
   "risk": "low", "moderate", or "high"
   "reason": a single sentence explaining why
+  "workflow": the workflow name if this request matches one of the known workflows below, or null
 
 Mode guidelines:
 - "plan" means the request requires TWO OR MORE distinct operations that depend on each other \
@@ -26,25 +54,61 @@ creating or modifying files.
 - "high": file deletion, shell commands that modify system state (installing packages, \
 changing permissions, killing processes), operations on paths outside the working directory.
 
+Known workflows:
+{workflow_descriptions}
+
+Workflow matching guidelines:
+- Match on intent and semantics, not keywords. "Create a C program exactly like it", \
+"rebuild this binary in Python", "what does this executable do and how would I rewrite it" \
+all map to "deep-disassembly" even though none contain the word "disassemble".
+- Only set "workflow" when you are confident the request fits the workflow's intent. \
+If unsure, return null — the system has a fallback.
+- "workflow" must be one of the names listed above, or null.
+
 Examples:
   User: "what does the main function do?"
-  {"mode": "direct", "risk": "low", "reason": "single read-only question about code"}
+  {{"mode": "direct", "risk": "low", "reason": "single read-only question about code", "workflow": null}}
 
   User: "analyze /bin/ls and write a summary to results.md"
-  {"mode": "plan", "risk": "moderate", "reason": "requires analysis then writing output to a file"}
+  {{"mode": "plan", "risk": "moderate", "reason": "requires analysis then writing output to a file", "workflow": "analyze-and-write"}}
 
   User: "now do the same for /bin/cat"
-  {"mode": "direct", "risk": "low", "reason": "follow-up to previous work, context already established"}
+  {{"mode": "direct", "risk": "low", "reason": "follow-up to previous work, context already established", "workflow": null}}
 
-  User: "read config.yml, find all the timeout values, then create a new file listing them"
-  {"mode": "plan", "risk": "moderate", "reason": "read, extract, and write — three sequential operations"}
+  User: "create a C program exactly like this binary"
+  {{"mode": "plan", "risk": "high", "reason": "deep binary analysis and source code reconstruction", "workflow": "deep-disassembly"}}
 
   User: "delete all log files and clean up the temp directory"
-  {"mode": "plan", "risk": "high", "reason": "file deletion — destructive and irreversible"}\
+  {{"mode": "plan", "risk": "high", "reason": "file deletion — destructive and irreversible", "workflow": null}}\
 """
 
 CLASSIFIER_USER_TEMPLATE = """\
 {context}Current message: {message}"""
+
+
+# ── Workflow Selector (fallback) ─────────────────────────────────────
+
+WORKFLOW_SELECTOR_SYSTEM_PROMPT = """\
+You match user requests to workflow templates. A workflow is a pre-defined execution \
+plan for a common task pattern. Your job is to determine whether the user's request \
+matches any of the available workflows, based on semantic intent — not keywords.
+
+Return ONLY a JSON object with two fields:
+  "workflow": the workflow name if this request matches one below, or null
+  "reason": a single sentence explaining your decision
+
+Available workflows:
+{workflow_descriptions}
+
+Guidelines:
+- Match on what the user wants to accomplish, not the words they use.
+- If the request could reasonably be handled by a workflow, prefer the workflow.
+- Only return null if the request clearly does not fit any workflow.
+- "workflow" must be one of the names listed above, or null.\
+"""
+
+WORKFLOW_SELECTOR_USER_TEMPLATE = """\
+User request: {message}"""
 
 
 # ── Plan Critic ──────────────────────────────────────────────────────

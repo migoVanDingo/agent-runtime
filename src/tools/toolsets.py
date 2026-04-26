@@ -1,32 +1,48 @@
+import re
 from tools.toolset import Toolset
-from tools.implementations.read_file import ReadFileTool
-from tools.implementations.write_file import WriteFileTool
-from tools.implementations.list_files import ListFilesTool
-from tools.implementations.walk_directory import WalkDirectoryTool
-from tools.implementations.copy_file import CopyFileTool
-from tools.implementations.move_file import MoveFileTool
-from tools.implementations.delete_file import DeleteFileTool
-from tools.implementations.delete_directory import DeleteDirectoryTool
-from tools.implementations.make_directory import MakeDirectoryTool
-from tools.implementations.read_file_lines import ReadFileLinesTool
-from tools.implementations.get_working_directory import GetWorkingDirectoryTool
-from tools.implementations.environment_info import EnvironmentInfoTool
-from tools.implementations.download_file import DownloadFileTool
-from tools.implementations.bash_exec import BashExecTool
-from tools.implementations.search_files import SearchFilesTool
-from tools.implementations.strings_tool import StringsTool
-from tools.implementations.objdump_tool import ObjdumpTool
-from tools.implementations.file_info import FileInfoTool
-from tools.implementations.hexdump_tool import HexdumpTool
-from tools.implementations.nm_tool import NmTool
-from tools.implementations.ltrace_tool import LtraceTool
-from tools.implementations.strace_tool import StraceTool
-from tools.implementations.readelf_tool import ReadElfTool
-from tools.implementations.checksec_tool import ChecksecTool
-from tools.implementations.grep_binary import GrepBinaryTool
-from tools.implementations.hash_file import HashFileTool
-from tools.implementations.base64_tool import Base64EncodeTool, Base64DecodeTool
-from tools.implementations.xor_decode import XorDecodeTool
+from tools.implementations.file_io.read_file import ReadFileTool
+from tools.implementations.file_io.write_file import WriteFileTool
+from tools.implementations.file_io.list_files import ListFilesTool
+from tools.implementations.file_io.walk_directory import WalkDirectoryTool
+from tools.implementations.file_io.copy_file import CopyFileTool
+from tools.implementations.file_io.move_file import MoveFileTool
+from tools.implementations.file_io.delete_file import DeleteFileTool
+from tools.implementations.file_io.delete_directory import DeleteDirectoryTool
+from tools.implementations.file_io.make_directory import MakeDirectoryTool
+from tools.implementations.file_io.read_file_lines import ReadFileLinesTool
+from tools.implementations.file_io.get_working_directory import GetWorkingDirectoryTool
+from tools.implementations.file_io.environment_info import EnvironmentInfoTool
+from tools.implementations.file_io.download_file import DownloadFileTool
+from tools.implementations.shell.bash_exec import BashExecTool
+from tools.implementations.shell.search_files import SearchFilesTool
+from tools.implementations.analysis.strings_tool import StringsTool
+from tools.implementations.analysis.objdump_tool import ObjdumpTool
+from tools.implementations.analysis.file_info import FileInfoTool
+from tools.implementations.analysis.hexdump_tool import HexdumpTool
+from tools.implementations.analysis.nm_tool import NmTool
+from tools.implementations.analysis.ltrace_tool import LtraceTool
+from tools.implementations.analysis.strace_tool import StraceTool
+from tools.implementations.analysis.readelf_tool import ReadElfTool
+from tools.implementations.analysis.checksec_tool import ChecksecTool
+from tools.implementations.analysis.grep_binary import GrepBinaryTool
+from tools.implementations.crypto.hash_file import HashFileTool
+from tools.implementations.crypto.base64_tool import Base64EncodeTool, Base64DecodeTool
+from tools.implementations.crypto.xor_decode import XorDecodeTool
+from tools.implementations.web.http_request import HttpRequestTool
+from tools.implementations.web.read_url import ReadUrlTool
+from tools.implementations.web.extract_html import ExtractHtmlTool
+from tools.implementations.data.dataframe_load import DataframeLoadTool
+from tools.implementations.data.dataframe_query import DataframeQueryTool
+from tools.implementations.data.json_query import JsonQueryTool
+from tools.implementations.data.regex_match import RegexMatchTool
+from tools.implementations.data.diff_files import DiffFilesTool
+from tools.implementations.data.template_render import TemplateRenderTool
+from tools.implementations.artifacts.list_artifacts import ListArtifactsTool
+from tools.implementations.artifacts.get_artifact import GetArtifactTool
+from tools.implementations.artifacts.store_artifact import StoreArtifactTool
+from tools.implementations.artifacts.expel_artifact import ExpelArtifactTool
+from tools.implementations.artifacts.artifact_info import ArtifactInfoTool
+from tools.implementations.artifacts.recall_sessions import RecallSessionsTool
 from shared_types import RoutingRule
 from routing.conditions import has_file_path, has_extension, any_keyword, last_tools_were, all_of
 
@@ -34,6 +50,7 @@ from routing.conditions import has_file_path, has_extension, any_keyword, last_t
 FILE_IO = Toolset(
     name="file_io",
     description="File system read/write/navigation tools",
+    planning_note="Use download_file only for saving binary files to disk. To fetch and read web pages, use read_url from the web toolset instead.",
     tools=[
         ReadFileTool(),
         WriteFileTool(),
@@ -103,7 +120,18 @@ ANALYSIS = Toolset(
             "hexdump", "hex", "symbols", "nm", "readelf", "elf",
             "ltrace", "strace", "checksec", "reverse", "malware",
             "executable", "segment", "section", "header",
+            "identify", "filetype", "architecture", "arch",
         )),
+        RoutingRule(
+            toolset="analysis",
+            condition=lambda msg, _: bool(re.search(
+                r"\bwhat\s+(?:kind|type|sort)\s+of\s+(?:file|binary|program)\b"
+                r"|\bwhat\s+is\s+this\s+(?:file|binary|program)\b"
+                r"|\bfile\s+type\b"
+                r"|\bwhat(?:'s|'s| is)\s+(?:the\s+)?(?:file\s+)?(?:type|format|architecture)\b",
+                msg, re.IGNORECASE,
+            )),
+        ),
         RoutingRule(toolset="analysis", condition=last_tools_were(
             "strings", "objdump", "hexdump", "nm", "readelf",
             "ltrace", "strace", "checksec", "grep_binary", "file_info",
@@ -133,4 +161,79 @@ CRYPTO = Toolset(
 )
 
 
-ALL_TOOLSETS = [FILE_IO, SHELL, ANALYSIS, CRYPTO]
+WEB = Toolset(
+    name="web",
+    description="HTTP requests, web page fetching, and HTML extraction",
+    planning_note="Use read_url to fetch any URL (webpage, article, paper) — it extracts clean text and stores it as an artifact. Use http_request for structured API calls. Use extract_html for CSS selector scraping. Never use download_file, curl, or wget to fetch web pages.",
+    tools=[
+        HttpRequestTool(),
+        ReadUrlTool(),
+        ExtractHtmlTool(),
+    ],
+    rules=[
+        RoutingRule(toolset="web", condition=any_keyword(
+            "http", "https", "url", "fetch", "request", "api", "endpoint",
+            "website", "webpage", "web page", "scrape", "crawl", "browse",
+            "post", "get request", "rest", "curl", "html", "download page",
+            "read page", "read url", "read article", "read blog",
+        )),
+    ],
+)
+
+DATA = Toolset(
+    name="data",
+    description="Data processing tools: dataframes, JSONPath, regex, diff, and templates",
+    planning_note=(
+        "Use dataframe_load to load CSV/TSV/JSON/Parquet data into a dataframe artifact. "
+        "Use dataframe_query for pandas transformations over existing dataframe artifacts. "
+        "Use json_query for JSONPath extraction, regex_match for pattern extraction or replacement, "
+        "diff_files for text diffs, and template_render for Jinja2 rendering."
+    ),
+    tools=[
+        DataframeLoadTool(),
+        DataframeQueryTool(),
+        JsonQueryTool(),
+        RegexMatchTool(),
+        DiffFilesTool(),
+        TemplateRenderTool(),
+    ],
+    rules=[
+        RoutingRule(toolset="data", condition=has_extension(".csv", ".tsv", ".parquet", ".json", ".jsonl")),
+        RoutingRule(toolset="data", condition=any_keyword(
+            "dataframe", "pandas", "csv", "tsv", "parquet", "jsonpath", "json",
+            "filter", "aggregate", "groupby", "join", "merge", "pivot",
+            "regex", "pattern", "extract", "replace", "diff", "compare",
+            "template", "render", "jinja",
+        )),
+    ],
+)
+
+ARTIFACTS = Toolset(
+    name="artifacts",
+    description="Manage named artifacts produced during the current session",
+    planning_note=(
+        "Use list_artifacts to discover available artifacts. "
+        "Use get_artifact to read a stored value by key. "
+        "Use store_artifact to save an intermediate value for later steps. "
+        "Use artifact_info for metadata-only inspection, expel_artifact to delete, "
+        "and recall_sessions to find relevant prior sessions and artifacts."
+    ),
+    tools=[
+        ListArtifactsTool(),
+        GetArtifactTool(),
+        StoreArtifactTool(),
+        ExpelArtifactTool(),
+        ArtifactInfoTool(),
+        RecallSessionsTool(),
+    ],
+    rules=[
+        RoutingRule(toolset="artifacts", condition=any_keyword(
+            "artifact", "artifacts", "stored", "recall", "expel",
+            "artifact_info", "get_artifact", "store_artifact", "list_artifacts",
+            "recall_sessions", "previous sessions", "have we done this before",
+            "prior session", "past session", "earlier session",
+        )),
+    ],
+)
+
+ALL_TOOLSETS = [FILE_IO, SHELL, ANALYSIS, CRYPTO, WEB, DATA, ARTIFACTS]

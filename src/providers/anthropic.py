@@ -1,5 +1,6 @@
 import anthropic
-from providers.base import BaseProvider, ProviderResponse, TextBlock, ToolUseBlock
+from providers.base import BaseProvider, ProviderResponse, TextBlock, ToolUseBlock, TokenUsage
+from runtime.token_tracker import get_tracker
 from app_config import config
 
 
@@ -15,6 +16,7 @@ class AnthropicProvider(BaseProvider):
         tools: list[dict],
         system: str,
         json_schema: dict | None = None,
+        label: str = "",
     ) -> ProviderResponse:
         response = self.client.messages.create(
             model=self.model,
@@ -31,4 +33,12 @@ class AnthropicProvider(BaseProvider):
             elif block.type == "tool_use":
                 content.append(ToolUseBlock(id=block.id, name=block.name, input=block.input))
 
-        return ProviderResponse(stop_reason=response.stop_reason, content=content)
+        usage = None
+        if response.usage:
+            usage = TokenUsage(
+                input_tokens=response.usage.input_tokens,
+                output_tokens=response.usage.output_tokens,
+            )
+            get_tracker().record(self.model, label, usage.input_tokens, usage.output_tokens)
+
+        return ProviderResponse(stop_reason=response.stop_reason, content=content, usage=usage)

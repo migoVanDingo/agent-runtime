@@ -21,12 +21,49 @@ routing:
     file_io: "read write files directories search filesystem copy move delete create list walk directory contents"
     crypto: "hash encode decode encrypt decrypt base64 xor md5 sha checksum hex bytes cryptography"
     shell: "run execute bash shell command terminal subprocess script process environment"
+    web: "http https url fetch request api endpoint website webpage scrape browse read article blog paper curl html rest"
+    data: "dataframe pandas csv tsv parquet json jsonpath regex diff template jinja transform aggregate join filter"
+    artifacts: "artifact memory store retrieve list metadata expel persist intermediate results"
 
 agent:
   system_prompt: >-
     You are a helpful assistant with access to tools for file system operations,
-    shell execution, binary analysis, and cryptanalysis. Use these tools when needed
-    to answer the user's questions.
+    shell execution, binary analysis, cryptanalysis, web access, data processing,
+    and artifact memory management.
+    Use these tools when needed to answer the user's questions.
+    You can fetch web pages and URLs using read_url, make HTTP API requests using
+    http_request, and extract structured data from HTML using extract_html.
+    When the user provides a URL or asks about a web page, article, or online resource,
+    use read_url to fetch it — do not say you lack internet access.
+    When given a path to inspect, never assume it is a directory — paths without
+    extensions are often executables or binaries. Always use file_info first to
+    determine what the path is before deciding how to analyze it.
+
+artifact_store:
+  enabled: true
+  inline_threshold_bytes: 4096
+  decay:
+    enabled: true
+    factor: 0.85
+    archive_threshold: 0.1
+  workflow_discovery:
+    enabled: true
+    lookback_days: 30
+    similarity_threshold: 0.82
+    frequency_threshold: 5
+    recency_decay: 0.95
+  rag:
+    enabled: true
+    top_k: 3
+    similarity_threshold: 0.6
+    inject_on_start: true
+    max_injected_chars: 3000
+  sqlite_vec:
+    enabled: true
+    extension_path: null
+  project:
+    enabled: true
+    default: null
 
 planning:
   enabled: true
@@ -64,12 +101,16 @@ runtime:
   # mixed N+M              → both; labels distinguish councillors in logs/metrics
   council:
     councillors:
-      - provider: anthropic
-        model: claude-haiku-4-5
-        label: claude
+
       - provider: openai
         model: gpt-4o-mini
         label: gpt
+      - provider: anthropic
+        model: claude-haiku-4-5
+        label: claude
+      - provider: grok
+        model: grok-3-mini
+        label: grok
 
     mode: independent   # independent | debate
 
@@ -82,6 +123,13 @@ runtime:
 
     # Fraction of councillors that must challenge a step to keep suggestion at full strength.
     # Below threshold → downgrade one level (drop→replace, replace→justify, justify→discard)
-    # With N=2: unanimous (2/2=100%) keeps full strength; split (1/2=50%) floors at justify.
-    # Lone-wolf discard only applies when N>2.
+    # Lone wolf (1 of N>2) → floor at justify regardless of suggestion
     consensus_threshold: 0.60
+
+    # Dynamic scaling: number of councillors (from the pool above, in order) per risk level.
+    # low=0 bypasses the council entirely; moderate=1 uses only the first councillor;
+    # high=3 uses the full pool for maximum epistemic diversity.
+    dynamic_scaling:
+      low: 0
+      moderate: 1
+      high: 3

@@ -3,6 +3,15 @@ from dataclasses import dataclass
 from enum import Enum
 
 
+# ── Intent Classifier ───────────────────────────────────────────────
+
+@dataclass
+class ClassifierResult:
+    mode: str            # "plan" | "direct"
+    risk: str            # "low" | "moderate" | "high"
+    workflow_hint: str | None = None  # workflow name suggested by classifier, or None
+
+
 # ── Execution Monitor ────────────────────────────────────────────────
 
 class StepDecision(str, Enum):

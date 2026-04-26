@@ -33,6 +33,10 @@ _TOOL_ERROR_RE = re.compile(
     r")"
 )
 
+# Tool-unavailable errors are structurally non-recoverable — retrying the same
+# tool call will always fail. Skip the LLM and go straight to REPLAN.
+_TOOL_UNAVAILABLE_RE = re.compile(r"command not found", re.I)
+
 
 class ExecutionMonitor:
 
@@ -51,6 +55,18 @@ class ExecutionMonitor:
             return StepAssessment(decision=StepDecision.CONTINUE, reason="heuristics pass")
 
         logger.info(f"  monitor: heuristics FLAGGED — {flags}")
+
+        # Short-circuit: "command not found" means the tool binary is missing from
+        # the system. Retrying will always produce the same failure. Skip the LLM
+        # and REPLAN immediately so the planner can substitute an available tool.
+        if _TOOL_UNAVAILABLE_RE.search(result[:500]):
+            logger.info("  monitor: tool unavailable (command not found) → REPLAN immediately")
+            return StepAssessment(
+                decision=StepDecision.REPLAN,
+                reason=f"tool '{step.tool}' is not installed on this system — cannot retry",
+                confidence=1.0,
+            )
+
         return self._llm_assess(step, plan, result, flags)
 
     def _heuristic_triage(self, step: Step, result: str) -> list[str]:
@@ -100,6 +116,7 @@ class ExecutionMonitor:
             messages=messenger.get_messages(),
             tools=[],
             system=MONITOR_SYSTEM_PROMPT,
+            label="ExecutionMonitor",
         )
 
         raw = next(

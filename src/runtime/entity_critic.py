@@ -91,6 +91,10 @@ class EntityCritic:
                 # Never correct a path the user explicitly stated
                 if path in auth_paths:
                     continue
+                # Never correct /tmp/ paths — these are planner-generated temp
+                # output destinations and are authoritative by design.
+                if path.startswith("/tmp/"):
+                    continue
                 if path not in ctx_paths:
                     candidate = self._best_path_match(path, ctx_paths)
                     if candidate:
@@ -98,6 +102,14 @@ class EntityCritic:
                         # candidate/newfile.ext, the directory is valid and the file
                         # is new (to be created) — leave it alone.
                         if path.startswith(candidate.rstrip("/") + "/"):
+                            continue
+                        # If both paths share the same parent directory, the planner
+                        # knows the correct directory and chose a different filename
+                        # intentionally (e.g. proc_analysis_new.c vs proc_analysis.c).
+                        # Correcting same-directory siblings destroys intentional naming.
+                        path_dir = path.rsplit("/", 1)[0] if "/" in path else ""
+                        cand_dir = candidate.rsplit("/", 1)[0] if "/" in candidate else ""
+                        if path_dir and path_dir == cand_dir:
                             continue
                         step.description = step.description.replace(path, candidate)
                         corrections.append(

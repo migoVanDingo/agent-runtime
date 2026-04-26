@@ -19,6 +19,10 @@ class WalkDirectoryTool(BaseTool):
     def execute(self, tool_input: dict) -> str:
         path = tool_input["path"]
         try:
+            if os.path.isfile(path):
+                return f"Error: '{path}' is a file, not a directory. Use file_info or read_file to inspect it."
+            if not os.path.exists(path):
+                return f"Error: '{path}' does not exist."
             lines = []
             for root, dirs, files in os.walk(path):
                 # Skip hidden directories

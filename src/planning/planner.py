@@ -1,12 +1,34 @@
 import json
+import platform
 from messenger import Messenger
 from providers.base import BaseProvider, TextBlock
 from planning.schema import Plan, Step, StepStatus, ActionType, PLAN_JSON_SCHEMA
-from planning.prompts import PLANNING_SYSTEM_PROMPT, PLANNING_USER_TURN
+from planning.prompts import PLANNING_SYSTEM_PROMPT, PLANNING_USER_TURN, build_tool_list
+from tools.toolsets import ALL_TOOLSETS
 from app_config import config
 from logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _platform_note() -> str:
+    """Return a platform-specific tool availability note for plan revision/replan prompts."""
+    system = platform.system()
+    if system == "Darwin":
+        return (
+            "\nPlatform: macOS (darwin). "
+            "GNU/ELF tools are NOT available (no readelf, no GNU objdump, no strace, no ltrace). "
+            "Use these macOS equivalents instead:\n"
+            "  - otool        → disassembly (otool -tv), headers (otool -l), linked libs (otool -L)\n"
+            "  - llvm-objdump → drop-in objdump replacement if installed\n"
+            "  - nm           → symbol table (BSD variant, compatible flags)\n"
+            "  - file_info    → file type and architecture detection\n"
+            "  - strings      → printable string extraction\n"
+            "  - hexdump      → hex dump\n"
+            "  - bash_exec    → run any shell command (otool, nm, file, etc.)\n"
+            "Do NOT suggest readelf, strace, ltrace, or GNU objdump on macOS.\n"
+        )
+    return ""
 
 
 class Planner:
@@ -14,11 +36,19 @@ class Planner:
     def __init__(self, provider: BaseProvider):
         self._provider = provider
 
-    def plan(self, user_message: str, context: str | None = None) -> Plan | None:
+    def plan(self, user_message: str, context: str | None = None, messages: list[dict] | None = None) -> Plan | None:
         messenger = Messenger()
 
-        system = PLANNING_SYSTEM_PROMPT.format(max_steps=config.planning.max_steps)
-        if context:
+        system = PLANNING_SYSTEM_PROMPT.format(max_steps=config.planning.max_steps, tool_list=build_tool_list(ALL_TOOLSETS))
+
+        # If packed conversation messages are provided, seed the messenger with them
+        # so the planner sees the full compressed history. Messages are already
+        # serialized dicts from the context manager — inject directly rather than
+        # routing through add_assistant_message() which expects dataclass instances.
+        if messages:
+            messenger.get_messages().extend(messages)
+            context_block = ""
+        elif context:
             context_block = (
                 "Recent conversation (use this to resolve references like "
                 "'the same file', 'that binary', 'the previous output', etc.):\n"
@@ -26,6 +56,7 @@ class Planner:
             )
         else:
             context_block = ""
+
         user_turn = PLANNING_USER_TURN.format(
             user_message=user_message,
             context_block=context_block,
@@ -33,12 +64,17 @@ class Planner:
 
         messenger.add_user_message(user_turn)
 
-        response = self._provider.chat(
+        response = self._safe_chat(
             messages=messenger.get_messages(),
             tools=[],
             system=system,
             json_schema=PLAN_JSON_SCHEMA,
+            label="Planner",
+            context="plan",
         )
+        if response is None:
+            logger.info("Planner: provider call failed — falling back to direct execution")
+            return None
 
         raw = next(
             (b.text for b in response.content if isinstance(b, TextBlock)), ""
@@ -52,12 +88,17 @@ class Planner:
                 "Your response was not valid JSON or did not match the required schema. "
                 "Try again. Return ONLY the raw JSON object, nothing else."
             )
-            response = self._provider.chat(
+            response = self._safe_chat(
                 messages=messenger.get_messages(),
                 tools=[],
                 system=system,
                 json_schema=PLAN_JSON_SCHEMA,
+                label="Planner",
+                context="plan retry",
             )
+            if response is None:
+                logger.info("Planner: retry provider call failed — falling back to direct execution")
+                return None
             raw = next(
                 (b.text for b in response.content if isinstance(b, TextBlock)), ""
             )
@@ -73,7 +114,7 @@ class Planner:
     def revise(self, plan: Plan, challenges_text: str) -> Plan | None:
         """Revise a plan in response to critic challenges. Returns revised plan or None."""
         messenger = Messenger()
-        system = PLANNING_SYSTEM_PROMPT.format(max_steps=config.planning.max_steps)
+        system = PLANNING_SYSTEM_PROMPT.format(max_steps=config.planning.max_steps, tool_list=build_tool_list(ALL_TOOLSETS))
 
         # Format current plan for context
         plan_lines = []
@@ -91,18 +132,24 @@ class Planner:
             f"  REPLACE — substitute a lighter tool that achieves the same result\n"
             f"  JUSTIFY — KEEP this step as-is; the critic just wants it to be clearly used\n\n"
             f"IMPORTANT: JUSTIFY means keep the step. Do NOT remove or replace JUSTIFY steps. "
-            f"Just make sure their output is explicitly referenced in a later step.\n\n"
-            f"Return a revised plan as JSON. Same format as before."
+            f"Just make sure their output is explicitly referenced in a later step.\n"
+            + _platform_note() +
+            f"\nReturn a revised plan as JSON. Same format as before."
         )
 
         messenger.add_user_message(user_turn)
 
-        response = self._provider.chat(
+        response = self._safe_chat(
             messages=messenger.get_messages(),
             tools=[],
             system=system,
             json_schema=PLAN_JSON_SCHEMA,
+            label="Planner",
+            context="revise",
         )
+        if response is None:
+            logger.info("Planner.revise: provider call failed")
+            return None
 
         raw = next(
             (b.text for b in response.content if isinstance(b, TextBlock)), ""
@@ -117,12 +164,17 @@ class Planner:
                 "Your response was not valid JSON or was missing required fields. "
                 "Return ONLY the raw JSON plan object, nothing else."
             )
-            response = self._provider.chat(
+            response = self._safe_chat(
                 messages=messenger.get_messages(),
                 tools=[],
                 system=system,
                 json_schema=PLAN_JSON_SCHEMA,
+                label="Planner",
+                context="revise retry",
             )
+            if response is None:
+                logger.info("Planner.revise: retry provider call failed")
+                return None
             raw = next(
                 (b.text for b in response.content if isinstance(b, TextBlock)), ""
             )
@@ -151,7 +203,7 @@ class Planner:
         max_remaining = config.planning.max_steps - (next_num - 1)
 
         messenger = Messenger()
-        system = PLANNING_SYSTEM_PROMPT.format(max_steps=max_remaining)
+        system = PLANNING_SYSTEM_PROMPT.format(max_steps=max_remaining, tool_list=build_tool_list(ALL_TOOLSETS))
 
         user_turn = (
             f"You are RE-PLANNING the remaining steps of a task.\n\n"
@@ -161,19 +213,25 @@ class Planner:
             f"Reason: {reason}\n\n"
             f"Original remaining steps (now invalidated):\n"
             + ("\n".join(remaining) or "  (none)") + "\n\n"
-            f"Produce a revised plan for the REMAINING work only. "
+            + _platform_note() +
+            f"\nProduce a revised plan for the REMAINING work only. "
             f"Number steps starting at {next_num}. Maximum {max_remaining} steps.\n\n"
             f"Return the same JSON structure as a normal plan."
         )
 
         messenger.add_user_message(user_turn)
 
-        response = self._provider.chat(
+        response = self._safe_chat(
             messages=messenger.get_messages(),
             tools=[],
             system=system,
             json_schema=PLAN_JSON_SCHEMA,
+            label="Planner",
+            context="replan",
         )
+        if response is None:
+            logger.info("Planner.replan: provider call failed")
+            return None
 
         raw = next(
             (b.text for b in response.content if isinstance(b, TextBlock)), ""
@@ -219,4 +277,11 @@ class Planner:
             return Plan.from_dict(data)
         except Exception as e:
             logger.info(f"Planner: failed to build Plan — {e}")
+            return None
+
+    def _safe_chat(self, *, context: str, **kwargs):
+        try:
+            return self._provider.chat(**kwargs)
+        except Exception as e:
+            logger.info(f"Planner.{context}: provider error — {type(e).__name__}: {e}")
             return None

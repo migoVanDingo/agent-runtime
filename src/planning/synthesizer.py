@@ -25,6 +25,7 @@ class Synthesizer:
             messages=messenger.get_messages(),
             tools=[],
             system=SYNTHESIS_SYSTEM_PROMPT,
+            label="Synthesizer",
         )
 
         text = next(

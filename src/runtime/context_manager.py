@@ -455,6 +455,7 @@ class ContextManager:
                 messages=messenger.get_messages(),
                 tools=[],
                 system="You are a concise summarizer. Return ONLY the summary, nothing else.",
+                label="ContextManager",
             )
             summary = next(
                 (b.text for b in response.content if isinstance(b, TextBlock)), ""

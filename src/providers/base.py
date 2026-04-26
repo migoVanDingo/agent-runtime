@@ -17,9 +17,16 @@ class ToolUseBlock:
 
 
 @dataclass
+class TokenUsage:
+    input_tokens: int
+    output_tokens: int
+
+
+@dataclass
 class ProviderResponse:
     stop_reason: str
     content: list[TextBlock | ToolUseBlock] = field(default_factory=list)
+    usage: TokenUsage | None = None
 
 
 class BaseProvider(ABC):
@@ -31,5 +38,6 @@ class BaseProvider(ABC):
         tools: list[dict],
         system: str,
         json_schema: dict | None = None,
+        label: str = "",
     ) -> ProviderResponse:
         pass

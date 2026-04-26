@@ -21,9 +21,19 @@ PLAN_JSON_SCHEMA = {
                         "description": {"type": "string"},
                         "action_type": {
                             "type": "string",
-                            "enum": ["analysis", "file_io", "shell", "crypto", "conversation"],
+                            "enum": [
+                                "analysis",
+                                "file_io",
+                                "shell",
+                                "crypto",
+                                "web",
+                                "data",
+                                "artifacts",
+                                "conversation",
+                            ],
                         },
                         "tool": {"type": ["string", "null"]},
+                        "produces": {"type": ["string", "null"]},
                         "flags": {
                             "type": "object",
                             "properties": {
@@ -35,7 +45,7 @@ PLAN_JSON_SCHEMA = {
                             "additionalProperties": False,
                         },
                     },
-                    "required": ["step", "description", "action_type", "tool", "flags"],
+                    "required": ["step", "description", "action_type", "tool", "produces", "flags"],
                     "additionalProperties": False,
                 },
             },
@@ -51,6 +61,9 @@ class ActionType(str, Enum):
     FILE_IO = "file_io"
     SHELL = "shell"
     CRYPTO = "crypto"
+    WEB = "web"
+    DATA = "data"
+    ARTIFACTS = "artifacts"
     CONVERSATION = "conversation"
 
 
@@ -98,6 +111,7 @@ class Step:
     description: str
     action_type: ActionType
     tool: str | None = None
+    produces: str | None = None
     status: StepStatus = StepStatus.PENDING
     result: str | None = None
     error: str | None = None
@@ -109,6 +123,7 @@ class Step:
             "description": self.description,
             "action_type": self.action_type.value,
             "tool": self.tool,
+            "produces": self.produces,
             "status": self.status.value,
             "result": self.result,
             "error": self.error,
@@ -122,6 +137,7 @@ class Step:
             description=data["description"],
             action_type=ActionType(data["action_type"]),
             tool=data.get("tool"),
+            produces=data.get("produces"),
             status=StepStatus(data.get("status", StepStatus.PENDING)),
             result=data.get("result"),
             error=data.get("error"),

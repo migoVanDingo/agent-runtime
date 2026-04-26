@@ -1,6 +1,7 @@
-import urllib.request
-import urllib.error
+import httpx
 from tools.base import BaseTool, InputSchema, ToolProperty, ToolWeight
+
+_DEFAULT_TIMEOUT = 30
 
 
 class DownloadFileTool(BaseTool):
@@ -22,9 +23,20 @@ class DownloadFileTool(BaseTool):
         url = tool_input["url"]
         destination = tool_input["destination"]
         try:
-            urllib.request.urlretrieve(url, destination)
+            with httpx.stream(
+                "GET", url,
+                follow_redirects=True,
+                timeout=_DEFAULT_TIMEOUT,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; agent-runtime/1.0)"},
+            ) as response:
+                response.raise_for_status()
+                with open(destination, "wb") as f:
+                    for chunk in response.iter_bytes():
+                        f.write(chunk)
             return f"Downloaded {url} to {destination}"
-        except urllib.error.URLError as e:
-            return f"Network error: {e}"
-        except Exception as e:
-            return f"Error: {e}"
+        except httpx.HTTPStatusError as e:
+            return f"Network error: HTTP {e.response.status_code} for {url}"
+        except httpx.RequestError as e:
+            return f"Network error: {type(e).__name__}: {e}"
+        except OSError as e:
+            return f"Error writing file: {e}"

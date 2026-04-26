@@ -1,6 +1,7 @@
 import json
 import openai
-from providers.base import BaseProvider, ProviderResponse, TextBlock, ToolUseBlock
+from providers.base import BaseProvider, ProviderResponse, TextBlock, ToolUseBlock, TokenUsage
+from runtime.token_tracker import get_tracker
 from app_config import config
 
 
@@ -19,6 +20,7 @@ class OpenAICompatibleProvider(BaseProvider):
         tools: list[dict],
         system: str,
         json_schema: dict | None = None,
+        label: str = "",
     ) -> ProviderResponse:
         openai_messages = self._translate_messages(messages, system)
         openai_tools = self._translate_tools(tools)
@@ -34,7 +36,16 @@ class OpenAICompatibleProvider(BaseProvider):
             kwargs["response_format"] = {"type": "json_schema", "json_schema": json_schema}
 
         response = self.client.chat.completions.create(**kwargs)
-        return self._translate_response(response)
+        result = self._translate_response(response)
+
+        if response.usage:
+            result.usage = TokenUsage(
+                input_tokens=response.usage.prompt_tokens,
+                output_tokens=response.usage.completion_tokens,
+            )
+            get_tracker().record(self.model, label, result.usage.input_tokens, result.usage.output_tokens)
+
+        return result
 
     def _translate_messages(self, messages: list[dict], system: str) -> list[dict]:
         result = [{"role": "system", "content": system}]

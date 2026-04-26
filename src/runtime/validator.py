@@ -1,3 +1,4 @@
+import re
 from planning.schema import Plan, ActionType
 from runtime.schema import ValidationStatus, ValidationResult
 from app_config import config
@@ -7,6 +8,15 @@ logger = get_logger(__name__)
 
 # Action types that map to real toolsets (conversation is toolless, so it's always valid)
 _TOOLSET_ACTION_TYPES = {a for a in ActionType if a != ActionType.CONVERSATION}
+
+# Signals that the user expects written output: explicit file paths OR
+# intent phrases like "write a report", "save to", "generate a summary".
+_WRITE_OUTPUT_RE = re.compile(
+    r"\b(?:write|save|put|output)\s+(?:\w+\s+){0,3}(?:to|in)\b"   # write ... to / save ... in
+    r"|\b(?:write|generate|create|produce)\s+a\s+(?:report|summary|file|analysis)\b"
+    r"|\S+\.(?:md|txt|c|h|py|js|ts|rs|go|java|json|csv|log)\b",   # explicit extension
+    re.IGNORECASE,
+)
 
 
 class PlanValidator:
@@ -79,6 +89,16 @@ class PlanValidator:
                 errors.append(
                     f"Step {step.step}: tool '{step.tool}' is not registered. "
                     f"Available: {sorted(self._registered_tools)}"
+                )
+
+        # 7. Write-step completeness: if the query signals written output, the plan
+        #    must include at least one write_file step.
+        if plan.original_query and _WRITE_OUTPUT_RE.search(plan.original_query):
+            has_write = any(s.tool == "write_file" for s in plan.steps)
+            if not has_write:
+                errors.append(
+                    "Query expects written output (file path or 'write/save/generate' phrasing) "
+                    "but the plan contains no write_file step. Add a step to write the output."
                 )
 
         if errors:

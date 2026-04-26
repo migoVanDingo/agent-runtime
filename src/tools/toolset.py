@@ -9,3 +9,4 @@ class Toolset:
     description: str
     tools: list[BaseTool] = field(default_factory=list)
     rules: list[RoutingRule] = field(default_factory=list)
+    planning_note: str = ""  # Optional guidance injected into the planner system prompt

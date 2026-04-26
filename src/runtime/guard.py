@@ -60,6 +60,27 @@ _PACKAGE_MANAGERS = re.compile(
     re.IGNORECASE,
 )
 
+# ── Network / remote-access commands → ESCALATE ────────────────────
+# curl and wget without pipe-to-shell are not dangerous enough to BLOCK
+# but any outbound connection should require user approval. scp/ssh/rsync
+# can exfiltrate files; nc/ftp/sftp open raw network channels.
+
+_NETWORK_COMMANDS = re.compile(
+    r"(?:^|\s|;|&&|\|\||`|\$\()"
+    r"("
+    r"curl\s"                           # any curl invocation
+    r"|wget\s"                          # any wget (pipe-to-shell already BLOCKed above)
+    r"|scp\s"                           # secure copy (file exfiltration)
+    r"|ssh\s"                           # remote shell / tunneling
+    r"|sftp\s"                          # SSH file transfer
+    r"|rsync\s"                         # remote sync (can exfiltrate)
+    r"|ftp\s"                           # plain FTP
+    r"|nc\s|ncat\s|netcat\s"            # netcat (raw network pipe)
+    r"|socat\s"                         # socat (like netcat but more powerful)
+    r")",
+    re.IGNORECASE,
+)
+
 # ── Arbitrary code execution patterns → ESCALATE ───────────────────
 
 _CODE_EXECUTION = re.compile(
@@ -127,6 +148,17 @@ def _approval_key(tool_name: str, tool_input: dict) -> str | None:
         return f"write_file:{tool_input.get('path', '')}"
     if tool_name == "move_file":
         return f"move_file:{tool_input.get('source', '')}:{tool_input.get('destination', '')}"
+    if tool_name == "http_request":
+        method = tool_input.get("method", "GET").upper()
+        url = tool_input.get("url", "")
+        return f"http_request:{method}:{url}"
+    if tool_name in ("read_url", "extract_html"):
+        url = tool_input.get("url", tool_input.get("source", ""))
+        return f"{tool_name}:{url}"
+    if tool_name == "dataframe_query":
+        return f"dataframe_query:{tool_input.get('expression', '')}"
+    if tool_name == "expel_artifact":
+        return f"expel_artifact:{tool_input.get('key', '')}"
     return None
 
 
@@ -202,27 +234,70 @@ class ActionGuard:
             if pid is not None:
                 return GuardDecision.ESCALATE, f"{tool_name} attaching to pid {pid}"
 
+        # ── http_request: all outbound HTTP requires approval ──
+        if tool_name == "http_request":
+            method = tool_input.get("method", "GET").upper()
+            url = tool_input.get("url", "?")
+            return GuardDecision.ESCALATE, f"outbound HTTP {method} → {url}"
+
+        # ── read_url / extract_html: read-only but fetch external content ──
+        if tool_name in ("read_url", "extract_html"):
+            url = tool_input.get("url", tool_input.get("source", "?"))
+            return GuardDecision.ESCALATE, f"{tool_name} fetching external content from '{url}'"
+
+        # ── dataframe_query: evaluates user-provided expression ──
+        if tool_name == "dataframe_query":
+            expression = tool_input.get("expression", "")
+            if len(expression) > 120:
+                expression = expression[:117] + "..."
+            return GuardDecision.ESCALATE, f"dataframe_query expression eval: '{expression}'"
+
+        # ── expel_artifact: destructive delete operation ──
+        if tool_name == "expel_artifact":
+            key = tool_input.get("key", "?")
+            return GuardDecision.ESCALATE, f"expel_artifact deleting '{key}'"
+
         return GuardDecision.ALLOW, ""
 
     def _check_shell_command(self, command: str) -> tuple[GuardDecision, str]:
-        """Inspect a shell command string for dangerous patterns."""
+        """Inspect a shell command string for dangerous patterns.
+
+        For heredoc commands (cat << EOF, python3 << 'SCRIPT', etc.) only the
+        portion before the delimiter is scanned for dangerous patterns — the
+        heredoc body is content being written, not commands being executed.
+        Scanning the body causes false positives (e.g. the word 'Format' in a
+        markdown report triggers the mkfs/format pattern).
+        """
+        # Strip heredoc body: keep only the command line (before the << marker).
+        scan_target = command
+        heredoc_pos = command.find("<<")
+        if heredoc_pos != -1:
+            # Take everything up to and including the first line that contains <<,
+            # but only the portion of that line before the << itself.
+            first_line_end = command.find("\n", heredoc_pos)
+            scan_target = command[:heredoc_pos] if first_line_end != -1 else command[:heredoc_pos]
 
         # Dangerous command patterns → BLOCK
-        match = _DANGEROUS_COMMANDS.search(command)
+        match = _DANGEROUS_COMMANDS.search(scan_target)
         if match:
             return GuardDecision.BLOCK, f"dangerous command pattern: '{match.group(0).strip()}'"
 
         # Sudo → ESCALATE (not auto-block — might be intentional)
-        if _SUDO_PATTERN.search(command):
+        if _SUDO_PATTERN.search(scan_target):
             return GuardDecision.ESCALATE, "command uses sudo"
 
+        # Network / remote-access commands → ESCALATE
+        net_match = _NETWORK_COMMANDS.search(scan_target)
+        if net_match:
+            return GuardDecision.ESCALATE, f"network command: '{net_match.group(0).strip()}'"
+
         # Package managers → ESCALATE (installing/removing software)
-        pkg_match = _PACKAGE_MANAGERS.search(command)
+        pkg_match = _PACKAGE_MANAGERS.search(scan_target)
         if pkg_match:
             return GuardDecision.ESCALATE, f"package manager operation: '{pkg_match.group(0).strip()}'"
 
         # Arbitrary code execution → ESCALATE
-        code_match = _CODE_EXECUTION.search(command)
+        code_match = _CODE_EXECUTION.search(scan_target)
         if code_match:
             return GuardDecision.ESCALATE, f"inline code execution: '{code_match.group(0).strip()}'"
 

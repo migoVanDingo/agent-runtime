@@ -1,3 +1,24 @@
+def build_tool_list(toolsets) -> str:
+    """Generate the action-types-and-tools block for the planner system prompt.
+
+    Iterates registered toolsets dynamically — adding a new toolset automatically
+    includes it here without any prompt edits required.
+    """
+    lines = []
+    for ts in toolsets:
+        tool_names = ", ".join(t.name for t in ts.tools)
+        lines.append(f'- "{ts.name}": {tool_names}')
+    lines.append('- "conversation": null (no tool needed)')
+
+    notes = [ts.planning_note for ts in toolsets if ts.planning_note]
+    if notes:
+        lines.append("")
+        for note in notes:
+            lines.append(f"Note: {note}")
+
+    return "\n".join(lines)
+
+
 PLANNING_SYSTEM_PROMPT = """\
 You are a task planner. Analyze the user's request and decompose it into an \
 ordered list of steps that an AI assistant with tools will execute.
@@ -14,15 +35,11 @@ BEFORE selecting tools, think about what information you actually need:
 Each step performs ONE tool operation. Specify the exact tool name in the "tool" \
 field. Do NOT bundle multiple tools into a single step.
 
+Optional "produces" field: if a step is expected to store a named artifact, set \
+"produces" to that artifact key so later steps can reference it.
+
 Action types and their tools:
-- "analysis": file_info, strings, objdump, hexdump, readelf, nm, checksec, \
-grep_binary, ltrace, strace
-- "file_io": read_file, write_file, list_files, walk_directory, copy_file, \
-move_file, delete_file, make_directory, read_file_lines, get_working_directory, \
-environment_info, download_file
-- "shell": bash_exec, search_files
-- "crypto": hash_file, base64_encode, base64_decode, xor_decode
-- "conversation": null (no tool needed)
+{tool_list}
 
 Use "requires_synthesis": true when the final response should be a coherent \
 summary across all steps. Use false only for a single self-contained step.
@@ -40,8 +57,9 @@ Return this exact JSON structure — no other output:
     {{
       "step": 1,
       "description": "<specific instruction for the executor>",
-      "action_type": "<analysis|file_io|shell|crypto|conversation>",
+      "action_type": "<analysis|file_io|shell|crypto|web|data|artifacts|conversation>",
       "tool": "<specific_tool_name or null for conversation>",
+      "produces": "<artifact_key_or_null>",
       "flags": {{"retry": false, "escalate": false, "defer": false}}
     }}
   ]
@@ -57,6 +75,7 @@ Example — "analyze /bin/ls and write a summary to notes.md":
       "description": "Identify the file type and architecture of /bin/ls",
       "action_type": "analysis",
       "tool": "file_info",
+      "produces": null,
       "flags": {{"retry": false, "escalate": false, "defer": false}}
     }},
     {{
@@ -64,6 +83,7 @@ Example — "analyze /bin/ls and write a summary to notes.md":
       "description": "Extract version info and printable strings from /bin/ls",
       "action_type": "analysis",
       "tool": "strings",
+      "produces": null,
       "flags": {{"retry": false, "escalate": false, "defer": false}}
     }},
     {{
@@ -71,6 +91,7 @@ Example — "analyze /bin/ls and write a summary to notes.md":
       "description": "Write a structured markdown summary of the analysis findings to notes.md",
       "action_type": "file_io",
       "tool": "write_file",
+      "produces": null,
       "flags": {{"retry": false, "escalate": false, "defer": false}}
     }}
   ]
@@ -86,6 +107,7 @@ Example — "find potential buffer overflow vulnerabilities in <target_file>":
       "description": "Identify the file type and architecture of <target_file>",
       "action_type": "analysis",
       "tool": "file_info",
+      "produces": null,
       "flags": {{"retry": false, "escalate": false, "defer": false}}
     }},
     {{
@@ -93,6 +115,7 @@ Example — "find potential buffer overflow vulnerabilities in <target_file>":
       "description": "Check security hardening features (NX, ASLR, stack canaries, PIE) on <target_file>",
       "action_type": "analysis",
       "tool": "checksec",
+      "produces": null,
       "flags": {{"retry": false, "escalate": false, "defer": false}}
     }},
     {{
@@ -100,6 +123,7 @@ Example — "find potential buffer overflow vulnerabilities in <target_file>":
       "description": "Search for dangerous function calls (strcpy, gets, sprintf) in <target_file> strings",
       "action_type": "analysis",
       "tool": "strings",
+      "produces": null,
       "flags": {{"retry": false, "escalate": false, "defer": false}}
     }},
     {{
@@ -107,6 +131,7 @@ Example — "find potential buffer overflow vulnerabilities in <target_file>":
       "description": "Disassemble <target_file> to examine function prologues and buffer handling",
       "action_type": "analysis",
       "tool": "objdump",
+      "produces": null,
       "flags": {{"retry": false, "escalate": false, "defer": false}}
     }},
     {{
@@ -114,6 +139,39 @@ Example — "find potential buffer overflow vulnerabilities in <target_file>":
       "description": "Extract symbol table to identify imported functions and potential attack surface",
       "action_type": "analysis",
       "tool": "nm",
+      "produces": null,
+      "flags": {{"retry": false, "escalate": false, "defer": false}}
+    }}
+  ]
+}}
+
+Example — "summarize this paper: https://arxiv.org/abs/2604.21928":
+{{
+  "original_query": "summarize this paper: https://arxiv.org/abs/2604.21928",
+  "requires_synthesis": true,
+  "steps": [
+    {{
+      "step": 1,
+      "description": "Fetch the page at https://arxiv.org/abs/2604.21928 and store it as artifact key paper_content",
+      "action_type": "web",
+      "tool": "read_url",
+      "produces": "paper_content",
+      "flags": {{"retry": false, "escalate": false, "defer": false}}
+    }},
+    {{
+      "step": 2,
+      "description": "Read artifact key paper_content",
+      "action_type": "artifacts",
+      "tool": "get_artifact",
+      "produces": null,
+      "flags": {{"retry": false, "escalate": false, "defer": false}}
+    }},
+    {{
+      "step": 3,
+      "description": "Summarize the paper's main topic, goals, and findings based on the content",
+      "action_type": "conversation",
+      "tool": null,
+      "produces": null,
       "flags": {{"retry": false, "escalate": false, "defer": false}}
     }}
   ]
@@ -129,7 +187,15 @@ conversationally — as if you did the work yourself.
 
 Do not mention step numbers, tool names, or internal process details unless \
 they are directly useful to the user. If something failed, acknowledge it \
-briefly only if it affects the outcome the user asked for.\
+briefly only if it affects the outcome the user asked for.
+
+IMPORTANT — accuracy rules:
+- Only assert specific technical details (implementation specifics, code behavior, \
+algorithm details) that were explicitly confirmed by tool output during this session. \
+If you are uncertain about a specific detail, omit it or hedge clearly.
+- If a file was already written to disk, do NOT reprint its full contents in your \
+response — refer to the file path instead. Only quote short relevant excerpts if \
+the user specifically needs to see them.\
 """
 
 SYNTHESIS_USER_TURN = """\

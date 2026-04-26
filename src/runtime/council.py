@@ -261,6 +261,7 @@ class Council(Generic[T]):
             messages=messenger.get_messages(),
             tools=[],
             system=self.adapter.system_prompt(),
+            label="Council",
         )
         raw = next((b.text for b in response.content if isinstance(b, TextBlock)), "")
 

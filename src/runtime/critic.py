@@ -109,15 +109,21 @@ class PlanCriticAdapter(DeliberationAdapter[CriticResult]):
                 reasoning=data.get("reasoning", ""),
             )
 
-        challenges = [
-            CriticChallenge(
-                step=c.get("step", 0),
+        challenges = []
+        for c in data.get("challenges", []):
+            step_val = c.get("step")
+            # Skip meta-challenges with null/missing step — these are plan-level
+            # suggestions (e.g. "add a step") that don't map to a specific step
+            # number and cannot be processed by the synthesis algorithm.
+            if step_val is None:
+                logger.info(f"  critic: skipping meta-challenge (step=null): {c.get('challenge', '')[:80]}")
+                continue
+            challenges.append(CriticChallenge(
+                step=int(step_val),
                 tool=c.get("tool"),
                 challenge=c.get("challenge", ""),
                 suggestion=c.get("suggestion") or "justify",
-            )
-            for c in data.get("challenges", [])
-        ]
+            ))
         return CriticResult(
             verdict=CriticVerdict.CHALLENGED,
             challenges=challenges if challenges else None,
@@ -266,9 +272,11 @@ class PlanCritic:
     def __init__(self, registry: ToolRegistry):
         self._registry = registry
 
-    def review(self, plan: Plan) -> CriticResult:
+    def review(self, plan: Plan, active_councillors: list | None = None) -> CriticResult:
         """Review a plan using a council of N councillors.
 
+        active_councillors: explicit list of CouncillorConfig to use, overriding
+        the full pool. Pass an empty list to skip the council entirely.
         Returns a CriticResult with council_run_id set so callers can
         correlate with _metrics/ records.
         """
@@ -276,12 +284,19 @@ class PlanCritic:
             return CriticResult(verdict=CriticVerdict.APPROVED, reasoning="critic disabled")
 
         council_cfg = config.runtime.council
-        if not council_cfg.councillors:
-            logger.info("  critic: no councillors configured — skipping")
-            return CriticResult(verdict=CriticVerdict.APPROVED, reasoning="no councillors configured")
+
+        # Resolve which councillors are active for this review
+        councillors = active_councillors if active_councillors is not None else council_cfg.councillors
+        if not councillors:
+            logger.info("  critic: no councillors active — skipping")
+            return CriticResult(verdict=CriticVerdict.APPROVED, reasoning="no active councillors")
+
+        # Build a council config view with the active councillor subset
+        import dataclasses
+        effective_cfg = dataclasses.replace(council_cfg, councillors=councillors)
 
         adapter = PlanCriticAdapter(self._registry, plan)
-        council = Council(adapter=adapter, config=council_cfg)
+        council = Council(adapter=adapter, config=effective_cfg)
 
         result = council.deliberate(
             council_input=plan,

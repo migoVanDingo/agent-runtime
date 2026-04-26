@@ -64,6 +64,7 @@ class ImportanceScorer:
                 messages=messenger.get_messages(),
                 tools=[],
                 system=_IMPORTANCE_PROMPT,
+                label="ImportanceScorer",
             )
 
             raw = next(

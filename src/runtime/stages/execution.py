@@ -221,7 +221,6 @@ class ExecutionStage(Stage):
                             f"declared produces='{expected_key}' but artifact was not registered"
                         )
                         logger.warning(f"  ⚠ {warn}")
-                        step.error = (step.error + "; " + warn) if step.error else warn
                 except Exception as e:
                     logger.warning(f"  produces-check skipped: {e}")
 

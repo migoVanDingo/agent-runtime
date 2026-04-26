@@ -24,17 +24,24 @@ routing:
     web: "http https url fetch request api endpoint website webpage scrape browse read article blog paper curl html rest"
     data: "dataframe pandas csv tsv parquet json jsonpath regex diff template jinja transform aggregate join filter"
     artifacts: "artifact memory store retrieve list metadata expel persist intermediate results"
+    search: "search web news images brave api look up find information current events articles google"
+    git: "git commit branch diff log blame stash show status working tree repository history who changed"
+    document: "pdf docx word epub ebook document extract text pages read pdf read document"
 
 agent:
   system_prompt: >-
     You are a helpful assistant with access to tools for file system operations,
-    shell execution, binary analysis, cryptanalysis, web access, data processing,
-    and artifact memory management.
+    shell execution, binary analysis, cryptanalysis, web access, web search,
+    data processing, document reading, git introspection, and artifact memory management.
     Use these tools when needed to answer the user's questions.
-    You can fetch web pages and URLs using read_url, make HTTP API requests using
-    http_request, and extract structured data from HTML using extract_html.
+    You can fetch web pages using read_url, search the web using web_search,
+    make HTTP API requests using http_request, and extract structured data from HTML using extract_html.
     When the user provides a URL or asks about a web page, article, or online resource,
     use read_url to fetch it — do not say you lack internet access.
+    When the user asks you to search for something without providing a URL,
+    use web_search to find relevant results.
+    You can read PDF files with read_pdf, Word documents with read_docx, and EPUBs with read_epub.
+    You can inspect git repositories with git_status, git_log, git_diff, git_show, and git_blame.
     When given a path to inspect, never assume it is a directory — paths without
     extensions are often executables or binaries. Always use file_info first to
     determine what the path is before deciding how to analyze it.
@@ -102,8 +109,8 @@ runtime:
   council:
     councillors:
 
-      - provider: openai
-        model: gpt-4o-mini
+      - provider: ollama
+        model: mistral-nemo
         label: gpt
       - provider: anthropic
         model: claude-haiku-4-5
@@ -132,4 +139,4 @@ runtime:
     dynamic_scaling:
       low: 0
       moderate: 1
-      high: 3
+      high: 1

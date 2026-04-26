@@ -34,6 +34,10 @@ _ACTION_PHRASES = (
     "i cannot access the internet", "i can't access the internet",
     "i don't have real-time", "i lack internet", "i'm unable to browse",
     "i cannot browse", "i can't browse",
+    "i cannot search the web", "i can't search the web",
+    "i don't have search", "i cannot perform web searches",
+    "i can't read pdf", "i cannot read pdf", "i cannot open pdf",
+    "i don't have access to git", "i cannot run git",
 )
 
 

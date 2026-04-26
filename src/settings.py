@@ -85,6 +85,12 @@ class Settings(BaseSettings):
         validation_alias=env_alias("GEMINI_MODEL", "gemini_model"),
     )
 
+    # === BRAVE SEARCH ===
+    brave_api_key: Optional[str] = Field(
+        default=None,
+        validation_alias=env_alias("BRAVE_API_KEY", "brave_api_key"),
+    )
+
     # === RUNTIME LAYER ===
     runtime_provider: Optional[str] = Field(
         default=None,

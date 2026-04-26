@@ -29,6 +29,9 @@ PLAN_JSON_SCHEMA = {
                                 "web",
                                 "data",
                                 "artifacts",
+                                "search",
+                                "git",
+                                "document",
                                 "conversation",
                             ],
                         },
@@ -64,6 +67,9 @@ class ActionType(str, Enum):
     WEB = "web"
     DATA = "data"
     ARTIFACTS = "artifacts"
+    SEARCH = "search"
+    GIT = "git"
+    DOCUMENT = "document"
     CONVERSATION = "conversation"
 
 

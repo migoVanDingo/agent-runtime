@@ -43,6 +43,20 @@ from tools.implementations.artifacts.store_artifact import StoreArtifactTool
 from tools.implementations.artifacts.expel_artifact import ExpelArtifactTool
 from tools.implementations.artifacts.artifact_info import ArtifactInfoTool
 from tools.implementations.artifacts.recall_sessions import RecallSessionsTool
+from tools.implementations.search.web_search import WebSearchTool
+from tools.implementations.search.news_search import NewsSearchTool
+from tools.implementations.search.image_search import ImageSearchTool
+from tools.implementations.git.git_status import GitStatusTool
+from tools.implementations.git.git_log import GitLogTool
+from tools.implementations.git.git_diff import GitDiffTool
+from tools.implementations.git.git_show import GitShowTool
+from tools.implementations.git.git_blame import GitBlameTool
+from tools.implementations.git.git_branch import GitBranchTool
+from tools.implementations.git.git_stash import GitStashTool
+from tools.implementations.document.read_pdf import ReadPdfTool
+from tools.implementations.document.read_docx import ReadDocxTool
+from tools.implementations.document.document_info import DocumentInfoTool
+from tools.implementations.document.read_epub import ReadEpubTool
 from shared_types import RoutingRule
 from routing.conditions import has_file_path, has_extension, any_keyword, last_tools_were, all_of
 
@@ -236,4 +250,106 @@ ARTIFACTS = Toolset(
     ],
 )
 
-ALL_TOOLSETS = [FILE_IO, SHELL, ANALYSIS, CRYPTO, WEB, DATA, ARTIFACTS]
+SEARCH = Toolset(
+    name="search",
+    description="Web, news, and image search via the Brave Search API",
+    planning_note=(
+        "Use web_search to find information on any topic without a specific URL. "
+        "Use news_search for current events, recent developments, or dated articles. "
+        "Use image_search when looking for image assets or confirming visual content. "
+        "After web_search, use read_url to fetch and read the full content of a specific result."
+    ),
+    tools=[
+        WebSearchTool(),
+        NewsSearchTool(),
+        ImageSearchTool(),
+    ],
+    rules=[
+        RoutingRule(toolset="search", condition=any_keyword(
+            "search", "look up", "look for", "find information", "google",
+            "search the web", "web search", "find articles", "find pages",
+            "current events", "latest news", "recent", "news about",
+            "image search", "find images", "find pictures",
+        )),
+        RoutingRule(
+            toolset="search",
+            condition=lambda msg, _: bool(re.search(
+                r"\bsearch\s+(?:the\s+)?(?:web|internet|online)\b"
+                r"|\bfind\s+(?:me\s+)?(?:information|articles|images|news)\b"
+                r"|\bwhat(?:'s|'s| is)\s+(?:the\s+)?(?:latest|current)\b"
+                r"|\blook\s+(?:it\s+)?up\b",
+                msg, re.IGNORECASE,
+            )),
+        ),
+    ],
+)
+
+GIT = Toolset(
+    name="git",
+    description="Read-only git source control introspection tools",
+    planning_note=(
+        "Use git_status to check the working tree state. "
+        "Use git_log to browse commit history. "
+        "Use git_diff to see changes — set staged=true for the index. "
+        "Use git_show for a specific commit (default HEAD). "
+        "Use git_blame to see who changed which lines. "
+        "Use git_branch to list branches. "
+        "For write operations (commit, push, checkout, reset), use bash_exec."
+    ),
+    tools=[
+        GitStatusTool(),
+        GitLogTool(),
+        GitDiffTool(),
+        GitShowTool(),
+        GitBlameTool(),
+        GitBranchTool(),
+        GitStashTool(),
+    ],
+    rules=[
+        RoutingRule(toolset="git", condition=any_keyword(
+            "git", "commit", "branch", "diff", "blame", "stash",
+            "git log", "git status", "git diff", "git show",
+            "commit history", "who changed", "what changed",
+            "working tree", "staged", "unstaged", "repository",
+        )),
+        RoutingRule(
+            toolset="git",
+            condition=lambda msg, _: bool(re.search(
+                r"\bgit\s+\w+\b|\bcommit\s+history\b|\bworking\s+tree\b"
+                r"|\bwho\s+(?:wrote|added|changed|modified)\b",
+                msg, re.IGNORECASE,
+            )),
+        ),
+    ],
+)
+
+DOCUMENT = Toolset(
+    name="document",
+    description="Text extraction from PDF, DOCX, and EPUB documents",
+    planning_note=(
+        "Use read_pdf to extract text from PDF files (supports page ranges). "
+        "Use read_docx for Word documents (.docx). "
+        "Use read_epub for e-books (.epub). "
+        "Use document_info for quick metadata without extracting full text. "
+        "Always set artifact_key when extracting long documents — "
+        "use get_artifact or read_file_lines to read the content in chunks afterward."
+    ),
+    tools=[
+        ReadPdfTool(),
+        ReadDocxTool(),
+        DocumentInfoTool(),
+        ReadEpubTool(),
+    ],
+    rules=[
+        RoutingRule(toolset="document", condition=has_extension(
+            ".pdf", ".docx", ".doc", ".epub",
+        )),
+        RoutingRule(toolset="document", condition=any_keyword(
+            "pdf", "docx", "word document", "word doc", "epub", "ebook",
+            "read pdf", "extract pdf", "open pdf", "read document",
+            "document text", "pdf text", "pages", "read ebook",
+        )),
+    ],
+)
+
+ALL_TOOLSETS = [FILE_IO, SHELL, ANALYSIS, CRYPTO, WEB, DATA, ARTIFACTS, SEARCH, GIT, DOCUMENT]

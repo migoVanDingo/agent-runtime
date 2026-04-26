@@ -11,6 +11,8 @@ Mode:
 - "direct": purely conversational — a greeting, a follow-up question about prior output, an explanation from memory, or a factual answer you already know with no URL or external resource to look up. No tools needed. Output the header then respond normally.
 
 Important: if the message contains a URL or asks about an online resource (article, paper, webpage), always use "plan" — use read_url to fetch it, do not answer from memory.
+If the message asks to search for something without a specific URL, always use "plan" — use web_search.
+If the message refers to a .pdf, .docx, or .epub file, always use "plan" — use the document tools.
 
 Risk:
 - "low": read-only, analysis, questions, explanations.

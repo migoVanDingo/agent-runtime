@@ -11,8 +11,9 @@ Mode:
 - "direct": purely conversational — a greeting, a follow-up question about prior output, an explanation from memory, or a factual answer you already know with no URL or external resource to look up. No tools needed. Output the header then respond normally.
 
 Important: if the message contains a URL or asks about an online resource (article, paper, webpage), always use "plan" — use read_url to fetch it, do not answer from memory.
-If the message asks to search for something without a specific URL, always use "plan" — use web_search.
+If the message asks to search for something without a specific URL, always use "plan" — use web_search or briefbot_search.
 If the message refers to a .pdf, .docx, or .epub file, always use "plan" — use the document tools.
+If the message asks what's new, what's trending, what's hot, what's gaining traction, or what techniques/research to know about in a technical domain, always use "plan" — use briefbot_trending followed by briefbot_search. Never answer these from memory.
 
 Risk:
 - "low": read-only, analysis, questions, explanations.
@@ -46,6 +47,9 @@ Mode guidelines:
 a conversational follow-up, or a simple task.
 - If the user is responding to previous work (follow-ups like "what about X?", "now do the same for Y", \
 "thanks", "explain that"), that is almost always "direct" — the prior context already exists.
+- ALWAYS use "plan" for questions about what is new, trending, hot, or worth knowing about in a \
+technical domain (AI, ML, LLM, agents, etc.) — these require briefbot_trending + briefbot_search \
+and must never be answered from training data.
 - When in doubt, prefer "direct". Planning adds latency; only plan when the request genuinely \
 has sequential dependencies between multiple operations.
 
@@ -70,6 +74,12 @@ If unsure, return null — the system has a fallback.
 Examples:
   User: "what does the main function do?"
   {{"mode": "direct", "risk": "low", "reason": "single read-only question about code", "workflow": null}}
+
+  User: "what's new in the LLM space"
+  {{"mode": "plan", "risk": "low", "reason": "requires briefbot_trending + briefbot_search to find what is rising — must not answer from memory", "workflow": null}}
+
+  User: "what techniques from recent research should I know about for agent design"
+  {{"mode": "plan", "risk": "low", "reason": "requires corpus search to surface novel techniques — must not answer from training data", "workflow": null}}
 
   User: "analyze /bin/ls and write a summary to results.md"
   {{"mode": "plan", "risk": "moderate", "reason": "requires analysis then writing output to a file", "workflow": "analyze-and-write"}}

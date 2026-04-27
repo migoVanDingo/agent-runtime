@@ -125,7 +125,7 @@ class ExecutionStage(Stage):
         if context.plan is None:
             return StageResult(status=StageStatus.OK, updated_context=context)
 
-        response = self._execute_plan(context.plan)
+        response = self._execute_plan(context.plan, db_session_id=context.db_session_id)
         context.response = response
 
         # Return DONE when synthesis is not needed — this short-circuits the
@@ -138,7 +138,20 @@ class ExecutionStage(Stage):
 
     # ── Internal execution logic (lifted from Agent._execute_plan) ────────
 
-    def _execute_plan(self, plan: Plan) -> str:
+    def _execute_plan(self, plan: Plan, *, db_session_id: str | None = None) -> str:
+        from runtime.persistence import PersistenceWriter
+
+        # ── Persistence: record plan ───────────────────────────────────
+        db_plan_id = PersistenceWriter.record_plan(
+            db_session_id or "",
+            plan_index=getattr(plan, "_replan_count", 0),
+            original_query=plan.original_query,
+            steps=[
+                {"step": s.step, "action_type": s.action_type.value, "description": s.description}
+                for s in plan.steps
+            ],
+        )
+
         max_retries = config.runtime.execution_monitor.max_step_retries
         max_defers = config.runtime.execution_monitor.max_defers_per_step
         queue = list(plan.steps)
@@ -231,6 +244,26 @@ class ExecutionStage(Stage):
                     plan.original_query, step.description, result
                 )
                 self._context_mgr.set_importance(msg_index, importance)
+
+            # ── Persistence: record step result ────────────────────────
+            if db_session_id and db_plan_id:
+                _importance = (
+                    self._context_mgr.get_importance(len(self._messenger.get_messages()) - 1)
+                    if result and step.status != StepStatus.ERROR else None
+                )
+                PersistenceWriter.record_step(
+                    db_session_id=db_session_id,
+                    db_plan_id=db_plan_id,
+                    step_index=step.step,
+                    action_type=step.action_type.value,
+                    description=step.description,
+                    tool=step.tool if hasattr(step, "tool") else None,
+                    status=step.status.value if hasattr(step.status, "value") else str(step.status),
+                    result=result,
+                    error=step.error if hasattr(step, "error") else None,
+                    retry_count=step.flags.retry_count if hasattr(step, "flags") else 0,
+                    importance_score=_importance,
+                )
 
             # ── Monitor assessment ──
             logger.info(banner(f"Monitor: Step {step.step}/{n_total}"))

@@ -52,3 +52,7 @@ class PipelineContext:
     # Failure reason injected by the runner when status=RETRY.
     # Stages read this on their second run to adjust behavior.
     failure_reason: str | None = None
+
+    # ── Persistence (optional — gated by ENABLE_SESSION_PERSISTENCE) ────
+    # Set by Agent.chat() before pipeline runs, read by ExecutionStage.
+    db_session_id: str | None = None

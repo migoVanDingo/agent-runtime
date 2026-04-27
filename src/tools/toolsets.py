@@ -57,6 +57,9 @@ from tools.implementations.document.read_pdf import ReadPdfTool
 from tools.implementations.document.read_docx import ReadDocxTool
 from tools.implementations.document.document_info import DocumentInfoTool
 from tools.implementations.document.read_epub import ReadEpubTool
+from tools.implementations.briefbot.briefbot_search import BriefbotSearchTool
+from tools.implementations.briefbot.briefbot_trending import BriefbotTrendingTool
+from tools.implementations.briefbot.briefbot_item import BriefbotItemTool
 from shared_types import RoutingRule
 from routing.conditions import has_file_path, has_extension, any_keyword, last_tools_were, all_of
 
@@ -352,4 +355,48 @@ DOCUMENT = Toolset(
     ],
 )
 
-ALL_TOOLSETS = [FILE_IO, SHELL, ANALYSIS, CRYPTO, WEB, DATA, ARTIFACTS, SEARCH, GIT, DOCUMENT]
+BRIEFBOT = Toolset(
+    name="briefbot",
+    description="Search and browse the local Briefbot research corpus (nightly-indexed papers, blogs, and tech news)",
+    planning_note=(
+        "RESEARCH RADAR PATTERN — use this for 'what's new/hot/trending' questions: "
+        "(1) Call briefbot_trending first to get trending clusters (velocity_3d, trend_score) and hot topics (momentum) — "
+        "this surfaces what is RISING RIGHT NOW, not just what exists. "
+        "(2) For each interesting cluster, call briefbot_search with category='papers' or category='ai_research', "
+        "order_by='date', days=14 to find the specific papers/posts driving it. "
+        "(3) For the top 2-3 results, call briefbot_item to get the full record including opportunity analysis. "
+        "(4) Set requires_synthesis=true — the synthesis step must explain WHY each finding is notable, "
+        "what problem it solves, and what the signal strength is (velocity/trend_score). "
+        "DO NOT stop after a single briefbot_search for research/trend queries — that is too shallow. "
+        "Use briefbot_trending as the entry point for any 'what's new in X', 'what's hot', "
+        "'what should I know about', or 'what's gaining traction' question. "
+        "Prefer briefbot over web_search for research queries — corpus is scored and deduped. "
+        "Fall back to web_search only if briefbot returns no results."
+    ),
+    tools=[
+        BriefbotSearchTool(),
+        BriefbotTrendingTool(),
+        BriefbotItemTool(),
+    ],
+    rules=[
+        RoutingRule(toolset="briefbot", condition=any_keyword(
+            "briefbot", "research corpus", "research papers", "arxiv", "papers",
+            "what's trending", "what is trending", "what's hot", "trending in ai",
+            "trending in ml", "what's new in ai", "this week in ai",
+            "find papers", "find articles", "find research",
+            "local corpus", "indexed content",
+        )),
+        RoutingRule(
+            toolset="briefbot",
+            condition=lambda msg, _: bool(re.search(
+                r"\b(?:find|search\s+for|look\s+for)\s+(?:research\s+)?papers?\b"
+                r"|\bwhat(?:'s|'s| is)\s+(?:trending|hot|new)\s+in\b"
+                r"|\brecent\s+(?:papers?|research|articles?)\s+(?:on|about)\b"
+                r"|\blatest\s+(?:research|papers?|developments?)\s+(?:on|in|about)\b",
+                msg, re.IGNORECASE,
+            )),
+        ),
+    ],
+)
+
+ALL_TOOLSETS = [FILE_IO, SHELL, ANALYSIS, CRYPTO, WEB, DATA, ARTIFACTS, SEARCH, GIT, DOCUMENT, BRIEFBOT]

@@ -91,6 +91,22 @@ class Settings(BaseSettings):
         validation_alias=env_alias("BRAVE_API_KEY", "brave_api_key"),
     )
 
+    # === DATABASE ===
+    agent_db_url: str = Field(
+        default="sqlite+aiosqlite:///./data/agent.db",
+        validation_alias=env_alias("AGENT_DB_URL", "agent_db_url"),
+    )
+
+    briefbot_db_path: Optional[str] = Field(
+        default=None,
+        validation_alias=env_alias("BRIEFBOT_DB_PATH", "briefbot_db_path"),
+    )
+
+    enable_session_persistence: bool = Field(
+        default=False,
+        validation_alias=env_alias("ENABLE_SESSION_PERSISTENCE", "enable_session_persistence"),
+    )
+
     # === RUNTIME LAYER ===
     runtime_provider: Optional[str] = Field(
         default=None,

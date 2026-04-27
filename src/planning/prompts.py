@@ -145,6 +145,46 @@ Example — "find potential buffer overflow vulnerabilities in <target_file>":
   ]
 }}
 
+Example — "what's new in the LLM / AI agent / ML space" or "what techniques should I know about" or "what's trending in research":
+{{
+  "original_query": "what's new in the LLM space",
+  "requires_synthesis": true,
+  "steps": [
+    {{
+      "step": 1,
+      "description": "Get trending storyline clusters and hot topics from the Briefbot corpus — use window=3d to see what is rising right now",
+      "action_type": "briefbot",
+      "tool": "briefbot_trending",
+      "produces": null,
+      "flags": {{"retry": false, "escalate": false, "defer": false}}
+    }},
+    {{
+      "step": 2,
+      "description": "Search Briefbot corpus for recent papers and research in the top trending areas identified in step 1, ordered by date, limited to last 14 days",
+      "action_type": "briefbot",
+      "tool": "briefbot_search",
+      "produces": null,
+      "flags": {{"retry": false, "escalate": false, "defer": false}}
+    }},
+    {{
+      "step": 3,
+      "description": "Search Briefbot corpus for recent applied/industry developments (category=ai_industry) to complement the research findings",
+      "action_type": "briefbot",
+      "tool": "briefbot_search",
+      "produces": null,
+      "flags": {{"retry": false, "escalate": false, "defer": false}}
+    }},
+    {{
+      "step": 4,
+      "description": "Fetch full details on the 2-3 highest-signal items from the search results to get opportunity analysis and tags",
+      "action_type": "briefbot",
+      "tool": "briefbot_item",
+      "produces": null,
+      "flags": {{"retry": false, "escalate": false, "defer": false}}
+    }}
+  ]
+}}
+
 Example — "summarize this paper: https://arxiv.org/abs/2604.21928":
 {{
   "original_query": "summarize this paper: https://arxiv.org/abs/2604.21928",
@@ -193,9 +233,26 @@ IMPORTANT — accuracy rules:
 - Only assert specific technical details (implementation specifics, code behavior, \
 algorithm details) that were explicitly confirmed by tool output during this session. \
 If you are uncertain about a specific detail, omit it or hedge clearly.
+- Do NOT fill gaps with training-data knowledge. If a source was not fetched, do not \
+cite it. If a technique was not returned by a tool, do not invent it. Only report \
+what the tools actually returned.
 - If a file was already written to disk, do NOT reprint its full contents in your \
 response — refer to the file path instead. Only quote short relevant excerpts if \
-the user specifically needs to see them.\
+the user specifically needs to see them.
+
+RESEARCH AND TREND QUERIES — when the user asked what's new, trending, or worth \
+knowing about in a technical domain, structure your response around SIGNAL STRENGTH, \
+not just content:
+- Lead with what is RISING (high velocity, high momentum) — not just what exists.
+- For each finding, explain WHY it is notable: what problem does it solve, what makes \
+it different from prior work, why is it gaining traction now.
+- Distinguish between a paper that just dropped and a technique that is being widely \
+adopted — the signal is different. Use velocity and trend data from the tool results \
+to make this distinction concrete.
+- If the corpus returned trend scores or velocity numbers, use them to rank your \
+response — the highest-signal items first.
+- Do not pad the response with background knowledge about the field. Stay grounded \
+in what the tools returned.\
 """
 
 SYNTHESIS_USER_TURN = """\

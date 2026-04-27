@@ -188,6 +188,7 @@ class Agent:
 
     def call(self, user_message: str) -> str:
         from runtime.utils import banner
+        from runtime.persistence import PersistenceWriter
         logger.info(banner("User"))
         logger.info(f"  {user_message}")
         effective_user_message = user_message
@@ -206,9 +207,24 @@ class Agent:
         self.messenger.add_user_message(user_message)
         self.spinner.start("Thinking...")
 
-        context = PipelineContext(user_message=effective_user_message)
+        # ── Persistence: open session ──────────────────────────────────
+        from app_config import settings as _settings
+        db_session_id = PersistenceWriter.start_session(
+            original_query=user_message,
+            model=getattr(self.provider, "model", _settings.anthropic_model),
+            provider=_settings.llm_provider,
+        )
+
+        context = PipelineContext(user_message=effective_user_message, db_session_id=db_session_id)
         response = self._pipeline.run(context)
         self.spinner.stop()  # guaranteed cleanup — stages that exit early (e.g. DirectInlineStage DONE) may not stop it
+
+        # ── Persistence: close session ─────────────────────────────────
+        total_steps = len(context.plan.steps) if context.plan else 0
+        PersistenceWriter.finish_session(
+            db_session_id or "",
+            total_steps=total_steps,
+        )
 
         # Tier 2: log request for workflow discovery if artifact store is active.
         try:

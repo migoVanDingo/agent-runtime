@@ -1,7 +1,10 @@
+import time
 import anthropic
 from providers.base import BaseProvider, ProviderResponse, TextBlock, ToolUseBlock, TokenUsage
 from runtime.token_tracker import get_tracker
 from app_config import config
+
+_RETRY_DELAYS = (1, 2, 4)
 
 
 class AnthropicProvider(BaseProvider):
@@ -18,13 +21,24 @@ class AnthropicProvider(BaseProvider):
         json_schema: dict | None = None,
         label: str = "",
     ) -> ProviderResponse:
-        response = self.client.messages.create(
-            model=self.model,
-            max_tokens=config.llm.max_tokens,
-            system=system,
-            tools=tools,
-            messages=messages,
-        )
+        last_exc: Exception | None = None
+        for attempt, delay in enumerate((*_RETRY_DELAYS, None)):
+            try:
+                response = self.client.messages.create(
+                    model=self.model,
+                    max_tokens=config.llm.max_tokens,
+                    system=system,
+                    tools=tools,
+                    messages=messages,
+                )
+                break
+            except anthropic.RateLimitError as exc:
+                last_exc = exc
+                if delay is None:
+                    raise
+                time.sleep(delay)
+        else:
+            raise last_exc  # type: ignore[misc]
 
         content = []
         for block in response.content:

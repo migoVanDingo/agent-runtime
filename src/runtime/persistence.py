@@ -105,6 +105,30 @@ class PersistenceWriter:
             logger.warning(f"persistence: record_step failed: {e}")
 
     @staticmethod
+    def record_artifact(
+        db_session_id: str,
+        key: str,
+        tier: str,
+        size_bytes: Optional[int] = None,
+        content_preview: Optional[str] = None,
+        storage_path: Optional[str] = None,
+    ) -> None:
+        """Create an Artifact row. Silently ignores failures."""
+        if not PersistenceWriter.enabled() or not db_session_id:
+            return
+        try:
+            run_async(_create_artifact(
+                session_id=db_session_id,
+                key=key,
+                tier=tier,
+                size_bytes=size_bytes,
+                content_preview=content_preview,
+                storage_path=storage_path,
+            ))
+        except Exception as e:
+            logger.warning(f"persistence: record_artifact failed: {e}")
+
+    @staticmethod
     def finish_session(
         db_session_id: str,
         *,
@@ -209,6 +233,29 @@ async def _upsert_step(
                 importance_score=importance_score,
                 duration_ms=duration_ms,
             )
+
+
+async def _create_artifact(
+    *,
+    session_id: str,
+    key: str,
+    tier: str,
+    size_bytes: Optional[int],
+    content_preview: Optional[str],
+    storage_path: Optional[str],
+) -> None:
+    from db.session import agent_session
+    from db.dal.artifact_dal import ArtifactDAL
+    async with agent_session() as s:
+        dal = ArtifactDAL(s)
+        await dal.create(
+            session_id=session_id,
+            key=key,
+            tier=tier,
+            size_bytes=size_bytes,
+            content_preview=content_preview,
+            storage_path=storage_path,
+        )
 
 
 async def _finish_session(

@@ -141,10 +141,12 @@ class ExecutionStage(Stage):
     def _execute_plan(self, plan: Plan, *, db_session_id: str | None = None) -> str:
         from runtime.persistence import PersistenceWriter
 
+        replan_count = 0
+
         # ── Persistence: record plan ───────────────────────────────────
         db_plan_id = PersistenceWriter.record_plan(
             db_session_id or "",
-            plan_index=getattr(plan, "_replan_count", 0),
+            plan_index=replan_count,
             original_query=plan.original_query,
             steps=[
                 {"step": s.step, "action_type": s.action_type.value, "description": s.description}
@@ -290,11 +292,22 @@ class ExecutionStage(Stage):
                 self._spinner.update("Replanning...")
                 new_steps = self._planner.replan(plan, step, assessment.reason)
                 if new_steps:
+                    replan_count += 1
                     queue = queue[:idx] + new_steps
                     plan.steps = list(queue)
                     logger.info(f"  replanned: {len(new_steps)} new step(s)")
                     for s in new_steps:
                         logger.info(f"    Step {s.step} [{s.action_type.value}]: {s.description}")
+                    db_plan_id = PersistenceWriter.record_plan(
+                        db_session_id or "",
+                        plan_index=replan_count,
+                        original_query=plan.original_query,
+                        steps=[
+                            {"step": s.step, "action_type": s.action_type.value, "description": s.description}
+                            for s in new_steps
+                        ],
+                        replan_reason=assessment.reason,
+                    )
                 else:
                     logger.info("  replan failed — marking step complete and continuing")
                     step.status = StepStatus.COMPLETED

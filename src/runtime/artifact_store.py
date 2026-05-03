@@ -606,6 +606,22 @@ class ArtifactStore:
         self._dirty.add(key)
         if self._active_project:
             self.set_tag(key, "project", self._active_project)
+
+        if self._session_id:
+            try:
+                from runtime.persistence import PersistenceWriter
+                size = len(meta.summary.encode()) if meta.summary else None
+                PersistenceWriter.record_artifact(
+                    db_session_id=self._session_id,
+                    key=key,
+                    tier="hot",
+                    size_bytes=size,
+                    content_preview=meta.summary[:500] if meta.summary else None,
+                    storage_path=data_path,
+                )
+            except Exception:
+                pass
+
         return meta
 
     def get(self, key: str) -> Any | None:

@@ -1,8 +1,11 @@
 import json
+import time
 import openai
 from providers.base import BaseProvider, ProviderResponse, TextBlock, ToolUseBlock, TokenUsage
 from runtime.token_tracker import get_tracker
 from app_config import config
+
+_RETRY_DELAYS = (1, 2, 4)
 
 
 class OpenAICompatibleProvider(BaseProvider):
@@ -35,7 +38,18 @@ class OpenAICompatibleProvider(BaseProvider):
         if json_schema is not None:
             kwargs["response_format"] = {"type": "json_schema", "json_schema": json_schema}
 
-        response = self.client.chat.completions.create(**kwargs)
+        last_exc: Exception | None = None
+        for attempt, delay in enumerate((*_RETRY_DELAYS, None)):
+            try:
+                response = self.client.chat.completions.create(**kwargs)
+                break
+            except openai.RateLimitError as exc:
+                last_exc = exc
+                if delay is None:
+                    raise
+                time.sleep(delay)
+        else:
+            raise last_exc  # type: ignore[misc]
         result = self._translate_response(response)
 
         if response.usage:

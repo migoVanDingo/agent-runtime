@@ -262,7 +262,13 @@ def main():
             sys.exit(0)
 
         agent.spinner.begin_turn()
-        response = agent.call(user_input)
+        try:
+            response = agent.call(user_input)
+        except Exception as exc:
+            agent.spinner.stop()
+            logger.exception("Unhandled error during agent.call")
+            print(f"\nAgent: Sorry, something went wrong: {exc}\n")
+            continue
         elapsed = agent.spinner.elapsed_display()
         print(f"\nAgent: {response}\n")
         if elapsed:

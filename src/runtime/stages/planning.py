@@ -86,4 +86,7 @@ class PlanningStage(Stage):
         logger.info(f"  planner produced {len(plan.steps)}-step plan (valid)")
 
         context.plan = plan
+        # Mint a plan_id so execution events correlate back to this plan.
+        if context.identity is not None:
+            context.identity = context.identity.for_plan()
         return StageResult(status=StageStatus.OK, updated_context=context)

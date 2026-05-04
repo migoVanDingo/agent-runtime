@@ -2,6 +2,7 @@ import os
 import re
 
 from tools.base import BaseTool, InputSchema, ToolProperty, ToolWeight
+from runtime.policy import check_path_allowed
 
 # File extensions that should contain raw code — strip markdown code fences if present
 _CODE_EXTENSIONS = {
@@ -72,6 +73,9 @@ class WriteFileTool(BaseTool):
 
         path = tool_input["path"]
         content = tool_input["content"]
+        decision = check_path_allowed(path, "write")
+        if not decision.allowed:
+            return decision.error_message()
 
         cleaned, stripped = _strip_code_fences(path, content)
         if stripped:

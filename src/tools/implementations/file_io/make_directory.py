@@ -1,5 +1,6 @@
 import os
 from tools.base import BaseTool, InputSchema, ToolProperty, ToolWeight
+from runtime.policy import check_path_allowed
 
 
 class MakeDirectoryTool(BaseTool):
@@ -18,6 +19,9 @@ class MakeDirectoryTool(BaseTool):
 
     def execute(self, tool_input: dict) -> str:
         path = tool_input["path"]
+        decision = check_path_allowed(path, "write")
+        if not decision.allowed:
+            return decision.error_message()
         try:
             if os.path.isdir(path):
                 return f"Directory already exists: {path}"

@@ -3,6 +3,7 @@
 *.pyc
 _logs
 _metrics
+_events
 _papers
 _references
 _tests

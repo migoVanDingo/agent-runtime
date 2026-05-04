@@ -80,7 +80,7 @@ class PersistenceWriter:
         result: Optional[str],
         error: Optional[str],
         retry_count: int,
-        importance_score: Optional[float] = None,
+        importance_score: Optional[str] = None,
         duration_ms: Optional[int] = None,
     ) -> None:
         """Create or update a Step row. Silently ignores failures."""
@@ -188,7 +188,7 @@ async def _upsert_step(
     result: Optional[str],
     error: Optional[str],
     retry_count: int,
-    importance_score: Optional[float],
+    importance_score: Optional[str],
     duration_ms: Optional[int],
 ) -> None:
     from db.session import agent_session

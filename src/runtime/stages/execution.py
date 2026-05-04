@@ -1,10 +1,10 @@
 """ExecutionStage — executes a validated plan step by step.
 
-Direct lift of Agent._execute_plan() and Agent._run_step() from agent.py.
 All runtime safeguards are preserved: guard checks, monitor assessments,
 RETRY/REPLAN/DEFER/SKIP/ESCALATE decisions, loop detection, tool call cap,
 max_tokens patching, importance scoring.
 
+The per-step ReAct loop is delegated to runtime.tool_loop.ToolLoop.
 SynthesizerStage handles synthesis when plan.requires_synthesis is True.
 This stage always returns OK — internal retry/replan handles step failures.
 """
@@ -22,8 +22,9 @@ from runtime.pipeline_context import PipelineContext
 from runtime.schema import StepDecision
 from runtime.stage_base import Stage
 from runtime.stage_result import StageResult, StageStatus
+from runtime.tool_executor import ToolCallExecutor
+from runtime.tool_loop import ToolLoop, ToolLoopConfig
 from runtime.utils import banner, fmt_input, fmt_result, has_error_indicator
-from tools.implementations.web.read_url import INJECTION_WARNING_PREFIX
 from app_config import config
 from logger import get_logger
 
@@ -119,11 +120,17 @@ class ExecutionStage(Stage):
         self._planner = planner
         self._spinner = spinner
         self._agent_system = agent_system
+        self._tool_executor = ToolCallExecutor(registry, guard, user_gate, spinner)
 
     def run(self, context: PipelineContext) -> StageResult:
         # No-op for direct mode (plan is None).
         if context.plan is None:
             return StageResult(status=StageStatus.OK, updated_context=context)
+
+        # Mint plan_run_id so execution events join to this plan instance.
+        if context.identity is not None:
+            context.identity = context.identity.for_plan_run()
+        self._identity = context.identity
 
         response = self._execute_plan(context.plan, db_session_id=context.db_session_id)
         context.response = response
@@ -140,8 +147,19 @@ class ExecutionStage(Stage):
 
     def _execute_plan(self, plan: Plan, *, db_session_id: str | None = None) -> str:
         from runtime.persistence import PersistenceWriter
+        from runtime.events import RuntimeEvent, get_event_bus
 
         replan_count = 0
+        _identity = getattr(self, "_identity", None)
+        _bus = get_event_bus()
+        if _identity is not None:
+            _bus.emit(RuntimeEvent(
+                "plan.created",
+                _identity,
+                payload={"n_steps": len(plan.steps), "requires_synthesis": plan.requires_synthesis,
+                         "action_types": list({s.action_type.value for s in plan.steps})},
+                stage="ExecutionStage",
+            ))
 
         # ── Persistence: record plan ───────────────────────────────────
         db_plan_id = PersistenceWriter.record_plan(
@@ -165,10 +183,20 @@ class ExecutionStage(Stage):
             n_total = len(queue)
             step.status = StepStatus.RUNNING
             desc_short = step.description[:40] + "..." if len(step.description) > 40 else step.description
+            import time as _step_time
+            _step_t0 = _step_time.monotonic()
             retry_label = f" RETRY ({step.flags.retry_count}/{max_retries})" if step.flags.retry_count > 0 else ""
             self._spinner.update(f"Step {step.step}/{n_total} — {desc_short}")
             logger.info(banner(f"Step {step.step}/{n_total} [{step.action_type.value}]{retry_label}"))
             logger.info(f"  {step.description}")
+            if _identity is not None:
+                _bus.emit(RuntimeEvent(
+                    "step.started",
+                    _identity,
+                    payload={"step_index": step.step, "action_type": step.action_type.value,
+                             "tool": step.tool, "description_preview": step.description[:120]},
+                    stage="ExecutionStage",
+                ))
 
             if idx > 0 or step.flags.retry_count > 0:
                 if step.flags.retry_count > 0:
@@ -221,23 +249,29 @@ class ExecutionStage(Stage):
             else:
                 system = _step_system(plan, step, self._agent_system)
                 result = self._run_step(step, n_total, tools, system, query=plan.original_query, plan_start_index=plan_start_index)
+                # ToolLoop.stop() kills the spinner thread when a step ends.
+                # Restart it immediately so monitor, importance scoring, and
+                # the next step's setup remain visible.
+                self._spinner.start(f"Step {step.step}/{n_total} — done")
 
             step.result = result[:1000] if result else None
 
             # Advisory check: if planner declared an expected artifact output,
-            # verify it exists after step execution and surface a warning signal.
+            # verify it exists after step execution and surface a signal.
             if step.produces:
                 try:
                     from runtime.artifact_store import get_artifact_store
 
                     expected_key = step.produces.strip()
                     if expected_key and get_artifact_store().meta(expected_key) is None:
-                        warn = (
-                            f"declared produces='{expected_key}' but artifact was not registered"
+                        # INFO not WARNING — this is advisory; the planner sometimes
+                        # declares produces on steps that don't call store_artifact.
+                        logger.info(
+                            f"  produces='{expected_key}' declared but artifact not registered "
+                            f"(step used {step.tool!r} — only store_artifact registers artifacts)"
                         )
-                        logger.warning(f"  ⚠ {warn}")
                 except Exception as e:
-                    logger.warning(f"  produces-check skipped: {e}")
+                    logger.info(f"  produces-check skipped: {e}")
 
             # ── LLM importance scoring ──
             if result and step.status != StepStatus.ERROR:
@@ -264,7 +298,7 @@ class ExecutionStage(Stage):
                     result=result,
                     error=step.error if hasattr(step, "error") else None,
                     retry_count=step.flags.retry_count if hasattr(step, "flags") else 0,
-                    importance_score=_importance,
+                    importance_score=_importance.value if _importance is not None else None,
                 )
 
             # ── Monitor assessment ──
@@ -275,6 +309,19 @@ class ExecutionStage(Stage):
             if decision == StepDecision.CONTINUE:
                 step.status = StepStatus.COMPLETED
                 logger.info(banner(f"Step {step.step} complete"))
+                if _identity is not None:
+                    _step_dur = int((_step_time.monotonic() - _step_t0) * 1000)
+                    _step_imp = self._context_mgr.get_importance(
+                        len(self._messenger.get_messages()) - 1
+                    ) if result else None
+                    _bus.emit(RuntimeEvent(
+                        "step.completed",
+                        _identity,
+                        payload={"step_index": step.step, "status": "completed",
+                                 "duration_ms": _step_dur,
+                                 "importance_score": _step_imp.value if _step_imp else None},
+                        stage="ExecutionStage",
+                    ))
                 idx += 1
 
             elif decision == StepDecision.RETRY:
@@ -290,6 +337,13 @@ class ExecutionStage(Stage):
             elif decision == StepDecision.REPLAN:
                 logger.info(banner("Replanning"))
                 self._spinner.update("Replanning...")
+                if _identity is not None:
+                    _bus.emit(RuntimeEvent(
+                        "replan.triggered",
+                        _identity,
+                        payload={"failed_step": step.step, "reason": assessment.reason},
+                        stage="ExecutionStage",
+                    ))
                 new_steps = self._planner.replan(plan, step, assessment.reason)
                 if new_steps:
                     replan_count += 1
@@ -374,171 +428,61 @@ class ExecutionStage(Stage):
         query: str = "",
         plan_start_index: int | None = None,
     ) -> str:
-        desc_short = step.description[:40] + "..." if len(step.description) > 40 else step.description
-        step_tool_errors: list[str] = []
-        step_tool_calls = 0
-        force_end = False
+        """Execute one plan step via ToolLoop. Updates step.error on failure."""
         step.error = None
-        _last_tool_sig: tuple | None = None
-        # Set of tool names authorized for this step — enforces plan constraints.
-        _authorized_tools = {t["name"] for t in tools}
+        desc_short = step.description[:40] + "..." if len(step.description) > 40 else step.description
+        authorized = frozenset(t["name"] for t in tools)
 
-        while True:
-            packed = self._context_mgr.pack(
-                self._messenger.get_messages(),
-                query or step.description,
-                plan_start_index=plan_start_index,
-            )
-            response = self._provider.chat(
-                messages=packed,
-                tools=[] if force_end else tools,
-                system=system,
-                label="ExecutionStage",
-            )
+        step_identity = getattr(self, "_identity", None)
+        if step_identity is not None:
+            step_identity = step_identity.for_step_run()
 
-            if response.stop_reason in ("end_turn", "max_tokens"):
-                self._messenger.add_assistant_message(response.content)
-                if response.stop_reason == "max_tokens":
-                    logger.info("  [max_tokens] — stopping step early")
-                    step.error = "max_tokens"
-                    dangling = [b for b in response.content if isinstance(b, ToolUseBlock)]
-                    if dangling:
-                        logger.info(f"  [max_tokens] patching {len(dangling)} dangling tool_use block(s)")
-                        self._messenger.add_tool_results([
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": b.id,
-                                "content": "[interrupted: step ended at max_tokens before tool could execute]",
-                            }
-                            for b in dangling
-                        ])
-                if step_tool_errors:
-                    step.error = (step.error or "") + "; tool errors: " + "; ".join(step_tool_errors)
-                return next(
-                    (b.text for b in response.content if isinstance(b, TextBlock)), ""
-                )
+        loop_cfg = ToolLoopConfig(
+            max_iterations=3,  # steps are short; per-step iterations capped tightly
+            max_tool_calls=config.runtime.execution_monitor.step_max_tool_calls,
+            max_consecutive_errors=3,
+            authorized_tool_names=authorized,
+            label="ExecutionStage",
+        )
 
-            if response.stop_reason == "tool_use":
-                self._messenger.add_assistant_message(response.content)
-                tool_results = []
-                for block in response.content:
-                    if isinstance(block, ToolUseBlock):
-                        logger.info(f"  → {block.name}  {fmt_input(block.name, block.input)}")
+        class _StepHooks:
+            def __init__(self, s: Step):
+                self._step = s
+                self.tool_errors: list[str] = []
 
-                        # Authorization gate: model must only call tools provided for this step.
-                        if _authorized_tools and block.name not in _authorized_tools:
-                            logger.info(f"  ✖ UNAUTHORIZED: '{block.name}' not in step tool list {sorted(_authorized_tools)}")
-                            result = f"Tool call rejected: '{block.name}' is not authorized for this step. Use only the tools provided."
-                            tool_results.append({
-                                "type": "tool_result",
-                                "tool_use_id": block.id,
-                                "content": result,
-                            })
-                            step_tool_errors.append(f"{block.name}: unauthorized")
-                            continue
+            def on_tool_complete(self, tool_name: str, result: str) -> None:
+                pass
 
-                        guard_decision, guard_reason = self._guard.check_tool_call(block.name, block.input)
+            def on_max_tokens(self) -> None:
+                self._step.error = "max_tokens"
 
-                        if guard_decision == GuardDecision.BLOCK:
-                            logger.info(f"  ✖ BLOCKED: {guard_reason}")
-                            result = f"Tool call blocked by safety policy: {guard_reason}"
-                        elif guard_decision == GuardDecision.ESCALATE:
-                            logger.info(f"  ⚠ ESCALATE: {guard_reason}")
-                            escalation = Escalation(
-                                reason=guard_reason,
-                                source="guard",
-                                tool_name=block.name,
-                                tool_input=block.input,
-                            )
-                            self._spinner.stop()
-                            if self._user_gate.prompt(escalation):
-                                self._guard.record_approval(block.name, block.input)
-                                self._spinner.start(f"Running {block.name}...")
-                                try:
-                                    tool = self._registry.get(block.name)
-                                    result = tool.safe_execute(block.input)
-                                except KeyError:
-                                    result = f"Error: tool '{block.name}' does not exist."
-                            else:
-                                result = f"Tool call denied by user: {guard_reason}"
-                            self._spinner.start(f"Step {step.step}/{n_total} — {desc_short}")
-                        else:
-                            self._spinner.update(f"Running {block.name}...")
-                            try:
-                                tool = self._registry.get(block.name)
-                                result = tool.safe_execute(block.input)
-                            except KeyError:
-                                result = f"Error: tool '{block.name}' does not exist."
+            def on_error_cleared(self, n: int) -> None:
+                if config.runtime.execution_monitor.error_recovery_clears_step_error:
+                    logger.info(f"  runtime: successful tool call after {n} error(s) — clearing step errors")
 
-                        # ── Injection gate ──
-                        if result.startswith(INJECTION_WARNING_PREFIX):
-                            logger.info("  ⚠ INJECTION WARNING: read_url detected adversarial content — halting step")
-                            self._spinner.stop()
-                            print(f"\n{'─'*60}")
-                            print("  SECURITY WARNING: Possible prompt injection detected")
-                            print("  in fetched web content. The content has been quarantined")
-                            print("  and has NOT entered context.")
-                            print(f"{'─'*60}")
-                            print(result.replace(INJECTION_WARNING_PREFIX + "\n", ""))
-                            print(f"{'─'*60}")
-                            user_choice = input("  Proceed with reading this content? [y/N]: ").strip().lower()
-                            if user_choice == "y":
-                                self._spinner.start(f"Step {step.step}/{n_total} — {desc_short}")
-                                result = result.replace(INJECTION_WARNING_PREFIX + "\n", "[SECURITY REVIEW PASSED BY USER]\n")
-                            else:
-                                # Expel the artifact (removes from store + disk)
-                                import re as _re
-                                key_match = _re.search(r"Artifact-key: (\S+)", result)
-                                if key_match:
-                                    artifact_key = key_match.group(1)
-                                    del_choice = input(f"  Delete quarantined artifact '{artifact_key}'? [Y/n]: ").strip().lower()
-                                    if del_choice != "n":
-                                        try:
-                                            from runtime.artifact_store import get_artifact_store
-                                            get_artifact_store().expel(artifact_key)
-                                            print(f"  Expelled artifact '{artifact_key}'")
-                                        except Exception:
-                                            pass
-                                result = "Tool call cancelled by user: potential prompt injection in fetched content."
-                                tool_results.append({
-                                    "type": "tool_result",
-                                    "tool_use_id": block.id,
-                                    "content": result,
-                                })
-                                self._messenger.add_tool_results(tool_results)
-                                self._spinner.start(f"Step {step.step}/{n_total} — {desc_short}")
-                                force_end = True
-                                continue
+        hooks = _StepHooks(step)
+        loop = ToolLoop(
+            provider=self._provider,
+            messenger=self._messenger,
+            context_mgr=self._context_mgr,
+            tool_executor=self._tool_executor,
+            spinner=self._spinner,
+            user_gate=self._user_gate,
+            config=loop_cfg,
+            parent_identity=step_identity,
+        )
 
-                        logger.info(f"  ← {fmt_result(result)}")
-                        step_tool_calls += 1
+        result = loop.run(
+            system=system,
+            tools=tools,
+            query=query or step.description,
+            plan_start_index=plan_start_index,
+            hooks=hooks,
+            resume_message=f"Step {step.step}/{n_total} — {desc_short}",
+        )
 
-                        if has_error_indicator(result):
-                            step_tool_errors.append(f"{block.name}: {result[:100]}")
-                        elif step_tool_errors and config.runtime.execution_monitor.error_recovery_clears_step_error:
-                            logger.info(f"  runtime: successful tool call after {len(step_tool_errors)} error(s) — clearing step errors")
-                            step_tool_errors.clear()
+        if result.tool_errors:
+            existing = step.error or ""
+            step.error = (existing + "; tool errors: " + "; ".join(result.tool_errors)).lstrip("; ")
 
-                        cur_sig = (block.name, str(sorted(block.input.items())))
-                        if cur_sig == _last_tool_sig and not has_error_indicator(result):
-                            logger.info(f"  runtime: repeated identical tool call detected ({block.name}) — forcing wrap-up")
-                            force_end = True
-                        _last_tool_sig = cur_sig
-
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": result,
-                        })
-
-                self._spinner.update(f"Step {step.step}/{n_total} — {desc_short}")
-                self._messenger.add_tool_results(tool_results)
-
-                step_cap = config.runtime.execution_monitor.step_max_tool_calls
-                if step_tool_calls >= step_cap:
-                    logger.info(f"  runtime: step tool call cap ({step_cap}) reached — forcing wrap-up")
-                    self._messenger.add_user_message(
-                        "You have reached the tool call limit for this step. "
-                        "Stop all tool calls and provide a final response for this step."
-                    )
-                    force_end = True
+        return result.response_text

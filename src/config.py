@@ -6,6 +6,12 @@ import yaml
 @dataclass
 class LLMConfig:
     max_tokens: int
+    # Main agent LLM
+    provider: str = "anthropic"
+    model: str | None = None
+    # Runtime LLM (classifier, monitor, importance, council)
+    runtime_provider: str | None = None
+    runtime_model: str | None = None
 
 
 @dataclass
@@ -93,12 +99,6 @@ class PlanningConfig:
 
 
 @dataclass
-class IntentClassifierConfig:
-    enabled: bool
-    context_window: int
-
-
-@dataclass
 class PlanValidatorConfig:
     enabled: bool
 
@@ -123,10 +123,68 @@ class ContextManagerConfig:
 
 
 @dataclass
+class PipelineConfig:
+    max_retries_per_stage: int = 2
+    max_ask_user_per_stage: int = 1
+    # Direct-mode / fallback tool loop caps
+    max_tool_calls: int = 15
+    max_iterations: int = 20
+    max_consecutive_errors: int = 3
+    tool_result_truncate_chars: int = 50_000
+
+
+@dataclass
 class PlanCriticConfig:
     enabled: bool
     skip_low_risk: bool = False
     consensus_on_high_risk: bool = True
+
+
+@dataclass
+class MonitorCouncilConfig:
+    """Council vote replaces single-model monitor when confidence falls below threshold."""
+    enabled: bool = False
+    confidence_threshold: float = 0.65  # trigger council when single-model confidence < this
+    n_councillors: int = 2              # how many councillors to use (taken from the top of the pool)
+
+
+@dataclass
+class SynthesisQualityConfig:
+    """Council quality gate on synthesized responses after plans with failures."""
+    enabled: bool = False
+    only_after_failures: bool = True    # only gate when the plan had retries or replans
+    n_councillors: int = 2
+
+
+@dataclass
+class ImportanceCouncilConfig:
+    """Council vote on step-result importance when the single-model result is MEDIUM (ambiguous)."""
+    enabled: bool = False
+    only_on_medium: bool = True         # only deliberate when single-model says MEDIUM
+    n_councillors: int = 2
+
+
+@dataclass
+class EventsConfig:
+    enabled: bool = False
+    jsonl_enabled: bool = False
+    directory: str = "_events"
+    raw_payloads: bool = False
+    redact_on_emit: bool = False     # scrub secrets before writing to JSONL
+    redact_on_export: bool = True    # scrub secrets in all exported datasets
+
+
+@dataclass
+class SandboxConfig:
+    backend: str = "auto"
+    allow_host_backend: bool = True
+    docker_image: str = "python:3.11-slim"
+    default_network: str = "disabled"
+    command_timeout_seconds: int = 30
+    max_output_chars: int = 50000
+    workspace_root: str = "."
+    allowed_read_roots: list[str] = field(default_factory=list)
+    allowed_write_roots: list[str] = field(default_factory=list)
 
 
 # ── Council config ──────────────────────────────────────────────────────────
@@ -159,12 +217,18 @@ class CouncilConfig:
 
 @dataclass
 class RuntimeConfig:
-    intent_classifier: IntentClassifierConfig
+    events: EventsConfig
+    sandbox: SandboxConfig
+    pipeline: PipelineConfig
     plan_validator: PlanValidatorConfig
     plan_critic: PlanCriticConfig
     execution_monitor: ExecutionMonitorConfig
     context_manager: ContextManagerConfig
     council: CouncilConfig = field(default_factory=CouncilConfig)
+    # Optional councils for specific decision points
+    monitor_council: MonitorCouncilConfig = field(default_factory=MonitorCouncilConfig)
+    synthesis_quality: SynthesisQualityConfig = field(default_factory=SynthesisQualityConfig)
+    importance_council: ImportanceCouncilConfig = field(default_factory=ImportanceCouncilConfig)
 
 
 @dataclass
@@ -256,13 +320,38 @@ def load_config() -> AppConfig:
         dynamic_scaling=dynamic_scaling,
     )
 
+    events_raw = rt.get("events", {})
+    sandbox_raw = rt.get("sandbox", {})
+
     runtime = RuntimeConfig(
-        intent_classifier=IntentClassifierConfig(**rt["intent_classifier"]),
+        events=EventsConfig(
+            enabled=events_raw.get("enabled", False),
+            jsonl_enabled=events_raw.get("jsonl_enabled", False),
+            directory=events_raw.get("directory", "_events"),
+            raw_payloads=events_raw.get("raw_payloads", False),
+            redact_on_emit=events_raw.get("redact_on_emit", False),
+            redact_on_export=events_raw.get("redact_on_export", True),
+        ),
+        sandbox=SandboxConfig(
+            backend=sandbox_raw.get("backend", "host"),
+            allow_host_backend=sandbox_raw.get("allow_host_backend", True),
+            docker_image=sandbox_raw.get("docker_image", "python:3.11-slim"),
+            default_network=sandbox_raw.get("default_network", "disabled"),
+            command_timeout_seconds=int(sandbox_raw.get("command_timeout_seconds", 30)),
+            max_output_chars=int(sandbox_raw.get("max_output_chars", 50000)),
+            workspace_root=sandbox_raw.get("workspace_root", "."),
+            allowed_read_roots=list(sandbox_raw.get("allowed_read_roots", []) or []),
+            allowed_write_roots=list(sandbox_raw.get("allowed_write_roots", []) or []),
+        ),
+        pipeline=PipelineConfig(**rt.get("pipeline", {})),
         plan_validator=PlanValidatorConfig(**rt["plan_validator"]),
         plan_critic=PlanCriticConfig(**rt["plan_critic"]),
         execution_monitor=ExecutionMonitorConfig(**rt["execution_monitor"]),
         context_manager=ContextManagerConfig(**rt["context_manager"]),
         council=council,
+        monitor_council=MonitorCouncilConfig(**rt.get("monitor_council", {})),
+        synthesis_quality=SynthesisQualityConfig(**rt.get("synthesis_quality", {})),
+        importance_council=ImportanceCouncilConfig(**rt.get("importance_council", {})),
     )
 
     return AppConfig(

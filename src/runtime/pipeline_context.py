@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from planning.schema import Plan
     from runtime.schema import ClassifierResult
+    from runtime.identity import RuntimeIdentity
 
 
 @dataclass
@@ -19,6 +20,8 @@ class PipelineContext:
 
     # ── Set at pipeline entry (call-site) ────────────────────────────
     user_message: str
+    # Runtime identity — minted by Pipeline.run, enriched by stages.
+    identity: "RuntimeIdentity | None" = None
 
     # ── Set by RoutingStage ──────────────────────────────────────────
     # Packed (compressed) conversation messages from ContextManager.pack().

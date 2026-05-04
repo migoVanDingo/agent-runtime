@@ -9,6 +9,13 @@ from utils import generate_id
 from logger import configure_logging, log_session_end, LOGS_DIR, get_logger
 from runtime.token_tracker import get_tracker
 from runtime.artifact_store import init_store, get_artifact_store, ResumableSession
+from runtime.events import (
+    RuntimeEvent,
+    get_event_bus,
+    get_runtime_identity,
+    init_runtime_events,
+    set_runtime_identity,
+)
 from app_config import config
 from agent import Agent
 
@@ -186,6 +193,14 @@ def _finalize_session(session_id: str, agent: Agent | None, store_enabled: bool)
         store.mark_detached()
 
     get_tracker().log_summary()
+    get_event_bus().emit(
+        RuntimeEvent(
+            "session.ended",
+            get_runtime_identity(),
+            payload={"has_agent": agent is not None, "store_enabled": store_enabled},
+            stage="main",
+        )
+    )
     print_session_end(session_id)
     log_session_end(session_id)
 
@@ -221,6 +236,15 @@ def main():
         sys.exit(1)
 
     configure_logging(session_id, verbose=args.verbose)
+    init_runtime_events(session_id, project_id=project_root.name)
+    get_event_bus().emit(
+        RuntimeEvent(
+            "session.resumed" if resumed else "session.started",
+            get_runtime_identity(),
+            payload={"resumed": resumed, "store_enabled": store_enabled},
+            stage="main",
+        )
+    )
 
     if store_enabled:
         _apply_decay_if_enabled()
@@ -262,13 +286,39 @@ def main():
             sys.exit(0)
 
         agent.spinner.begin_turn()
+        turn_identity = get_runtime_identity().for_turn()
+        set_runtime_identity(turn_identity)
+        get_event_bus().emit(
+            RuntimeEvent(
+                "turn.started",
+                turn_identity,
+                payload={"message_preview": user_input[:300]},
+                stage="main",
+            )
+        )
         try:
             response = agent.call(user_input)
         except Exception as exc:
             agent.spinner.stop()
             logger.exception("Unhandled error during agent.call")
+            get_event_bus().emit(
+                RuntimeEvent(
+                    "turn.failed",
+                    turn_identity,
+                    payload={"error": str(exc)[:500]},
+                    stage="main",
+                )
+            )
             print(f"\nAgent: Sorry, something went wrong: {exc}\n")
             continue
+        get_event_bus().emit(
+            RuntimeEvent(
+                "turn.completed",
+                turn_identity,
+                payload={"response_preview": response[:500]},
+                stage="main",
+            )
+        )
         elapsed = agent.spinner.elapsed_display()
         print(f"\nAgent: {response}\n")
         if elapsed:

@@ -115,11 +115,19 @@ class StepFlags:
 
 @dataclass
 class Step:
+    """Planner spec for one step.
+
+    The fields `status`, `result`, `error`, and `flags.retry_count` are
+    runtime-execution state that belongs in `runtime.run_state.StepRun`.
+    They are kept here during the transition; new code should use
+    `PlanRun.from_plan(plan)` and read execution state from `StepRun`.
+    """
     step: int
     description: str
     action_type: ActionType
     tool: str | None = None
     produces: str | None = None
+    # ── Runtime state — migrating to runtime.run_state.StepRun ───────
     status: StepStatus = StepStatus.PENDING
     result: str | None = None
     error: str | None = None

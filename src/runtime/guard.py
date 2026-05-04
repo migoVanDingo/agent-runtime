@@ -32,7 +32,7 @@ _DANGEROUS_COMMANDS = re.compile(
     r"|chmod\s+777\b"                   # chmod 777
     r"|chmod\s+-R\b"                    # recursive chmod
     r"|chown\s+-R\b"                    # recursive chown
-    r"|>\s*/dev/"                        # write to /dev/
+    r"|>\s*/dev/(?!null\b|stderr\b|stdout\b)"  # write to /dev/ (allow /dev/null, /dev/stderr, /dev/stdout)
     r"|curl\s.*\|\s*(?:ba)?sh"          # curl | sh (pipe to shell)
     r"|wget\s.*\|\s*(?:ba)?sh"          # wget | sh
     r")",

@@ -81,6 +81,10 @@ class ContextManager:
         """Set an LLM-assigned importance override for a message at the given index."""
         self._importance_overrides[message_index] = importance
 
+    def get_importance(self, message_index: int) -> Importance | None:
+        """Return the LLM-assigned importance for a message index, or None if not set."""
+        return self._importance_overrides.get(message_index)
+
     def pack(self, messages: list[dict], current_query: str, plan_start_index: int | None = None) -> list[dict]:
         """Return a budget-constrained version of the message history.
 

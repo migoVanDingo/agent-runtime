@@ -1,6 +1,5 @@
-import subprocess
 from tools.base import BaseTool, InputSchema, ToolProperty, ToolWeight
-from app_config import config
+from runtime.sandbox import SandboxManager
 
 
 class BashExecTool(BaseTool):
@@ -21,10 +20,5 @@ class BashExecTool(BaseTool):
 
     def execute(self, tool_input: dict) -> str:
         command = tool_input["command"]
-        result = subprocess.run(
-            command, shell=True, capture_output=True, text=True, timeout=config.timeouts.default
-        )
-        output = result.stdout
-        if result.stderr:
-            output += f"\nSTDERR: {result.stderr}"
-        return output if output else "(no output)"
+        result = SandboxManager().run_shell(command)
+        return result.to_tool_output()

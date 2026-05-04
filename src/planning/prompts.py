@@ -35,14 +35,48 @@ BEFORE selecting tools, think about what information you actually need:
 Each step performs ONE tool operation. Specify the exact tool name in the "tool" \
 field. Do NOT bundle multiple tools into a single step.
 
-Optional "produces" field: if a step is expected to store a named artifact, set \
-"produces" to that artifact key so later steps can reference it.
+Optional "produces" field: only set this when the step's tool is "store_artifact" \
+and the step will explicitly call store_artifact to register a named value. \
+Do NOT set "produces" on bash_exec, walk_directory, file_info, or other tools \
+that produce output but do not call store_artifact — leave "produces" null for those.
 
 Action types and their tools:
 {tool_list}
 
 Use "requires_synthesis": true when the final response should be a coherent \
 summary across all steps. Use false only for a single self-contained step.
+
+DECOMPOSITION RULES — apply these for complex tasks:
+
+FINDING A BINARY: Never use bash_exec with 'find -executable' — that returns any file
+  with the execute bit set (logs, scripts, etc.), not native binaries. Instead:
+  Step 1: walk_directory to list all files.
+  Step 2: file_info on each candidate that has no text extension (.py, .md, .txt,
+    .json, .log, .jsonl, .yaml, .yml, .toml, .sh, .pyc).
+  CRITICAL: Do NOT add a json_query, regex_match, or any other data-processing step
+  between walk_directory and file_info. Go directly from walk → file_info.
+  The executor reads the walk output and identifies extensionless candidates itself.
+  Adding a filter step only introduces failure points with no benefit.
+  file_info runs on the host and always has the 'file' command available.
+  Never call 'file' via bash_exec — it is not installed in the bash sandbox.
+
+BINARY ANALYSIS: Never start with disassembly. Always recon first:
+  file_info → checksec → strings → nm → THEN targeted disassembly in 500-line chunks.
+  Strings and nm frequently identify the algorithm via constants (0x9e3779b9=TEA,
+  0x6a09e667=SHA-256, 0x67452301=MD5) without needing any disassembly at all.
+  If the output is large (>1000 lines of disassembly), use sed to read it in slices.
+
+WRITE + TEST: Any plan that writes a program must end with a test step:
+  write_file → bash_exec to create a venv in /tmp, install deps, run the program,
+  verify output. Never plan to write code without planning to test it.
+
+LARGE OUTPUT HANDLING: When a tool may produce large output (disassembly, grep
+  across many files, directory walks), first measure the size, then read in chunks.
+  Use bash_exec with `wc -l`, `head`, `sed -n 'N,Mp'` to navigate large content.
+
+ALGORITHM IDENTIFICATION: When analyzing crypto code, always extract and report
+  the exact algorithm name. Do not say "the algorithm is unknown" — surface the
+  constants, block size, round count, and mode from the code, then name it.
 
 Maximum {max_steps} steps.\
 """
@@ -179,6 +213,86 @@ Example — "what's new in the LLM / AI agent / ML space" or "what techniques sh
       "description": "Fetch full details on the 2-3 highest-signal items from the search results to get opportunity analysis and tags",
       "action_type": "briefbot",
       "tool": "briefbot_item",
+      "produces": null,
+      "flags": {{"retry": false, "escalate": false, "defer": false}}
+    }}
+  ]
+}}
+
+Example — "analyze _tests/proc and write a Python clone to _tests/run_5/proc_clone.py":
+{{
+  "original_query": "analyze _tests/proc and write a Python clone to _tests/run_5/proc_clone.py",
+  "requires_synthesis": true,
+  "steps": [
+    {{
+      "step": 1,
+      "description": "Identify the file type and architecture of _tests/proc",
+      "action_type": "analysis",
+      "tool": "file_info",
+      "produces": null,
+      "flags": {{"retry": false, "escalate": false, "defer": false}}
+    }},
+    {{
+      "step": 2,
+      "description": "Extract printable strings from _tests/proc — look for usage messages, numeric constants (0x9e3779b9=TEA, 0x6a09e667=SHA-256, 0x67452301=MD5), IV values, and algorithm hints",
+      "action_type": "analysis",
+      "tool": "strings",
+      "produces": null,
+      "flags": {{"retry": false, "escalate": false, "defer": false}}
+    }},
+    {{
+      "step": 3,
+      "description": "Extract symbol table of _tests/proc using nm — identify custom function names and any exported constants like DELTA, BLOCK, ROUNDS, IV",
+      "action_type": "analysis",
+      "tool": "nm",
+      "produces": null,
+      "flags": {{"retry": false, "escalate": false, "defer": false}}
+    }},
+    {{
+      "step": 4,
+      "description": "Dump disassembly to /tmp/proc.asm and report line count: `otool -tv _tests/proc > /tmp/proc.asm 2>&1 && wc -l /tmp/proc.asm`",
+      "action_type": "shell",
+      "tool": "bash_exec",
+      "produces": null,
+      "flags": {{"retry": false, "escalate": false, "defer": false}}
+    }},
+    {{
+      "step": 5,
+      "description": "Read lines 1-500 of /tmp/proc.asm: `sed -n '1,500p' /tmp/proc.asm` — identify main(), argument parsing, and any constants matching recon",
+      "action_type": "shell",
+      "tool": "bash_exec",
+      "produces": null,
+      "flags": {{"retry": false, "escalate": false, "defer": false}}
+    }},
+    {{
+      "step": 6,
+      "description": "Read lines 501-1000 of /tmp/proc.asm: `sed -n '501,1000p' /tmp/proc.asm` — identify encrypt/decrypt functions and cipher round structure",
+      "action_type": "shell",
+      "tool": "bash_exec",
+      "produces": null,
+      "flags": {{"retry": false, "escalate": false, "defer": false}}
+    }},
+    {{
+      "step": 7,
+      "description": "From all collected evidence (strings, nm, disassembly), identify the exact algorithm (name, block size, rounds, key derivation, mode, IV, padding). Then write a complete Python implementation to _tests/run_5/proc_clone.py that exactly replicates the binary.",
+      "action_type": "conversation",
+      "tool": null,
+      "produces": null,
+      "flags": {{"retry": false, "escalate": false, "defer": false}}
+    }},
+    {{
+      "step": 8,
+      "description": "Write the Python clone to _tests/run_5/proc_clone.py",
+      "action_type": "file_io",
+      "tool": "write_file",
+      "produces": null,
+      "flags": {{"retry": false, "escalate": false, "defer": false}}
+    }},
+    {{
+      "step": 9,
+      "description": "Test the clone: `cd /tmp && python3 -m venv _arc_env && source _arc_env/bin/activate && pip install pycryptodome -q && python3 _tests/run_5/proc_clone.py -e testpass hello 2>&1`. Verify it runs without errors. If errors, fix and rewrite.",
+      "action_type": "shell",
+      "tool": "bash_exec",
       "produces": null,
       "flags": {{"retry": false, "escalate": false, "defer": false}}
     }}

@@ -113,7 +113,9 @@ class CouncilStage(Stage):
         self._spinner.update("Reviewing plan...")
 
         plan = context.plan
-        critic_result = self._critic.review(plan, active_councillors=active)
+        critic_result = self._critic.review(
+            plan, active_councillors=active, identity=context.identity
+        )
 
         if critic_result is None or critic_result.verdict != CriticVerdict.CHALLENGED:
             return StageResult(status=StageStatus.OK, updated_context=context)
@@ -174,5 +176,17 @@ class CouncilStage(Stage):
                 )
 
         logger.info(banner(f"Plan ready ({len(plan.steps)} steps)"))
+
+        # Emit plan.revised if the council changed the plan
+        if context.identity is not None and plan is not context.plan:
+            from runtime.events import RuntimeEvent, get_event_bus
+            n_challenges = len(critic_result.challenges) if critic_result.challenges else 0
+            get_event_bus().emit(RuntimeEvent(
+                "plan.revised",
+                context.identity,
+                payload={"n_challenges": n_challenges, "surviving_steps": len(plan.steps)},
+                stage="CouncilStage",
+            ))
+
         context.plan = plan
         return StageResult(status=StageStatus.OK, updated_context=context)

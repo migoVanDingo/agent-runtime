@@ -78,7 +78,7 @@ class StepDAL(BaseDAL[Step]):
         result: Optional[str] = None,
         error: Optional[str] = None,
         retry_count: int = 0,
-        importance_score: Optional[float] = None,
+        importance_score: Optional[str] = None,
         duration_ms: Optional[int] = None,
     ) -> Optional[Step]:
         obj = await self.get_by_id(step_id)

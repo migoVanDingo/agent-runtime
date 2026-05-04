@@ -1,5 +1,5 @@
-import json
 import re
+from runtime.json_extract import extract_json
 from planning.schema import Plan, Step, StepStatus
 from runtime.schema import StepDecision, StepAssessment
 from runtime.prompts import MONITOR_SYSTEM_PROMPT, MONITOR_USER_TEMPLATE
@@ -126,6 +126,15 @@ class ExecutionMonitor:
         assessment = self._parse(raw)
         logger.info(f"  monitor LLM: {assessment.decision.value} (confidence={assessment.confidence:.2f}) — {assessment.reason}")
 
+        # ── Optional council escalation for uncertain decisions ─────────────
+        mc = config.runtime.monitor_council
+        if mc.enabled and assessment.confidence < mc.confidence_threshold:
+            logger.info(
+                f"  monitor: confidence {assessment.confidence:.2f} < {mc.confidence_threshold} "
+                f"— escalating to {mc.n_councillors}-councillor council"
+            )
+            assessment = self._council_assess(assessment, step, plan, result, flags, mc.n_councillors)
+
         # Low-confidence RETRY → skip instead (don't waste a retry on uncertainty)
         if assessment.decision == StepDecision.RETRY and assessment.confidence < 0.5:
             logger.info("  monitor: low confidence retry → skipping instead")
@@ -134,37 +143,69 @@ class ExecutionMonitor:
 
         return assessment
 
+    def _council_assess(self, initial: StepAssessment, step, plan, result: str, flags, n_councillors: int) -> StepAssessment:
+        """Run a quick N-councillor council when the monitor is uncertain."""
+        from runtime.council import Council
+        from runtime.council_adapters import MonitorAdapter, MonitorDecision
+        from planning.schema import StepStatus
+
+        completed = []
+        remaining = []
+        for s in plan.steps:
+            if s.status == StepStatus.COMPLETED:
+                summary = s.result[:100] if s.result else "(no result)"
+                completed.append(f"  Step {s.step}: {s.description} → {summary}")
+            elif s.step > step.step:
+                remaining.append(f"  Step {s.step}: {s.description}")
+
+        council_input = {
+            "original_query": plan.original_query,
+            "step_num": step.step,
+            "total_steps": len(plan.steps),
+            "step_description": step.description,
+            "action_type": step.action_type.value,
+            "step_result": (result or "")[:400],
+            "completed_summary": "\n".join(completed) or "  (none)",
+            "remaining_summary": "\n".join(remaining) or "  (none — this is the last step)",
+            "flags": "; ".join(flags),
+        }
+
+        import dataclasses
+        base_cfg = config.runtime.council
+        active = base_cfg.councillors[:n_councillors]
+        effective_cfg = dataclasses.replace(base_cfg, councillors=active)
+
+        adapter = MonitorAdapter()
+        council = Council(adapter=adapter, config=effective_cfg)
+        result_obj = council.deliberate(council_input=council_input, context="monitor", query=plan.original_query)
+        final: MonitorDecision = result_obj.final
+        logger.info(f"  monitor council: {final.decision.value} (confidence={final.confidence:.2f}) — {final.reason}")
+        return StepAssessment(decision=final.decision, confidence=final.confidence, reason=final.reason)
+
     def _parse(self, raw: str) -> StepAssessment:
         """Parse monitor LLM response. Defaults to CONTINUE on failure."""
-        text = raw.strip()
-
-        if text.startswith("```"):
-            lines = text.splitlines()
-            inner = lines[1:-1] if lines[-1].strip() == "```" else lines[1:]
-            text = "\n".join(inner).strip()
-
-        try:
-            data = json.loads(text)
-            decision_str = data.get("decision", "continue")
-            try:
-                decision = StepDecision(decision_str)
-            except ValueError:
-                logger.info(f"  monitor: invalid decision '{decision_str}' — defaulting to continue")
-                decision = StepDecision.CONTINUE
-
-            confidence = data.get("confidence", 1.0)
-            try:
-                confidence = float(confidence)
-                confidence = max(0.0, min(1.0, confidence))
-            except (TypeError, ValueError):
-                confidence = 1.0
-
-            return StepAssessment(
-                decision=decision,
-                reason=data.get("reason", ""),
-                suggestion=data.get("suggestion"),
-                confidence=confidence,
-            )
-        except (json.JSONDecodeError, AttributeError):
+        data = extract_json(raw)
+        if not isinstance(data, dict):
             logger.info("  monitor: parse failed — defaulting to continue")
             return StepAssessment(decision=StepDecision.CONTINUE, reason="parse error")
+
+        decision_str = data.get("decision", "continue")
+        try:
+            decision = StepDecision(decision_str)
+        except ValueError:
+            logger.info(f"  monitor: invalid decision '{decision_str}' — defaulting to continue")
+            decision = StepDecision.CONTINUE
+
+        confidence = data.get("confidence", 1.0)
+        try:
+            confidence = float(confidence)
+            confidence = max(0.0, min(1.0, confidence))
+        except (TypeError, ValueError):
+            confidence = 1.0
+
+        return StepAssessment(
+            decision=decision,
+            reason=data.get("reason", ""),
+            suggestion=data.get("suggestion"),
+            confidence=confidence,
+        )

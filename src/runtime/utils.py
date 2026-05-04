@@ -97,22 +97,23 @@ def parse_routing_response(
         return ClassifierResult(mode="direct", risk="low"), text
 
     remaining = text[m.end():].strip()
-    try:
-        data = json.loads(m.group(1).strip())
-        mode = data.get("mode", "direct")
-        risk = data.get("risk", "low")
-        workflow_hint = data.get("workflow") or None
-
-        if mode not in ("plan", "direct"):
-            mode = "direct"
-        if risk not in ("low", "moderate", "high"):
-            risk = "low"
-        if workflow_hint and valid_workflows and workflow_hint not in valid_workflows:
-            workflow_hint = None
-
-        return ClassifierResult(mode=mode, risk=risk, workflow_hint=workflow_hint), remaining
-    except (json.JSONDecodeError, AttributeError):
+    from runtime.json_extract import extract_json
+    data = extract_json(m.group(1).strip())
+    if not isinstance(data, dict):
         return ClassifierResult(mode="direct", risk="low"), remaining
+
+    mode = data.get("mode", "direct")
+    risk = data.get("risk", "low")
+    workflow_hint = data.get("workflow") or None
+
+    if mode not in ("plan", "direct"):
+        mode = "direct"
+    if risk not in ("low", "moderate", "high"):
+        risk = "low"
+    if workflow_hint and valid_workflows and workflow_hint not in valid_workflows:
+        workflow_hint = None
+
+    return ClassifierResult(mode=mode, risk=risk, workflow_hint=workflow_hint), remaining
 
 
 def is_clean_inline_answer(text: str) -> bool:

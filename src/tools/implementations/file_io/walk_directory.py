@@ -1,5 +1,6 @@
 import os
 from tools.base import BaseTool, InputSchema, ToolProperty, ToolWeight
+from runtime.policy import check_path_allowed
 
 
 class WalkDirectoryTool(BaseTool):
@@ -18,6 +19,9 @@ class WalkDirectoryTool(BaseTool):
 
     def execute(self, tool_input: dict) -> str:
         path = tool_input["path"]
+        decision = check_path_allowed(path, "read")
+        if not decision.allowed:
+            return decision.error_message()
         try:
             if os.path.isfile(path):
                 return f"Error: '{path}' is a file, not a directory. Use file_info or read_file to inspect it."

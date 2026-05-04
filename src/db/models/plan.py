@@ -46,8 +46,8 @@ class Step(BaseModel, table=True):
     result: Optional[str] = Field(default=None)
     error: Optional[str] = Field(default=None)
     retry_count: int = Field(default=0, nullable=False)
-    importance_score: Optional[float] = Field(
+    importance_score: Optional[str] = Field(
         default=None,
-        sa_column=sa.Column(sa.REAL, nullable=True),
+        sa_column=sa.Column(sa.Text, nullable=True),
     )
     duration_ms: Optional[int] = Field(default=None)

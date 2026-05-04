@@ -1,9 +1,8 @@
 """EntityCriticStage — corrects hallucinated file/path references in plans.
 
-Phase 8 hardening: suspicious corrections (candidate has no slash — not a path,
-or is a very short word) are reverted and surfaced via ASK_USER rather than
-applied silently. The original `encryption/decryption`-style false positive that
-corrupted step descriptions is exactly this pattern.
+Suspicious corrections (prose phrases, system paths, wrong-extension substitutions)
+are reverted silently rather than applied or escalated. Only unambiguously valid
+path corrections are applied.
 
 Skipped (no-op) if no entity context exists (nothing to compare against).
 """
@@ -26,30 +25,68 @@ _PATH_HAS_SLASH = re.compile(r"/")
 _CORRECTION_RE = re.compile(r"step \d+: '(.+?)' → '(.+?)' \(not in conversation context\)")
 
 
+def _looks_like_path(token: str) -> bool:
+    """Return True if token plausibly represents a filesystem path.
+
+    A token is path-like if it:
+    - starts with a path prefix (/, ./, ../, _, .)
+    - contains a file extension in the final component
+    - has a component that looks like a known directory name
+    """
+    if not token:
+        return False
+    if token.startswith(("/", "./", "../", "_", ".")):
+        return True
+    parts = token.split("/")
+    last = parts[-1]
+    if "." in last and not last.startswith("."):
+        return True  # has a file extension
+    known_dirs = {"src", "bin", "lib", "usr", "tmp", "etc", "var", "tests", "data",
+                  "runtime", "tools", "scripts", "docs", "build", "dist"}
+    if any(p in known_dirs or p.startswith(("_", ".")) for p in parts):
+        return True
+    return False
+
+
+_UPPER_SLASH_RE = re.compile(r'^[A-Z0-9_]+(?:/[A-Z0-9_]+)+$')
+
+# System device/pseudo-filesystem paths that should never be "corrected".
+_SYSTEM_PATH_PREFIXES = ("/dev/", "/proc/", "/sys/", "/etc/", "/usr/")
+
+
 def _is_suspicious_candidate(old: str, new: str) -> bool:
     """Return True if the correction looks like a false positive.
 
-    A correction is suspicious when the replacement is not a real filesystem
-    path. Real path corrections replace one path with another path — they
-    share structural properties: start with '/', './', '../', or a directory
-    component that looks like an actual path (contains a file extension or
-    starts with a known-prefix directory like '_tests/', 'src/', etc.).
-
-    Specifically suspicious:
-    - Replacement has no slash at all (bare word).
-    - Replacement has a slash but both components look like plain English words
-      (e.g. 'communication/rendering', 'encryption/decryption') — these are
-      slash-separated English phrases extracted from assistant messages, not
-      filesystem paths. Heuristic: if neither component contains a dot (file
-      extension) and neither starts with '_' or '.', it's likely prose.
-    - Replacement is extremely short (< 3 chars).
+    A correction is suspicious when:
+    - old is a prose phrase (XOR/shift/add, padding/unpadding, ECB/CBC) not a path
+    - old is a system device path (/dev/null, /dev/stderr, etc.)
+    - The replacement is not a real filesystem path
+    - Structural mismatches (short, extension mismatch, etc.)
     """
     new = new.strip()
+    old = old.strip()
+
     if len(new) < 3:
         return True
+
+    # All-caps slash-separated tokens are crypto/config constants (BLOCK/ROUNDS,
+    # ECB/CBC/CTR, IV/KEY, etc.), never filesystem paths.
+    if _UPPER_SLASH_RE.match(old):
+        return True
+
+    # System pseudo-filesystem paths are real paths — never replace them.
+    if any(old.startswith(prefix) for prefix in _SYSTEM_PATH_PREFIXES):
+        return True
+
+    # If old contains a slash but doesn't look like a path, it's a prose phrase
+    # (XOR/shift/add, padding/unpadding) — correction is nonsensical.
+    if "/" in old and not _looks_like_path(old):
+        return True
+
     if not _PATH_HAS_SLASH.search(new):
         return True
-    # Has a slash — check if it looks like a real path or a prose phrase.
+
+    # new has a slash — check if it looks like a real path or a prose phrase.
     parts = new.split("/")
     has_extension = any("." in p for p in parts)
     has_path_marker = new.startswith(("./", "../", "/", "_", "."))
@@ -58,13 +95,18 @@ def _is_suspicious_candidate(old: str, new: str) -> bool:
         for p in parts
     )
     if has_extension or has_path_marker or looks_like_path_dir:
-        # Extra check: old has a file extension but new does not.
-        # This catches path→directory substitutions (e.g. /tmp/foo.asm → /Users/…/agent-runtime).
         old_stem = old.rstrip("/").split("/")[-1]
         new_stem = new.rstrip("/").split("/")[-1]
         old_has_ext = "." in old_stem
         new_has_ext = "." in new_stem
+        # old has a file extension but new does not → substituting wrong shape
         if old_has_ext and not new_has_ext:
+            return True
+        # old has no extension but new has a document extension (.md, .txt, .json)
+        # → replacing a binary/script path with a report path, always wrong
+        _DOC_EXT = {".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".rst"}
+        new_ext = "." + new_stem.rsplit(".", 1)[-1] if "." in new_stem else ""
+        if not old_has_ext and new_ext in _DOC_EXT:
             return True
         return False
     # Slash-separated but no extension, no path marker, no known dir prefix
@@ -78,10 +120,7 @@ class EntityCriticStage(Stage):
     Reads:  context.plan, context.entity_context, context.user_message
     Writes: context.plan (corrected in-place)
 
-    Phase 8 gate: suspicious corrections (candidate is not a real path) are
-    reverted and the user is asked to confirm before they are applied. This
-    prevents the entity critic from corrupting step descriptions with
-    non-path words from the conversation.
+    Suspicious corrections are reverted silently; the user is never interrupted.
     """
 
     name = "EntityCriticStage"
@@ -140,21 +179,4 @@ class EntityCriticStage(Stage):
             logger.info(f"  corrected: {msg}")
 
         context.plan = plan
-
-        # If there are suspicious corrections, ask the user to confirm before using them.
-        if suspicious:
-            lines = [f"  • '{old}' → '{new}'" for _, old, new in suspicious]
-            question = (
-                "The entity critic found some corrections that look uncertain:\n"
-                + "\n".join(lines)
-                + "\n\nShould I apply these corrections, or leave the original values? "
-                "Reply 'yes' to apply, 'no' to skip."
-            )
-            logger.info(f"  entity critic: {len(suspicious)} suspicious correction(s) — asking user")
-            return StageResult(
-                status=StageStatus.ASK_USER,
-                updated_context=context,
-                user_message=question,
-            )
-
         return StageResult(status=StageStatus.OK, updated_context=context)

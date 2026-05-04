@@ -1,5 +1,14 @@
 llm:
   max_tokens: 4096
+  # Main agent LLM — the model that handles user turns and executes plans.
+  # Keys stay in .env; only provider name and model go here.
+  provider: openai
+  model: gpt-4.1-mini
+
+  # Runtime LLM — used by classifier, monitor, importance scorer, council calls.
+  # Keep this lighter/cheaper than the main model. null = use main provider.
+  runtime_provider: anthropic
+  runtime_model: claude-haiku-4-5
 
 timeouts:
   default: 30
@@ -45,6 +54,25 @@ agent:
     When given a path to inspect, never assume it is a directory — paths without
     extensions are often executables or binaries. Always use file_info first to
     determine what the path is before deciding how to analyze it.
+    Never use bash_exec to call the 'file' command — use the file_info tool instead.
+    file_info runs on the host and is always available; 'file' is not installed in
+    the bash sandbox and will fail.
+    To find a binary/executable in the project: use walk_directory to list all files,
+    then call file_info on candidates that have no common text extension (.py, .md,
+    .txt, .json, .log, .jsonl, .yaml, .yml, .toml, .sh). Do NOT use bash_exec with
+    'find -executable' — that returns files with the execute bit set, which includes
+    log files and scripts, not just native binaries. Do NOT use 'file' in bash_exec.
+    IMPORTANT — you have bash_exec and you must use it proactively.
+    When you write a script or program, always test it before reporting it done.
+    Use bash_exec to set up a temporary environment, install dependencies, run
+    the code, and verify the output. A typical test workflow is:
+    cd /tmp && python3 -m venv test_env && source test_env/bin/activate &&
+    pip install <deps> && python3 <script> <args>.
+    Never claim you cannot execute or test code — you have bash_exec for exactly this.
+    If bash_exec is blocked by a guard escalation, ask the user to approve it.
+    For reverse engineering tasks, always surface any magic constants found in the
+    disassembly (e.g. 0x9e3779b9 = TEA, 0x6a09e667 = SHA-256, 0x67452301 = MD5)
+    and use them to identify the algorithm before concluding it is unknown.
 
 artifact_store:
   enabled: true
@@ -79,14 +107,44 @@ planning:
   retry_on_invalid: true
 
 runtime:
-  intent_classifier:
+  events:
     enabled: true
-    context_window: 6
+    jsonl_enabled: true
+    directory: "_events"
+    raw_payloads: false
+    redact_on_emit: false
+    redact_on_export: true
+
+  sandbox:
+    backend: "auto"
+    allow_host_backend: true
+    docker_image: "python:3.11-slim"
+    default_network: "disabled"
+    command_timeout_seconds: 120
+    max_output_chars: 50000
+    workspace_root: "."
+    allowed_read_roots:
+      - "/tmp"
+      - "/private/tmp"
+      - "_store"
+    allowed_write_roots:
+      - "/tmp"
+      - "/private/tmp"
+      - "_store"
+
+  pipeline:
+    max_retries_per_stage: 2
+    max_ask_user_per_stage: 1
+    max_tool_calls: 15
+    max_iterations: 20
+    max_consecutive_errors: 3
+    tool_result_truncate_chars: 50000
+
   plan_validator:
     enabled: true
   plan_critic:
     enabled: true
-    skip_low_risk: true
+    skip_low_risk: false
     consensus_on_high_risk: true
   execution_monitor:
     enabled: true
@@ -109,17 +167,20 @@ runtime:
   council:
     councillors:
 
-      - provider: ollama
-        model: mistral-nemo
+      - provider: openai
+        model: gpt-5-nano
         label: gpt
-      - provider: anthropic
-        model: claude-haiku-4-5
-        label: claude
       - provider: grok
-        model: grok-3-mini
+        model: grok-4-1-fast-reasoning
         label: grok
+      - provider: gemini
+        model: gemini-3-flash
+        label: gemini
+      # - provider: anthropic
+      #   model: claude-haiku-4-5
+      #   label: claude
 
-    mode: independent   # independent | debate
+    mode: debate   # independent | debate
 
     debate:
       max_rounds: 3
@@ -134,9 +195,36 @@ runtime:
     consensus_threshold: 0.60
 
     # Dynamic scaling: number of councillors (from the pool above, in order) per risk level.
-    # low=0 bypasses the council entirely; moderate=1 uses only the first councillor;
-    # high=3 uses the full pool for maximum epistemic diversity.
+    # low=0 bypasses the council entirely for simple read-only queries.
+    # moderate=3 uses all councillors so debate fires on any write/analysis task.
+    # high=3 uses the full pool for destructive or out-of-workspace operations.
     dynamic_scaling:
       low: 0
-      moderate: 1
-      high: 1
+      moderate: 2
+      high: 3
+
+  # ── Optional councils for specific decision points ─────────────────────────
+  # Each is independent of the plan_critic council above.
+  # Set enabled: true to activate. n_councillors is taken from the top of the
+  # council.councillors pool in order.
+
+  monitor_council:
+    # Council vote on step-result assessment when single-model confidence < threshold.
+    # Replaces the ExecutionMonitor LLM call for uncertain decisions only.
+    enabled: false
+    confidence_threshold: 0.65  # trigger when monitor confidence < this value
+    n_councillors: 2             # use first 2 councillors from the pool
+
+  synthesis_quality:
+    # Council quality gate on synthesized responses after plans with failures.
+    # Only runs when the plan had at least one RETRY or REPLAN event.
+    enabled: false
+    only_after_failures: true
+    n_councillors: 2
+
+  importance_council:
+    # Council vote on step-result importance when single-model scores it MEDIUM.
+    # MEDIUM is the ambiguous middle tier — worth a second opinion.
+    enabled: false
+    only_on_medium: true
+    n_councillors: 2

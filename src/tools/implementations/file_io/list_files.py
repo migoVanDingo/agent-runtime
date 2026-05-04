@@ -1,5 +1,6 @@
 import os
 from tools.base import BaseTool, InputSchema, ToolProperty, ToolWeight
+from runtime.policy import check_path_allowed
 
 
 class ListFilesTool(BaseTool):
@@ -20,6 +21,9 @@ class ListFilesTool(BaseTool):
 
     def execute(self, tool_input: dict) -> str:
         path = tool_input["path"]
+        decision = check_path_allowed(path, "read")
+        if not decision.allowed:
+            return decision.error_message()
         try:
             files = os.listdir(path)
             return "\n".join(files)

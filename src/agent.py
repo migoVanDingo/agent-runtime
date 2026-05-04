@@ -103,18 +103,30 @@ def _build_pipeline(agent: "Agent") -> Pipeline:
 
 class Agent:
 
-    def __init__(self, verbose: bool = False, user_gate=None, initial_messages: list[dict] | None = None):
-        self.provider = get_provider()
+    def __init__(
+        self,
+        verbose: bool = False,
+        user_gate=None,
+        initial_messages: list[dict] | None = None,
+        container=None,  # runtime.container.Container — optional; builds its own if absent
+    ):
+        # Resolve provider and registry either from an injected container or module globals.
+        if container is not None:
+            self.provider = container.provider
+            self.registry = container.registry
+            self.router = container.router
+        else:
+            self.provider = get_provider()
+            self.registry = ToolRegistry()
+            for toolset in ALL_TOOLSETS:
+                self.registry.register_toolset(toolset)
+            self.router = StaticRouter(self.registry)
+
         self.messenger = Messenger()
         if initial_messages:
             self.messenger.get_messages().extend(initial_messages)
-        self.registry = ToolRegistry()
         self.spinner = Spinner(verbose=verbose)
 
-        for toolset in ALL_TOOLSETS:
-            self.registry.register_toolset(toolset)
-
-        self.router = StaticRouter(self.registry)
         self.context_mgr = ContextManager()
         self.context_mgr.set_summarizer(get_runtime_provider())
         self.workflow_selector = WorkflowSelector(get_runtime_provider())
@@ -208,11 +220,11 @@ class Agent:
         self.spinner.start("Thinking...")
 
         # ── Persistence: open session ──────────────────────────────────
-        from app_config import settings as _settings
+        from app_config import config as _config
         db_session_id = PersistenceWriter.start_session(
             original_query=user_message,
-            model=getattr(self.provider, "model", _settings.anthropic_model),
-            provider=_settings.llm_provider,
+            model=getattr(self.provider, "model", _config.llm.model or "unknown"),
+            provider=type(self.provider).__name__,  # e.g. "OpenAIProvider"
         )
 
         context = PipelineContext(user_message=effective_user_message, db_session_id=db_session_id)

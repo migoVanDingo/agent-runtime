@@ -36,6 +36,17 @@ class CLIUserGate:
     """Interactive CLI implementation — prints to stdout, reads y/n from stdin."""
 
     def prompt(self, escalation: Escalation) -> bool:
+        from runtime.events import RuntimeEvent, get_event_bus, get_runtime_identity
+        identity = get_runtime_identity()
+        bus = get_event_bus()
+        bus.emit(RuntimeEvent(
+            "escalation.requested",
+            identity,
+            payload={"source": escalation.source, "reason": escalation.reason,
+                     "tool_name": escalation.tool_name},
+            stage="UserGate",
+        ))
+
         print(f"\n{'─' * 52}")
         print(f"  ⚠  ESCALATION — {escalation.source}")
         print(f"  {escalation.reason}")
@@ -54,10 +65,22 @@ class CLIUserGate:
             answer = input("  Allow? [y/N]: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             print()
+            bus.emit(RuntimeEvent(
+                "escalation.resolved",
+                identity,
+                payload={"source": escalation.source, "approved": False},
+                stage="UserGate",
+            ))
             return False
 
         approved = answer in ("y", "yes")
         logger.info(f"  escalation: user {'approved' if approved else 'denied'} — {escalation.reason}")
+        bus.emit(RuntimeEvent(
+            "escalation.resolved",
+            identity,
+            payload={"source": escalation.source, "approved": approved},
+            stage="UserGate",
+        ))
 
         # Record user outcome against the originating council run (if any)
         if escalation.council_run_id:

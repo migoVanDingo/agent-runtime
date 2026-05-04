@@ -2,13 +2,13 @@
 
 After each plan step completes, the importance scorer classifies the step
 result's importance (CRITICAL, HIGH, MEDIUM, LOW) using a lightweight LLM call.
-This supplements the rule-based classification in the context manager.
 
-Based on AFM paper finding: importance classification is the dominant factor
-(83.3% pass rate with it, 0% without it).
+Optional: if runtime.importance_council.enabled is true, a 2-councillor council
+vote replaces the single-model call when the result is scored MEDIUM (the
+ambiguous middle tier where a second opinion has the most value).
 """
 
-import json
+from runtime.json_extract import extract_json
 from runtime.schema import Importance
 from providers.base import BaseProvider, TextBlock
 from logger import get_logger
@@ -43,8 +43,9 @@ class ImportanceScorer:
         """Classify the importance of a step result.
 
         Returns an Importance enum value. Falls back to MEDIUM on parse failure.
+        When importance_council is enabled, escalates MEDIUM results to a
+        multi-model vote.
         """
-        # Cache key: hash of inputs (avoid re-scoring identical results)
         cache_key = f"{step_description[:50]}:{result[:100]}"
         if cache_key in self._cache:
             return self._cache[cache_key]
@@ -66,29 +67,56 @@ class ImportanceScorer:
                 system=_IMPORTANCE_PROMPT,
                 label="ImportanceScorer",
             )
-
-            raw = next(
-                (b.text for b in response.content if isinstance(b, TextBlock)), ""
-            )
+            raw = next((b.text for b in response.content if isinstance(b, TextBlock)), "")
             importance = self._parse(raw)
         except Exception as e:
             logger.info(f"  importance scorer error: {e} — defaulting to MEDIUM")
             importance = Importance.MEDIUM
 
+        # ── Optional council escalation for MEDIUM tier ────────────────────
+        from app_config import config
+        ic = config.runtime.importance_council
+        if ic.enabled and (not ic.only_on_medium or importance == Importance.MEDIUM):
+            importance = self._council_score(
+                original_query, step_description, result, ic.n_councillors
+            )
+
         self._cache[cache_key] = importance
         logger.info(f"  importance: {importance.value} — {step_description[:50]}")
         return importance
 
-    def _parse(self, raw: str) -> Importance:
-        text = raw.strip()
-        if text.startswith("```"):
-            lines = text.splitlines()
-            inner = lines[1:-1] if lines[-1].strip() == "```" else lines[1:]
-            text = "\n".join(inner).strip()
+    def _council_score(self, original_query: str, step_description: str,
+                       result: str, n_councillors: int) -> Importance:
+        """Run a council vote to resolve an ambiguous importance classification."""
+        import dataclasses
+        from runtime.council import Council
+        from runtime.adapters import ImportanceAdapter
+        from app_config import config
 
+        council_input = {
+            "original_query": original_query[:200],
+            "step_description": step_description,
+            "result": result[:500],
+        }
+
+        base_cfg = config.runtime.council
+        active = base_cfg.councillors[:n_councillors]
+        effective_cfg = dataclasses.replace(base_cfg, councillors=active, mode="independent")
+
+        adapter = ImportanceAdapter()
+        council = Council(adapter=adapter, config=effective_cfg)
+        council_result = council.deliberate(
+            council_input=council_input, context="importance", query=original_query
+        )
+        importance = council_result.final.importance
+        logger.info(f"  importance council: {importance.value} — {step_description[:50]}")
+        return importance
+
+    def _parse(self, raw: str) -> Importance:
+        data = extract_json(raw)
+        if not isinstance(data, dict):
+            return Importance.MEDIUM
         try:
-            data = json.loads(text)
-            level = data.get("importance", "medium").lower()
-            return Importance(level)
-        except (json.JSONDecodeError, ValueError):
+            return Importance(data.get("importance", "medium").lower())
+        except ValueError:
             return Importance.MEDIUM

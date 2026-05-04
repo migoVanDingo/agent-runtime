@@ -1,4 +1,5 @@
 from tools.base import BaseTool, InputSchema, ToolProperty, ToolWeight
+from runtime.policy import check_path_allowed
 
 
 class ReadFileLinesTool(BaseTool):
@@ -19,6 +20,9 @@ class ReadFileLinesTool(BaseTool):
 
     def execute(self, tool_input: dict) -> str:
         path = tool_input["path"]
+        decision = check_path_allowed(path, "read")
+        if not decision.allowed:
+            return decision.error_message()
         try:
             start = int(tool_input["start"])
             end = int(tool_input["end"]) if "end" in tool_input else None

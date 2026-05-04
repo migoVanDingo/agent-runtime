@@ -165,13 +165,29 @@ class Council(Generic[T]):
         self.adapter = adapter
         self.config = config
 
-    def deliberate(self, council_input: Any, context: str = "", query: str = "") -> CouncilResult[T]:
-        """Run council deliberation and return a CouncilResult."""
+    def deliberate(self, council_input: Any, context: str = "", query: str = "",
+                   identity=None) -> CouncilResult[T]:
+        """Run council deliberation and return a CouncilResult.
+
+        identity: RuntimeIdentity from the pipeline context. When provided it
+        is threaded through worker calls so events carry the correct
+        pipeline_run_id rather than the process-level fallback.
+        """
+        from runtime.events import RuntimeEvent, get_event_bus
+        self._identity = identity  # stored for _query_one to access
         councillors = [
             Councillor(provider=c.provider, label=c.label, model=c.model)
             for c in self.config.councillors
         ]
         labels = [c.label for c in councillors]
+
+        if identity is not None:
+            get_event_bus().emit(RuntimeEvent(
+                "council.deliberation.started",
+                identity,
+                payload={"mode": self.config.mode, "councillor_labels": labels, "context": context},
+                stage="Council",
+            ))
 
         if self.config.mode == "debate":
             return self._deliberate_debate(council_input, councillors, context, query)
@@ -247,10 +263,27 @@ class Council(Generic[T]):
         if converged:
             logger.info(f"  {council_header_tag()} round {round_number}: all councillors converged")
 
+        identity = getattr(self, "_identity", None)
+        if identity is not None:
+            from runtime.events import RuntimeEvent, get_event_bus
+            get_event_bus().emit(RuntimeEvent(
+                "council.round.completed",
+                identity,
+                payload={"round_number": round_number, "converged": converged,
+                         "n_decisions": len(clean_decisions)},
+                stage="Council",
+            ))
+
         return CouncilRound(round_number=round_number, decisions=clean_decisions, converged=converged)
 
     def _query_one(self, councillor: Councillor, prompt: str, round_number: int) -> CouncillorDecision:
-        """Query a single councillor. Runs in a thread pool worker."""
+        """Query a single councillor. Runs in a thread pool worker.
+
+        Uses the identity stored on the Council instance so each worker
+        emits events with the correct pipeline_run_id (avoids the global race).
+        """
+        from runtime.events import get_event_bus, RuntimeEvent
+        identity = getattr(self, "_identity", None)
         logger.info(f"  {council_tag(councillor.label)} querying {councillor.provider}...")
 
         provider = get_provider(councillor.provider, councillor.model)
@@ -323,6 +356,18 @@ class Council(Generic[T]):
         writer = get_metrics_writer()
         if writer:
             writer.record_run(metrics)
+
+        identity = getattr(self, "_identity", None)
+        if identity is not None:
+            from runtime.events import RuntimeEvent, get_event_bus
+            get_event_bus().emit(RuntimeEvent(
+                "council.synthesis.completed",
+                identity,
+                payload={"final_verdict": metrics.final_verdict,
+                         "rounds_completed": metrics.rounds_completed,
+                         "run_id": run_id},
+                stage="Council",
+            ))
 
         return CouncilResult(
             rounds=rounds,

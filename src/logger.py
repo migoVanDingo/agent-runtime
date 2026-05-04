@@ -6,7 +6,6 @@ from pathlib import Path
 
 LOGS_DIR = Path(__file__).resolve().parent.parent / "_logs"
 
-
 _NOISY_LOGGERS = [
     "httpx",
     "httpcore",
@@ -16,89 +15,22 @@ _NOISY_LOGGERS = [
     "torch",
 ]
 
+# ── Tag helpers — delegated to runtime.log_formatting ────────────────────────
+# Imported here for backward compatibility; callers can import from either place.
 
-# ── ANSI color codes ─────────────────────────────────────────────────────────
-
-_RESET      = "\033[0m"
-_BOLD       = "\033[1m"
-_DIM        = "\033[2m"
-
-# Source-class colors
-_COLOR_USER       = "\033[96m"   # bright cyan
-_COLOR_ASSISTANT  = "\033[92m"   # bright green
-_COLOR_RUNTIME    = "\033[2m"    # dim (system noise)
-_COLOR_ERROR      = "\033[91m"   # bright red
-_COLOR_COUNCIL    = "\033[93m"   # bright yellow  (council banners/headers)
-_COLOR_SYNTHESIS  = "\033[1m"    # bold            (final consensus)
-_COLOR_ESCALATE   = "\033[33m"   # yellow
-
-# Per-councillor palette — assigned by label, consistent for the process lifetime
-_COUNCILLOR_PALETTE = [
-    "\033[34m",   # blue
-    "\033[35m",   # magenta
-    "\033[33m",   # yellow
-    "\033[36m",   # cyan
-    "\033[32m",   # green
-]
-_councillor_color_map: dict[str, str] = {}
-
-
-def get_councillor_color(label: str) -> str:
-    """Return a consistent ANSI color for a councillor label.
-
-    Colors are assigned by order of first encounter and persist for the
-    process lifetime. Returns empty string if stdout is not a TTY.
-    """
-    if not _is_tty():
-        return ""
-    if label not in _councillor_color_map:
-        idx = len(_councillor_color_map) % len(_COUNCILLOR_PALETTE)
-        _councillor_color_map[label] = _COUNCILLOR_PALETTE[idx]
-    return _councillor_color_map[label]
-
+from runtime.log_formatting import (  # noqa: E402
+    council_tag,
+    council_header_tag,
+    synth_tag,
+    user_tag,
+    assistant_tag,
+    escalate_tag,
+    get_councillor_color,
+)
 
 def _is_tty() -> bool:
     """Return True if stdout is a real terminal and NO_COLOR is not set."""
     return sys.stdout.isatty() and not os.environ.get("NO_COLOR")
-
-
-def council_tag(label: str) -> str:
-    """Return a colored [council][label] prefix for log messages."""
-    if not _is_tty():
-        return f"[council][{label}]"
-    color = get_councillor_color(label)
-    return f"{_COLOR_COUNCIL}[council]{_RESET}{color}[{label}]{_RESET}"
-
-
-def council_header_tag() -> str:
-    """Return a colored [council] prefix for council-level log messages."""
-    if not _is_tty():
-        return "[council]"
-    return f"{_COLOR_COUNCIL}[council]{_RESET}"
-
-
-def synth_tag() -> str:
-    if not _is_tty():
-        return "[synth]"
-    return f"{_COLOR_SYNTHESIS}[synth]{_RESET}"
-
-
-def user_tag() -> str:
-    if not _is_tty():
-        return "[user]"
-    return f"{_COLOR_USER}[user]{_RESET}"
-
-
-def assistant_tag() -> str:
-    if not _is_tty():
-        return "[assistant]"
-    return f"{_COLOR_ASSISTANT}[assistant]{_RESET}"
-
-
-def escalate_tag() -> str:
-    if not _is_tty():
-        return "[escalate]"
-    return f"{_COLOR_ESCALATE}[escalate]{_RESET}"
 
 
 # ── Formatters ───────────────────────────────────────────────────────────────

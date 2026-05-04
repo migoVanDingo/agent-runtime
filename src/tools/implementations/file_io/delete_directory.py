@@ -1,6 +1,7 @@
 import os
 import shutil
 from tools.base import BaseTool, InputSchema, ToolProperty, ToolWeight
+from runtime.policy import check_path_allowed
 
 
 class DeleteDirectoryTool(BaseTool):
@@ -19,6 +20,9 @@ class DeleteDirectoryTool(BaseTool):
 
     def execute(self, tool_input: dict) -> str:
         path = tool_input["path"].rstrip("/")
+        decision = check_path_allowed(path, "delete")
+        if not decision.allowed:
+            return decision.error_message()
 
         # Basic safety: refuse to delete root or single-component paths
         parts = [p for p in path.split("/") if p]

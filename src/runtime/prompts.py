@@ -16,86 +16,15 @@ If the message refers to a .pdf, .docx, or .epub file, always use "plan" — use
 If the message asks what's new, what's trending, what's hot, what's gaining traction, or what techniques/research to know about in a technical domain, always use "plan" — use briefbot_trending followed by briefbot_search. Never answer these from memory.
 
 Risk:
-- "low": read-only, analysis, questions, explanations.
-- "moderate": writing or modifying files in the working directory.
-- "high": deletion, system changes, paths outside the working directory.
+- "low": purely read-only — questions, explanations, reading/searching files, examining binaries, listing directories. No tool outputs are written anywhere.
+- "moderate": anything that writes, creates, or modifies files — including writing reports, scripts, analysis output, or any other file. Also includes running bash commands or installing packages.
+- "high": deletion, recursive removal, system changes, writing to paths outside the working directory, or modifying sensitive paths.
 
 Known workflows — use the exact name or null:
 {workflow_descriptions}
 
 Match workflows on intent, not keywords. If unsure, return null.
 """
-
-
-# ── Intent Classifier ────────────────────────────────────────────────
-
-CLASSIFIER_SYSTEM_PROMPT = """\
-You classify user messages as requiring a multi-step plan or direct single-turn execution, \
-and assess the risk level of the requested operation. You also identify whether the request \
-matches a known workflow template.
-
-Return ONLY a JSON object with four fields:
-  "mode": "plan" or "direct"
-  "risk": "low", "moderate", or "high"
-  "reason": a single sentence explaining why
-  "workflow": the workflow name if this request matches one of the known workflows below, or null
-
-Mode guidelines:
-- "plan" means the request requires TWO OR MORE distinct operations that depend on each other \
-(e.g. analyze something AND write the result to a file, read multiple files AND compare them).
-- "direct" means the request can be handled in a single turn: a question, a single tool call, \
-a conversational follow-up, or a simple task.
-- If the user is responding to previous work (follow-ups like "what about X?", "now do the same for Y", \
-"thanks", "explain that"), that is almost always "direct" — the prior context already exists.
-- ALWAYS use "plan" for questions about what is new, trending, hot, or worth knowing about in a \
-technical domain (AI, ML, LLM, agents, etc.) — these require briefbot_trending + briefbot_search \
-and must never be answered from training data.
-- When in doubt, prefer "direct". Planning adds latency; only plan when the request genuinely \
-has sequential dependencies between multiple operations.
-
-Risk guidelines:
-- "low": read-only operations, analysis, summarization, conversational questions.
-- "moderate": file writes within the working directory, non-destructive shell commands, \
-creating or modifying files.
-- "high": file deletion, shell commands that modify system state (installing packages, \
-changing permissions, killing processes), operations on paths outside the working directory.
-
-Known workflows:
-{workflow_descriptions}
-
-Workflow matching guidelines:
-- Match on intent and semantics, not keywords. "Create a C program exactly like it", \
-"rebuild this binary in Python", "what does this executable do and how would I rewrite it" \
-all map to "deep-disassembly" even though none contain the word "disassemble".
-- Only set "workflow" when you are confident the request fits the workflow's intent. \
-If unsure, return null — the system has a fallback.
-- "workflow" must be one of the names listed above, or null.
-
-Examples:
-  User: "what does the main function do?"
-  {{"mode": "direct", "risk": "low", "reason": "single read-only question about code", "workflow": null}}
-
-  User: "what's new in the LLM space"
-  {{"mode": "plan", "risk": "low", "reason": "requires briefbot_trending + briefbot_search to find what is rising — must not answer from memory", "workflow": null}}
-
-  User: "what techniques from recent research should I know about for agent design"
-  {{"mode": "plan", "risk": "low", "reason": "requires corpus search to surface novel techniques — must not answer from training data", "workflow": null}}
-
-  User: "analyze /bin/ls and write a summary to results.md"
-  {{"mode": "plan", "risk": "moderate", "reason": "requires analysis then writing output to a file", "workflow": "analyze-and-write"}}
-
-  User: "now do the same for /bin/cat"
-  {{"mode": "direct", "risk": "low", "reason": "follow-up to previous work, context already established", "workflow": null}}
-
-  User: "create a C program exactly like this binary"
-  {{"mode": "plan", "risk": "high", "reason": "deep binary analysis and source code reconstruction", "workflow": "deep-disassembly"}}
-
-  User: "delete all log files and clean up the temp directory"
-  {{"mode": "plan", "risk": "high", "reason": "file deletion — destructive and irreversible", "workflow": null}}\
-"""
-
-CLASSIFIER_USER_TEMPLATE = """\
-{context}Current message: {message}"""
 
 
 # ── Workflow Selector (fallback) ─────────────────────────────────────

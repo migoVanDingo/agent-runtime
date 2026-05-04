@@ -1,66 +1,94 @@
 # agent-runtime
 
-A ground-up curriculum for building production-grade AI agent systems — from a raw tool-calling loop to a full runtime infrastructure with adaptive memory, failure detection, policy enforcement, and learning.
+A production-grade AI agent runtime with structured events, sandboxed shell
+execution, multi-provider LLM support, artifact memory, and council-reviewed
+planning.
 
-This repo is structured as a series of 12 progressive projects. Each one builds on the last. By the end you will have built something close to a Claude Code-style coding assistant, sitting on top of a real agent runtime infrastructure.
+## What it does
 
-## Who this is for
-
-Software engineers who understand systems but are new to agentic AI. You should be comfortable reading and writing code. You do not need an ML background — we build up to the learning components gradually.
-
-## What you will build
+The agent takes a free-form user message, routes it through a staged pipeline,
+executes a plan using tool-calling, and returns a synthesized response. It is
+designed to be safe by default (sandboxed shell, path policy enforcement, safety
+guard), observable (structured event stream alongside human-readable logs), and
+extensible (pluggable providers, toolsets, workflows).
 
 ```
-Application Layer         ← Project 12: coding CLI
-Agent Orchestration       ← Projects 1–3: ReAct loop, tools, memory
-AI Runtime Infrastructure ← Projects 8–9: AFM + VIGIL (Cruz 2026)
-  ├── Adaptive Focus Memory (AFM)
-  └── VIGIL failure detection + recovery
-Model Serving             ← Project 4: provider abstraction (Anthropic / OpenAI / Ollama)
-External Tools + Env      ← Projects 1–2: bash, files, search, APIs
-Observability             ← Project 5: passive trace logging
-Policy + Safety           ← Project 7: permission system, allowlists
-RAG                       ← Project 6: embeddings, retrieval
-Learning                  ← Projects 10–11: imitation learning, RL feedback
+User message
+    │
+    ▼
+RoutingStage        — single LLM call: classify intent + optional inline answer
+DirectInlineStage   — short-circuit for clean conversational answers
+WorkflowMatchStage  — match to a pre-built plan template (regex / classifier hint)
+PlanningStage       — LLM planner: generate a multi-step plan
+EntityCriticStage   — scrub hallucinated file paths from the plan
+ValidatorStage      — structural validation gate
+CouncilStage        — N-agent adversarial review of the plan
+ExecutionStage      — step-by-step tool execution with monitor + guard
+SynthesizerStage    — synthesize final response from step results
+DirectExecutionStage — free-form ReAct loop (also the ABORT fallback)
 ```
 
-## Projects
+## Key subsystems
 
-| # | Directory | Concept | Status |
-|---|-----------|---------|--------|
-| 1 | [`_projects/01-raw-tool-agent/`](_projects/01-raw-tool-agent/) | Tool schemas, ReAct loop, message history | — |
-| 2 | [`_projects/02-coding-assistant/`](_projects/02-coding-assistant/) | File I/O, bash execution, safety gates | — |
-| 3 | [`_projects/03-persistent-memory/`](_projects/03-persistent-memory/) | Episodic memory, context windowing | — |
-| 4 | [`_projects/04-provider-abstraction/`](_projects/04-provider-abstraction/) | Unified interface: Anthropic + OpenAI + Ollama | — |
-| 5 | [`_projects/05-observability/`](_projects/05-observability/) | Passive trace logging, metrics, replay | — |
-| 6 | [`_projects/06-rag/`](_projects/06-rag/) | Embeddings, vector store, retrieval pipeline | — |
-| 7 | [`_projects/07-policy-safety/`](_projects/07-policy-safety/) | Permission system, allowlists, safety gates | — |
-| 8 | [`_projects/08-afm/`](_projects/08-afm/) | Adaptive Focus Memory: context compression during execution | — |
-| 9 | [`_projects/09-vigil/`](_projects/09-vigil/) | Failure detection, recovery, rollback mid-run | — |
-| 10 | [`_projects/10-imitation-learning/`](_projects/10-imitation-learning/) | Learn from demonstration traces | — |
-| 11 | [`_projects/11-rl-feedback/`](_projects/11-rl-feedback/) | Reward signals, policy improvement | — |
-| 12 | [`_projects/12-full-runtime/`](_projects/12-full-runtime/) | Everything integrated, production CLI | — |
+| Subsystem | Location | Description |
+|-----------|----------|-------------|
+| Pipeline | `src/runtime/pipeline.py` | Ordered stage runner with OK/DONE/RETRY/ASK_USER/ABORT semantics |
+| Providers | `src/providers/` | Anthropic, OpenAI, Ollama, Grok, DeepSeek, Gemini — unified interface |
+| Toolsets | `src/tools/` | 11 toolsets (file_io, shell, analysis, crypto, web, data, artifacts, search, git, document, briefbot) |
+| Sandbox | `src/runtime/sandbox/` | Docker (default) or host bash execution; path policy enforcement |
+| Artifact store | `src/runtime/artifact_store.py` | SQLite-backed named artifact registry with decay, RAG recall, workflow discovery |
+| Persistence | `src/db/` + `src/runtime/persistence.py` | SQLModel/Alembic ORM for sessions, plans, steps |
+| Council | `src/runtime/council.py` | Multi-agent deliberation primitive (independent or debate mode) |
+| Context manager | `src/runtime/context_manager.py` | AFM-inspired non-destructive context packing with fidelity levels |
+| Events | `src/runtime/events/` | Structured JSONL event stream sidecar alongside human logs |
+| Workflows | `src/workflows/` | Pre-built deterministic plan templates |
 
-## References
+## Configuration
 
-Two papers ground the architecture of this entire curriculum:
+- **`config.yml`** — runtime tuning (context budget, sandbox policy, event settings, council scaling, etc.)
+- **`.env`** — secrets (API keys, database URLs)
 
-- **Bin Xu (2026)** — *AI Agent Systems: Architectures, Applications, and Evaluation* — taxonomy of agent components, orchestration patterns, evaluation. [`_references/bin-xu-ai-agent-systems.md`](_references/bin-xu-ai-agent-systems.md)
-- **Christopher Cruz (2026)** — *AI Runtime Infrastructure* — formalizes the execution-time control layer (AFM + VIGIL). [`_references/cruz-ai-runtime-infrastructure.md`](_references/cruz-ai-runtime-infrastructure.md)
+Both are loaded once at startup via `src/app_config.py`.
 
-## Language
+## Running
 
-Projects 1–9 use **Python**. It is the simplest path through the agent and ML concepts.
-The provider abstraction (Project 4) is designed so the runtime can be ported to TypeScript later.
+```bash
+# Install dependencies
+pip install -r requirements.txt
 
-You will need:
-- Python 3.11+
-- An Anthropic API key (Projects 1–3, 8–9)
-- An OpenAI API key (Project 4, optional)
-- Ollama installed locally (Project 4, optional)
+# Start the agent
+PYTHONPATH=src python src/main.py
 
-## How to use this repo
+# With verbose logging
+PYTHONPATH=src python src/main.py --verbose
 
-Each project lives in its own directory under `_projects/`. Read the `README.md` inside before writing any code. The README contains the concept explanation, architecture, step-by-step build guide, and success criteria.
+# Resume a prior session
+PYTHONPATH=src python src/main.py --resume
+```
 
-When returning to this repo after a break, read `PLAN.md` first to reorient, then open the project you are on.
+## Testing
+
+```bash
+# Run full test suite
+make test
+
+# Or directly
+pytest tests/ -q
+```
+
+## Observability
+
+Every session produces two files:
+- `_logs/{session_id}.log` — human-readable structured log
+- `_events/{session_id}.jsonl` — machine-readable event stream
+
+Export events for analysis:
+```bash
+python scripts/export_events.py --events-dir _events --out _events/events.csv
+```
+
+## Design notes
+
+- [`_plans/0051-architecture-and-pattern-review-claude.md`](_plans/0051-architecture-and-pattern-review-claude.md) — architectural review
+- [`_plans/0053-runtime-refactor-design-claude.md`](_plans/0053-runtime-refactor-design-claude.md) — original refactor design
+- [`_plans/0064-refactor-plan-v2.md`](_plans/0064-refactor-plan-v2.md) — active implementation plan

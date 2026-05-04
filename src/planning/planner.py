@@ -1,5 +1,5 @@
-import json
 import platform
+from runtime.json_extract import extract_json
 from messenger import Messenger
 from providers.base import BaseProvider, TextBlock
 from planning.schema import Plan, Step, StepStatus, ActionType, PLAN_JSON_SCHEMA
@@ -245,18 +245,9 @@ class Planner:
         return replan.steps
 
     def _parse(self, raw: str) -> Plan | None:
-        text = raw.strip()
-
-        if text.startswith("```"):
-            lines = text.splitlines()
-            # drop opening fence (```json or ```) and closing fence
-            inner = lines[1:-1] if lines[-1].strip() == "```" else lines[1:]
-            text = "\n".join(inner).strip()
-
-        try:
-            data = json.loads(text)
-        except json.JSONDecodeError as e:
-            logger.info(f"Planner: JSON parse error — {e}")
+        data = extract_json(raw)
+        if data is None:
+            logger.info("Planner: JSON parse error — no JSON found")
             return None
 
         if not isinstance(data.get("steps"), list) or len(data["steps"]) == 0:

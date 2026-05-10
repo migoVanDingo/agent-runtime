@@ -4,48 +4,70 @@
 
 ROUTING_HEADER_INSTRUCTIONS = """\
 Before doing anything else, output a single routing line:
-<route>{{"mode": "direct"|"plan", "risk": "low"|"moderate"|"high", "workflow": null|"<name>"}}</route>
+<route>{{"mode": "direct"|"plan", "risk": "low"|"moderate"|"high", "skill": null|"<name>"}}</route>
 
-Mode:
-- "plan": the request requires any tool use — file reads, shell commands, binary analysis, directory listings, web fetches, HTTP requests, anything that needs real execution. Output ONLY the header — execution is handled separately.
-- "direct": purely conversational — a greeting, a follow-up question about prior output, an explanation from memory, or a factual answer you already know with no URL or external resource to look up. No tools needed. Output the header then respond normally.
+Mode decision — the key question is: does answering this require executing a tool RIGHT NOW?
 
-Important: if the message contains a URL or asks about an online resource (article, paper, webpage), always use "plan" — use read_url to fetch it, do not answer from memory.
+- "plan": any request that requires tool execution. This includes:
+  - Any request where the subject is a file, binary, path, or URL — even one you've analyzed before
+  - Analyze, examine, disassemble, decompile, find, list, run, generate, create, write, or verify anything
+  - Any question you cannot answer from what is literally visible in this conversation
+  - When in doubt, choose "plan". A wrong "plan" costs one extra LLM call. A wrong "direct" produces hallucinated output.
+
+- "direct": the answer is already in this conversation and requires zero new tool calls. Only use this for:
+  - Greetings and casual remarks
+  - Asking you to rephrase or clarify something you literally just said
+  - A simple factual question with no file, binary, path, or URL involved
+
+Important — these are always "plan" even in a continuing conversation about a binary you've already analyzed:
+  - "list functions in X", "what functions are in X" → plan (prior nm output is not the same as r2_functions)
+  - "disassemble X", "decompile X", "find constants in X" → plan
+  - "security audit of X", "find vulnerabilities in X" → plan, skill "audit-binary"
+  - "solve the passphrase", "find input that satisfies X", "find the password/key/flag" → plan, skill "solve-crackme"
+  - "can execution reach Y", "find input that triggers Y", "what input reaches Y" → plan (angr tools)
+  - Any "yes" or short reply confirming a prior question about running a tool → plan
+
+If the message contains a URL or asks about an online resource (article, paper, webpage), always use "plan" — use read_url, do not answer from memory.
 If the message asks to search for something without a specific URL, always use "plan" — use web_search or briefbot_search.
 If the message refers to a .pdf, .docx, or .epub file, always use "plan" — use the document tools.
-If the message asks what's new, what's trending, what's hot, what's gaining traction, or what techniques/research to know about in a technical domain, always use "plan" — use briefbot_trending followed by briefbot_search. Never answer these from memory.
+If the message asks what's new, trending, hot, or gaining traction in a technical domain, always use "plan" — use briefbot_trending then briefbot_search. Never answer from memory.
 
 Risk:
 - "low": purely read-only — questions, explanations, reading/searching files, examining binaries, listing directories. No tool outputs are written anywhere.
 - "moderate": anything that writes, creates, or modifies files — including writing reports, scripts, analysis output, or any other file. Also includes running bash commands or installing packages.
 - "high": deletion, recursive removal, system changes, writing to paths outside the working directory, or modifying sensitive paths.
 
-Known workflows — use the exact name or null:
+Known skills — use the exact name or null:
 {workflow_descriptions}
 
-Match workflows on intent, not keywords. If unsure, return null.
+Match skills on intent, not keywords. If unsure, return null.
 """
 
 
 # ── Workflow Selector (fallback) ─────────────────────────────────────
 
 WORKFLOW_SELECTOR_SYSTEM_PROMPT = """\
-You match user requests to workflow templates. A workflow is a pre-defined execution \
-plan for a common task pattern. Your job is to determine whether the user's request \
-matches any of the available workflows, based on semantic intent — not keywords.
+You match user requests to skill templates. A skill is a pre-defined execution \
+sequence for a common task pattern. Your job is to identify the PRIMARY skill \
+the user's request starts with, based on semantic intent — not keywords.
 
 Return ONLY a JSON object with two fields:
-  "workflow": the workflow name if this request matches one below, or null
+  "workflow": the skill name that best matches the ENTRY POINT of this request, or null
   "reason": a single sentence explaining your decision
 
-Available workflows:
+Available skills:
 {workflow_descriptions}
 
 Guidelines:
-- Match on what the user wants to accomplish, not the words they use.
-- If the request could reasonably be handled by a workflow, prefer the workflow.
-- Only return null if the request clearly does not fit any workflow.
-- "workflow" must be one of the names listed above, or null.\
+- Match on what the user wants to accomplish first, not the words they use.
+- For COMPOUND requests (e.g. "disassemble X then iterate until it matches"):
+  return the PRIMARY / FIRST skill only. The planner will chain additional
+  skills after it. Do NOT return null just because multiple skills are involved.
+  Example: "disassemble proc and write a clone that matches it" → "deep-disassembly"
+  Example: "iterate on proc_clone.c vs proc until it works" → "test-reconstruction"
+- Return null only when NO skill is relevant at all (e.g. web search, file editing,
+  math questions, non-binary analysis tasks).
+- "workflow" must be one of the exact names listed above, or null.\
 """
 
 WORKFLOW_SELECTOR_USER_TEMPLATE = """\

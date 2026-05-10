@@ -20,3 +20,22 @@ where = ["src"]
 testpaths = ["tests"]
 addopts = "-q --tb=short"
 pythonpath = ["src"]
+
+# ── System dependencies (not pip-installable) ────────────────────────────────
+# These must be installed separately before running arc.
+#
+# radare2 (binary analysis):
+#   brew install radare2
+#
+# r2ghidra plugin (Ghidra-quality decompilation inside radare2):
+#   r2pm -ci r2ghidra
+#   Without this, r2_decompile falls back to raw disassembly.
+#   Verification: run `r2 -c "pdg @ main" /bin/ls 2>&1 | head -5`
+#   Should show C pseudocode, not an error about RGhidraDecompiler.
+#
+# Ghidra (for ghidra_decompile / ghidra_analyze tools):
+#   Download from https://github.com/NationalSecurityAgency/ghidra/releases
+#   Set GHIDRA_HOME env var or ghidra_home in config.yml
+#
+# angr (symbolic execution tools):
+#   pip install angr   (separate venv recommended — angr has heavy deps)

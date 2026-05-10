@@ -70,9 +70,5 @@ class PlanRun:
         return self.spec.original_query
 
     @property
-    def requires_synthesis(self) -> bool:
-        return self.spec.requires_synthesis
-
-    @property
     def risk(self) -> str:
         return self.spec.risk

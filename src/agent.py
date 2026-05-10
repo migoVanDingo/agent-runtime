@@ -15,14 +15,17 @@ from runtime.pipeline_context import PipelineContext
 from runtime.validator import PlanValidator
 from planning.planner import Planner
 from planning.synthesizer import Synthesizer
-from workflows.matcher import WorkflowMatcher
+from skills.registry import SkillRegistry
+from runtime.stages.rag_context import RagContextStage
 from runtime.stages.routing import RoutingStage, DirectInlineStage
-from runtime.stages.workflow_match import WorkflowMatchStage
+from runtime.stages.skill_hint import SkillHintStage
+from runtime.stages.skill_expansion import SkillExpansionStage
 from runtime.stages.planning import PlanningStage
 from runtime.stages.entity_critic import EntityCriticStage
 from runtime.stages.validator import ValidatorStage
 from runtime.stages.council import CouncilStage
 from runtime.stages.execution import ExecutionStage
+from runtime.stages.continuation import ContinuationStage
 from runtime.stages.synthesizer import SynthesizerStage
 from runtime.stages.direct_execution import DirectExecutionStage
 from providers.factory import get_provider, get_runtime_provider
@@ -50,17 +53,36 @@ def _build_pipeline(agent: "Agent") -> Pipeline:
         agent_system=system,
     )
 
+    skill_expansion = SkillExpansionStage(registry=p.skill_registry)
+
+    execution = ExecutionStage(
+        provider=p.provider,
+        registry=p.registry,
+        router=p.router,
+        context_mgr=p.context_mgr,
+        messenger=p.messenger,
+        monitor=p.monitor,
+        guard=p.guard,
+        user_gate=p.user_gate,
+        importance_scorer=p.importance_scorer,
+        planner=p.planner,
+        spinner=p.spinner,
+        agent_system=system,
+        skill_expansion=skill_expansion,
+    )
+
     stages = [
+        RagContextStage(),
         RoutingStage(
-            provider=p.provider,
+            provider=get_runtime_provider(),  # routing is classification — runtime model is fast enough
             context_mgr=p.context_mgr,
-            workflow_matcher=p.workflow_matcher,
+            skill_registry=p.skill_registry,
             messenger=p.messenger,
         ),
         DirectInlineStage(messenger=p.messenger),
-        WorkflowMatchStage(
-            workflow_matcher=p.workflow_matcher,
-            workflow_selector=p.workflow_selector,
+        SkillHintStage(
+            skill_registry=p.skill_registry,
+            skill_selector=p.workflow_selector,
             spinner=p.spinner,
         ),
         PlanningStage(
@@ -68,6 +90,7 @@ def _build_pipeline(agent: "Agent") -> Pipeline:
             validator=p.validator,
             spinner=p.spinner,
         ),
+        skill_expansion,
         EntityCriticStage(entity_critic=p.entity_critic),
         ValidatorStage(),
         CouncilStage(
@@ -75,20 +98,16 @@ def _build_pipeline(agent: "Agent") -> Pipeline:
             planner=p.planner,
             validator=p.validator,
             spinner=p.spinner,
+            skill_expansion_stage=skill_expansion,
         ),
-        ExecutionStage(
-            provider=p.provider,
-            registry=p.registry,
-            router=p.router,
-            context_mgr=p.context_mgr,
-            messenger=p.messenger,
-            monitor=p.monitor,
-            guard=p.guard,
-            user_gate=p.user_gate,
-            importance_scorer=p.importance_scorer,
+        execution,
+        ContinuationStage(
+            provider=get_runtime_provider(),
             planner=p.planner,
+            execution_stage=execution,
             spinner=p.spinner,
-            agent_system=system,
+            skill_registry=p.skill_registry,
+            skill_expansion_stage=skill_expansion,
         ),
         SynthesizerStage(synthesizer=p.synthesizer, spinner=p.spinner),
         direct_execution,
@@ -130,91 +149,38 @@ class Agent:
         self.context_mgr = ContextManager()
         self.context_mgr.set_summarizer(get_runtime_provider())
         self.workflow_selector = WorkflowSelector(get_runtime_provider())
-        self.validator = PlanValidator(set(self.registry.toolset_names()), self.registry.tool_names())
         self.critic = PlanCritic(self.registry)
         self.guard = ActionGuard()
         self.user_gate = user_gate or CLIUserGate()
-        self.monitor = ExecutionMonitor(get_runtime_provider())
+        self.skill_registry = SkillRegistry()
+        self.validator = PlanValidator(
+            set(self.registry.toolset_names()),
+            self.registry.tool_names(),
+            registered_skills=set(self.skill_registry.names()),
+        )
+        self.monitor = ExecutionMonitor(
+            get_runtime_provider(),
+            skill_registry=self.skill_registry,
+        )
         self.importance_scorer = ImportanceScorer(get_runtime_provider())
         self.planner = Planner(self.provider)
+        self.planner.set_skill_registry(self.skill_registry)
         self.synthesizer = Synthesizer(self.provider)
-        self.workflow_matcher = WorkflowMatcher()
         self.entity_critic = EntityCritic()
-        self._recall_injected = False
-        self._last_response = ""
-
+        self._last_response: str = ""
         self._pipeline = _build_pipeline(self)
-
-        # Pre-warm the embedding model so the first user message has no cold-start delay.
-        from embeddings import get_embedding_model
-        get_embedding_model()
 
     @property
     def last_response(self) -> str:
         return self._last_response
 
-    def _build_startup_recall_block(self, query: str) -> str | None:
-        try:
-            from runtime.artifact_store import get_artifact_store
-
-            store = get_artifact_store()
-        except Exception:
-            return None
-
-        rag_cfg = config.artifact_store.rag
-        threshold = float(rag_cfg.similarity_threshold)
-        top_k = int(rag_cfg.top_k)
-        budget = max(300, int(rag_cfg.max_injected_chars))
-
-        try:
-            sessions = store.recall_sessions(query, top_k=top_k, threshold=threshold)
-            artifacts = store.recall_artifacts(query, top_k=top_k, threshold=threshold)
-        except Exception as e:
-            logger.warning(f"startup recall skipped: {e}")
-            return None
-
-        if not sessions and not artifacts:
-            return None
-
-        lines: list[str] = ["[Prior related work]"]
-        if sessions:
-            lines.append("Sessions:")
-            for s in sessions:
-                excerpt = s.summary.replace("\n", " ").strip()
-                if len(excerpt) > 160:
-                    excerpt = excerpt[:157] + "..."
-                lines.append(f"- ({s.score:.2f}) {s.session_id}: {excerpt}")
-        if artifacts:
-            lines.append("Artifacts:")
-            for a in artifacts:
-                excerpt = a.summary.replace("\n", " ").strip()
-                if len(excerpt) > 140:
-                    excerpt = excerpt[:137] + "..."
-                lines.append(f"- ({a.score:.2f}) {a.key} [{a.kind}]: {excerpt}")
-        lines.append("[/Prior related work]")
-
-        out = "\n".join(lines)
-        if len(out) > budget:
-            out = out[: budget - 20].rstrip() + "\n[/Prior related work]"
-        return out
-
-    def call(self, user_message: str) -> str:
+    def call(self, user_message: str, on_token=None) -> str:
+        """Run the agent pipeline."""
         from runtime.utils import banner
         from runtime.persistence import PersistenceWriter
+
         logger.info(banner("User"))
         logger.info(f"  {user_message}")
-        effective_user_message = user_message
-        if (
-            config.artifact_store.enabled
-            and config.artifact_store.rag.enabled
-            and config.artifact_store.rag.inject_on_start
-            and not self._recall_injected
-        ):
-            block = self._build_startup_recall_block(user_message)
-            if block:
-                effective_user_message = f"{user_message}\n\n{block}"
-                logger.info("startup recall: injected prior related work context")
-            self._recall_injected = True
 
         self.messenger.add_user_message(user_message)
         self.spinner.start("Thinking...")
@@ -224,12 +190,16 @@ class Agent:
         db_session_id = PersistenceWriter.start_session(
             original_query=user_message,
             model=getattr(self.provider, "model", _config.llm.model or "unknown"),
-            provider=type(self.provider).__name__,  # e.g. "OpenAIProvider"
+            provider=type(self.provider).__name__,
         )
 
-        context = PipelineContext(user_message=effective_user_message, db_session_id=db_session_id)
+        context = PipelineContext(
+            user_message=user_message,
+            db_session_id=db_session_id,
+            on_token=on_token,
+        )
         response = self._pipeline.run(context)
-        self.spinner.stop()  # guaranteed cleanup — stages that exit early (e.g. DirectInlineStage DONE) may not stop it
+        self.spinner.stop()
 
         # ── Persistence: close session ─────────────────────────────────
         total_steps = len(context.plan.steps) if context.plan else 0
@@ -238,7 +208,7 @@ class Agent:
             total_steps=total_steps,
         )
 
-        # Tier 2: log request for workflow discovery if artifact store is active.
+        # Log request for workflow discovery if artifact store is active.
         try:
             from runtime.artifact_store import get_artifact_store
 

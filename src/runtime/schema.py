@@ -1,5 +1,5 @@
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 
@@ -9,18 +9,24 @@ from enum import Enum
 class ClassifierResult:
     mode: str            # "plan" | "direct"
     risk: str            # "low" | "moderate" | "high"
-    workflow_hint: str | None = None  # workflow name suggested by classifier, or None
+    skill_hint: str | None = None    # skill name suggested by classifier, or None
+
+    @property
+    def workflow_hint(self) -> str | None:
+        """Legacy alias — kept for any remaining callers."""
+        return self.skill_hint
 
 
 # ── Execution Monitor ────────────────────────────────────────────────
 
 class StepDecision(str, Enum):
-    CONTINUE = "continue"
-    RETRY    = "retry"
-    REPLAN   = "replan"
-    DEFER    = "defer"
-    SKIP     = "skip"
-    ESCALATE = "escalate"
+    CONTINUE      = "continue"
+    RETRY         = "retry"
+    REPLAN        = "replan"
+    DEFER         = "defer"
+    SKIP          = "skip"
+    ESCALATE      = "escalate"
+    GOAL_ACHIEVED = "goal_achieved"
 
 
 @dataclass
@@ -90,3 +96,19 @@ class ScoredMessage:
     importance: Importance
     fidelity: FidelityLevel
     token_estimate: int
+
+
+# ── Continuation Stage ────────────────────────────────────────────
+
+class ContinuationDecision(str, Enum):
+    SYNTHESIZE = "synthesize"
+    DONE       = "done"
+    LOOP       = "loop"
+
+
+@dataclass
+class ContinuationState:
+    iteration_count: int = 0
+    last_decision: str | None = None
+    artifacts_carried: list[str] = field(default_factory=list)
+    history: list[dict] = field(default_factory=list)

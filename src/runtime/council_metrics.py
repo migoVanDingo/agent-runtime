@@ -15,13 +15,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from logger import get_logger
+from session_paths import metrics_path
 
 if TYPE_CHECKING:
     from runtime.council import CouncilRunMetrics
 
 logger = get_logger(__name__)
-
-METRICS_DIR = Path(__file__).resolve().parent.parent.parent / "_metrics"
 
 _writer_instance: "CouncilMetricsWriter | None" = None
 
@@ -43,8 +42,8 @@ class CouncilMetricsWriter:
 
     def __init__(self, session_id: str):
         self.session_id = session_id
-        METRICS_DIR.mkdir(exist_ok=True)
-        self._path = METRICS_DIR / f"{session_id}.jsonl"
+        self._path = metrics_path(session_id)
+        self._path.parent.mkdir(parents=True, exist_ok=True)
         logger.info(f"  metrics: writing to {self._path}")
 
     def record_run(self, metrics: CouncilRunMetrics) -> None:

@@ -12,6 +12,7 @@ class ToolWeight(str, Enum):
 class ToolProperty(BaseModel):
     type: str
     description: str
+    items: dict | None = None   # required by OpenAI when type="array"
 
 
 class InputSchema(BaseModel):
@@ -48,5 +49,5 @@ class BaseTool(ABC):
         return {
             "name": self.name,
             "description": self.description,
-            "input_schema": self.input_schema.model_dump(),
+            "input_schema": self.input_schema.model_dump(exclude_none=True),
         }

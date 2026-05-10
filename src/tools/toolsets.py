@@ -60,6 +60,26 @@ from tools.implementations.document.read_epub import ReadEpubTool
 from tools.implementations.briefbot.briefbot_search import BriefbotSearchTool
 from tools.implementations.briefbot.briefbot_trending import BriefbotTrendingTool
 from tools.implementations.briefbot.briefbot_item import BriefbotItemTool
+from tools.implementations.reversing.r2_functions import R2FunctionsTool
+from tools.implementations.reversing.r2_disassemble import R2DisassembleTool
+from tools.implementations.reversing.r2_decompile import R2DecompileTool
+from tools.implementations.reversing.r2_callgraph import R2CallgraphTool
+from tools.implementations.reversing.r2_xrefs import R2XrefsTool
+from tools.implementations.reversing.r2_imports import R2ImportsTool
+from tools.implementations.reversing.r2_constants import R2ConstantsTool
+from tools.implementations.reversing.ghidra_analyze import GhidraAnalyzeTool
+from tools.implementations.reversing.ghidra_functions import GhidraFunctionsTool
+from tools.implementations.reversing.ghidra_decompile import GhidraDecompileTool
+from tools.implementations.reversing.ghidra_callgraph import GhidraCallgraphTool
+from tools.implementations.reversing.ghidra_find_constants import GhidraFindConstantsTool
+from tools.implementations.reversing.lldb_trace import LLDBTraceTool
+from tools.implementations.reversing.lldb_step import LLDBStepTool
+from tools.implementations.symbolic.angr_reachable import AngrReachableTool
+from tools.implementations.symbolic.angr_solve import AngrSolveTool
+from tools.implementations.symbolic.angr_constraints import AngrConstraintsTool
+from tools.implementations.symbolic.angr_explore import AngrExploreTool
+from tools.implementations.container.tools import RunTargetTool, DiffBehaviorTool, FuzzTargetTool
+from tools.implementations.container.runtime import ContainerSession
 from shared_types import RoutingRule
 from routing.conditions import has_file_path, has_extension, any_keyword, last_tools_were, all_of
 
@@ -365,7 +385,7 @@ BRIEFBOT = Toolset(
         "(2) For each interesting cluster, call briefbot_search with category='papers' or category='ai_research', "
         "order_by='date', days=14 to find the specific papers/posts driving it. "
         "(3) For the top 2-3 results, call briefbot_item to get the full record including opportunity analysis. "
-        "(4) Set requires_synthesis=true — the synthesis step must explain WHY each finding is notable, "
+        "(4) A synthesis step (action_type=conversation, tool=null) must explain WHY each finding is notable, "
         "what problem it solves, and what the signal strength is (velocity/trend_score). "
         "DO NOT stop after a single briefbot_search for research/trend queries — that is too shallow. "
         "Use briefbot_trending as the entry point for any 'what's new in X', 'what's hot', "
@@ -399,4 +419,143 @@ BRIEFBOT = Toolset(
     ],
 )
 
-ALL_TOOLSETS = [FILE_IO, SHELL, ANALYSIS, CRYPTO, WEB, DATA, ARTIFACTS, SEARCH, GIT, DOCUMENT, BRIEFBOT]
+REVERSING = Toolset(
+    name="reversing",
+    description="Deep binary structural and dynamic analysis using radare2, Ghidra, and LLDB",
+    planning_note=(
+        "Use r2_functions for full function inventory, r2_disassemble for one function's assembly, "
+        "r2_decompile for pseudocode (degrades to asm if r2ghidra not installed), "
+        "r2_callgraph for call relationships, r2_xrefs for what calls a given address, "
+        "r2_imports for library dependencies, r2_constants for strings-with-addresses. "
+        "Prefer r2_disassemble/r2_callgraph over objdump/nm for structural questions. "
+        "Ghidra tools (ghidra_decompile, ghidra_functions, ghidra_callgraph, ghidra_find_constants) "
+        "produce higher-quality output but require the first-run analysis (30-60s). "
+        "When decompiling, use ghidra_decompile with the 'function' argument to decompile ONE "
+        "specific function rather than all — much smaller output, less token cost. "
+        "LLDB tools (lldb_trace, lldb_step) observe runtime behavior with concrete register values. "
+        "Use lldb_trace to capture register state at key breakpoints (function entry/exit, loop start). "
+        "Use lldb_step to walk through an inner loop instruction by instruction. "
+        "LLDB output is small (~200 chars per hit) — always prefer dynamic observation over "
+        "static decompile when a reconstruction goal exists and oracle inputs are known."
+    ),
+    tools=[
+        R2FunctionsTool(),
+        R2DisassembleTool(),
+        R2DecompileTool(),
+        R2CallgraphTool(),
+        R2XrefsTool(),
+        R2ImportsTool(),
+        R2ConstantsTool(),
+        GhidraAnalyzeTool(),
+        GhidraFunctionsTool(),
+        GhidraDecompileTool(),
+        GhidraCallgraphTool(),
+        GhidraFindConstantsTool(),
+        LLDBTraceTool(),
+        LLDBStepTool(),
+    ],
+    rules=[
+        RoutingRule(toolset="reversing", condition=any_keyword(
+            "decompile", "decompiled", "pseudocode", "call graph", "callgraph",
+            "what functions", "list functions", "function list", "function names",
+            "what calls", "xref", "cross-reference", "cross reference",
+            "radare2", "r2", "ghidra", "r2_functions", "r2_disassemble",
+            "structural analysis", "program structure", "who calls",
+            "lldb", "gdb", "debugger", "breakpoint", "register",
+            "trace execution", "step through", "runtime", "dynamic analysis",
+            "watch execution", "observe", "lldb_trace", "lldb_step",
+        )),
+        RoutingRule(
+            toolset="reversing",
+            condition=lambda msg, _: bool(re.search(
+                r"\bwhat\s+functions?\s+(?:exist|are|does)\b"
+                r"|\bhow\s+does\s+\w+\s+call\b"
+                r"|\bcall\s+(?:graph|chain|tree)\b"
+                r"|\bdecompil(?:e|ed|ing)\b"
+                r"|\bfunction\s+(?:list|inventory|map)\b",
+                msg, re.IGNORECASE,
+            )),
+        ),
+    ],
+)
+
+SYMBOLIC = Toolset(
+    name="symbolic",
+    description="Symbolic execution and constraint solving using angr",
+    planning_note=(
+        "Use angr_reachable to check if a function/address is reachable from entry. "
+        "Use angr_solve to find the input (stdin or argv) that reaches a success state and avoids failure states. "
+        "Use angr_constraints to see what conditions must hold to reach a target. "
+        "Use angr_explore for open-ended questions not covered by the above templates. "
+        "Always run analysis/reversing recon first to get addresses — angr needs concrete addresses. "
+        "Binary complexity scales the timeout automatically. "
+        "Requires: pip install angr"
+    ),
+    tools=[
+        AngrReachableTool(),
+        AngrSolveTool(),
+        AngrConstraintsTool(),
+        AngrExploreTool(),
+    ],
+    rules=[
+        RoutingRule(toolset="symbolic", condition=any_keyword(
+            "angr", "symbolic", "symbolic execution", "reachable", "reach",
+            "solve", "find input", "find password", "find key", "crack",
+            "what input", "what conditions", "path condition", "constraint",
+            "prove", "buffer overflow", "vulnerable sink", "trigger",
+            "generate test case", "test case generation", "crackme",
+        )),
+        RoutingRule(
+            toolset="symbolic",
+            condition=lambda msg, _: bool(re.search(
+                r"\bcan\s+execution\s+reach\b"
+                r"|\bwhat\s+input\s+(?:reaches|triggers|causes)\b"
+                r"|\bsolve\s+(?:the\s+)?(?:password|key|checksum|crackme)\b"
+                r"|\bprove\s+(?:this|the)\s+buffer\b"
+                r"|\bfind\s+(?:an?\s+)?input\s+that\b",
+                msg, re.IGNORECASE,
+            )),
+        ),
+    ],
+)
+
+CONTAINER = Toolset(
+    name="container",
+    description="Containerized dynamic analysis and differential behavioral testing",
+    planning_note=(
+        "Use diff_behavior to compare an oracle binary against a reconstructed candidate "
+        "(source or binary) across multiple test cases. The oracle runs on host; the candidate "
+        "is compiled and run inside Docker/Podman for isolation. "
+        "Read the DiffReport: all_match=true means verified; for failures, read mismatch_summary "
+        "per case to identify the bug (padding length, CBC chaining, key derivation), fix the "
+        "source file, then call diff_behavior again. Repeat until all_match=true. "
+        "Use run_target to explore how a single binary or source behaves with various inputs. "
+        "Use fuzz_target to auto-generate boundary/random test cases and diff in one call. "
+        "Requires Docker or Podman. If unavailable, these tools return an error."
+    ),
+    tools=[
+        RunTargetTool(),
+        DiffBehaviorTool(),
+        FuzzTargetTool(),
+    ],
+    rules=[
+        RoutingRule(toolset="container", condition=any_keyword(
+            "diff_behavior", "run_target", "fuzz_target",
+            "differential", "behavioral testing", "compare behavior",
+            "verify reconstruction", "iterate on the code", "test the clone",
+            "round-trip test", "does it match", "oracle", "candidate",
+        )),
+        RoutingRule(
+            toolset="container",
+            condition=lambda msg, _: bool(re.search(
+                r"\biterate\s+on\s+(?:the\s+)?(?:code|source|clone|reconstruction)\b"
+                r"|\bverify\s+(?:the\s+)?reconstruction\b"
+                r"|\btest\s+(?:the\s+)?(?:clone|reconstruction)\s+against\b"
+                r"|\bdoes\s+\S+\s+match\s+(?:the\s+)?(?:original|binary)\b",
+                msg, re.IGNORECASE,
+            )),
+        ),
+    ],
+)
+
+ALL_TOOLSETS = [FILE_IO, SHELL, ANALYSIS, CRYPTO, WEB, DATA, ARTIFACTS, SEARCH, GIT, DOCUMENT, BRIEFBOT, REVERSING, SYMBOLIC, CONTAINER]

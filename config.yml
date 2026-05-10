@@ -1,9 +1,9 @@
 llm:
-  max_tokens: 4096
+  max_tokens: 8096
   # Main agent LLM — the model that handles user turns and executes plans.
   # Keys stay in .env; only provider name and model go here.
-  provider: openai
-  model: gpt-4.1-mini
+  provider: gemini  # openai
+  model: gemini-2.5-flash # gpt-4.1
 
   # Runtime LLM — used by classifier, monitor, importance scorer, council calls.
   # Keep this lighter/cheaper than the main model. null = use main provider.
@@ -18,6 +18,19 @@ timeouts:
 tools:
   strings_min_length: "4"
   hexdump_default_bytes: "256"
+  radare2:
+    timeout_seconds: 30
+  ghidra:
+    project_dir: "_store/ghidra_projects"
+    timeout_seconds: 120
+    scripts_dir: "src/tools/implementations/reversing/ghidra_scripts"
+  angr:
+    timeout_reachable: 60
+    timeout_solve: 120
+    timeout_constraints: 120
+    timeout_explore: 300
+    complexity_medium_threshold: 50
+    complexity_large_threshold: 200
 
 routing:
   embedding_model: "all-MiniLM-L6-v2"
@@ -26,7 +39,9 @@ routing:
     - file_io
     - shell
   toolset_descriptions:
-    analysis: "reverse engineering binary analysis disassembly executable symbols objdump strings hexdump elf shared library segments sections"
+    analysis: "binary recon triage file type identify architecture security features checksec nx aslr stack canary raw disassembly bytes hexdump symbol table nm strings extract initial scan lightweight quick"
+    reversing: "decompile function pseudocode radare2 r2 ghidra call graph xref cross-reference what functions exist what calls what structural analysis full function listing understand program decompiled C"
+    symbolic: "symbolic execution angr reachable reach path find input solve password key checksum constraint prove buffer overflow vulnerable sink test case generate input trigger behavior what conditions"
     file_io: "read write files directories search filesystem copy move delete create list walk directory contents"
     crypto: "hash encode decode encrypt decrypt base64 xor md5 sha checksum hex bytes cryptography"
     shell: "run execute bash shell command terminal subprocess script process environment"
@@ -36,6 +51,7 @@ routing:
     search: "search web news images brave api look up find information current events articles google"
     git: "git commit branch diff log blame stash show status working tree repository history who changed"
     document: "pdf docx word epub ebook document extract text pages read pdf read document"
+    container: "differential testing docker podman container run binary oracle candidate compare behavior verify reconstruction iterate fix round-trip fuzz edge cases compile source native binary dynamic analysis behavioral equivalence test clone"
 
 agent:
   system_prompt: >-
@@ -74,9 +90,23 @@ agent:
     disassembly (e.g. 0x9e3779b9 = TEA, 0x6a09e667 = SHA-256, 0x67452301 = MD5)
     and use them to identify the algorithm before concluding it is unknown.
 
+storage:
+  # Local dev: leave empty. GCS: "gs://your-bucket-name"
+  base_uri: ""
+
+rag:
+  enabled: true          # set true after: pip install lancedb
+  mode: local             # local | http
+  http_base_url: "http://localhost:17433"   # used when mode=http
+  embedding_provider: sentence_transformers  # sentence_transformers | openai | gemini
+  embedding_model: all-MiniLM-L6-v2
+  top_k: 5
+  threshold: 0.65
+  injection_budget_chars: 2000
+
 artifact_store:
   enabled: true
-  inline_threshold_bytes: 4096
+  inline_threshold_bytes: 8192
   decay:
     enabled: true
     factor: 0.85
@@ -87,12 +117,6 @@ artifact_store:
     similarity_threshold: 0.82
     frequency_threshold: 5
     recency_decay: 0.95
-  rag:
-    enabled: true
-    top_k: 3
-    similarity_threshold: 0.6
-    inject_on_start: true
-    max_injected_chars: 3000
   sqlite_vec:
     enabled: true
     extension_path: null
@@ -121,16 +145,18 @@ runtime:
     docker_image: "python:3.11-slim"
     default_network: "disabled"
     command_timeout_seconds: 120
-    max_output_chars: 50000
+    max_output_chars: 20000
     workspace_root: "."
     allowed_read_roots:
       - "/tmp"
       - "/private/tmp"
       - "_store"
+      - "."
     allowed_write_roots:
       - "/tmp"
       - "/private/tmp"
       - "_store"
+      - "."
 
   pipeline:
     max_retries_per_stage: 2
@@ -138,7 +164,7 @@ runtime:
     max_tool_calls: 15
     max_iterations: 20
     max_consecutive_errors: 3
-    tool_result_truncate_chars: 50000
+    tool_result_truncate_chars: 20000
 
   plan_validator:
     enabled: true
@@ -146,19 +172,35 @@ runtime:
     enabled: true
     skip_low_risk: false
     consensus_on_high_risk: true
+    complexity_threshold: 8
+
+  tool_policy:
+    utility_tools:
+      write_file:
+        - make_directory
+      bash_exec:
+        - read_file
+
+  continuation:
+    enabled: true
+    max_iterations: 8
+    use_llm_judge: false     # on by default only for skills with CompletionCriteria
+    trust_skill_criteria: true
+    llm_judge_label: "ContinuationStage"
   execution_monitor:
     enabled: true
     max_step_retries: 2
     max_defers_per_step: 1
-    step_max_tool_calls: 10
+    step_max_tool_calls: 30
+    step_max_iterations: 25
     error_recovery_clears_step_error: true
   context_manager:
     enabled: true
-    message_budget_tokens: 16384
-    half_life_turns: 10
-    threshold_high: 0.45
-    threshold_mid: 0.25
-    compressed_max_chars: 300
+    message_budget_tokens: 65536
+    half_life_turns: 15
+    threshold_high: 0.35
+    threshold_mid: 0.20
+    compressed_max_chars: 800
 
   # Council: multi-agent deliberation primitive.
   # same-provider N times  → variance/noise reduction (self-consistency)
@@ -166,24 +208,25 @@ runtime:
   # mixed N+M              → both; labels distinguish councillors in logs/metrics
   council:
     councillors:
-
-      - provider: openai
-        model: gpt-5-nano
-        label: gpt
+      - provider: gemini
+        model: gemini-2.5-flash
+        label: gemini
+      - provider: anthropic
+        model: claude-haiku-4-5
+        label: claude
       - provider: grok
         model: grok-4-1-fast-reasoning
         label: grok
-      - provider: gemini
-        model: gemini-3-flash
-        label: gemini
-      # - provider: anthropic
-      #   model: claude-haiku-4-5
-      #   label: claude
+      # - provider: openai
+      #   model: gpt-4o-mini
+      #   label: gpt
 
-    mode: debate   # independent | debate
+
+
+    mode: independent   # independent | debate
 
     debate:
-      max_rounds: 3
+      max_rounds: 2
       early_exit_on_consensus: true
 
     # null = one worker per councillor (fully parallel); 1 = sequential (debug only)
@@ -200,8 +243,8 @@ runtime:
     # high=3 uses the full pool for destructive or out-of-workspace operations.
     dynamic_scaling:
       low: 0
-      moderate: 2
-      high: 3
+      moderate: 1
+      high: 1
 
   # ── Optional councils for specific decision points ─────────────────────────
   # Each is independent of the plan_critic council above.
@@ -228,3 +271,16 @@ runtime:
     enabled: false
     only_on_medium: true
     n_councillors: 2
+
+container:
+  limits:
+    timeout_seconds: 60
+    memory: "256m"
+    cpus: 1.0
+    pids_limit: 64
+    network: "none"
+  images:
+    native: "gcc:12"
+    jvm: "openjdk:17-slim"
+    python: "python:3.11-slim"
+    base: "ubuntu:22.04"

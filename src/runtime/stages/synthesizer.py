@@ -1,7 +1,7 @@
 """SynthesizerStage — synthesizes a coherent response from completed plan steps.
 
-Runs only when plan.requires_synthesis is True. Skips (no-op) otherwise,
-leaving context.response as set by ExecutionStage.
+Runs whenever ContinuationStage returns OK. ContinuationStage returns DONE
+when no synthesis is needed, short-circuiting this stage.
 
 Optional: if runtime.synthesis_quality.enabled is true, a council quality gate
 runs after synthesis — only when the plan had at least one failure (retry or
@@ -31,8 +31,8 @@ def _plan_had_failures(plan) -> bool:
 class SynthesizerStage(Stage):
     """Synthesizes a final response from plan step results.
 
-    Reads:  context.plan (must be non-None with requires_synthesis=True)
-    Writes: context.response (overwrites ExecutionStage's placeholder)
+    Reads:  context.plan (non-None)
+    Writes: context.response
     """
 
     name = "SynthesizerStage"
@@ -42,15 +42,24 @@ class SynthesizerStage(Stage):
         self._spinner = spinner
 
     def run(self, context: PipelineContext) -> StageResult:
-        if context.plan is None or not context.plan.requires_synthesis:
+        # SynthesizerStage runs whenever the pipeline reaches it.
+        # ContinuationStage decides whether we get here (returns OK)
+        # or skip it (returns DONE).
+        if context.plan is None:
             return StageResult(status=StageStatus.OK, updated_context=context)
 
-        self._spinner.start("Synthesizing response...")
         logger.info(banner("Synthesizing"))
+        on_token = context.on_token  # Callable[[str], None] | None
 
-        response = self._synthesizer.synthesize(context.plan)
+        if on_token is not None:
+            # Streaming: stop spinner first so tokens print cleanly
+            self._spinner.stop()
+            response = self._synthesizer.stream_synthesize(context.plan, on_token)
+        else:
+            self._spinner.start("Synthesizing response...")
+            response = self._synthesizer.synthesize(context.plan)
+            self._spinner.stop()
 
-        self._spinner.stop()
         logger.info(banner("Done"))
 
         # ── Optional quality gate ──────────────────────────────────────────

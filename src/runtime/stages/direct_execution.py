@@ -21,6 +21,7 @@ from runtime.tool_loop import ToolLoop, ToolLoopConfig
 from runtime.utils import banner
 from app_config import config
 from logger import get_logger
+from session_paths import build_analysis_manifest
 
 logger = get_logger(__name__)
 
@@ -66,6 +67,7 @@ class DirectExecutionStage(Stage):
             logger.info(banner("Direct execution"))
 
         self._identity = context.identity
+        self._rag_context = context.rag_context
         response = self._run_loop(context.user_message)
         context.response = response
         return StageResult(status=StageStatus.OK, updated_context=context)
@@ -111,7 +113,7 @@ class DirectExecutionStage(Stage):
         )
 
         result = loop.run(
-            system=self._agent_system,
+            system=self._agent_system + getattr(self, "_rag_context", "") + build_analysis_manifest(),
             tools=tools,
             query=user_message,
             resume_message="Thinking...",

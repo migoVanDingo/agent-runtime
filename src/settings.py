@@ -61,6 +61,11 @@ class Settings(BaseSettings):
         default=False, validation_alias=env_alias("ENABLE_SESSION_PERSISTENCE"),
     )
 
+    # ── Tool paths (machine-local, vary per install — live in .env) ──────────
+    ghidra_home: Optional[str] = Field(
+        default=None, validation_alias=env_alias("GHIDRA_HOME"),
+    )
+
     # ── Deprecated env overrides (kept for backwards compat, config.yml wins) ─
     # These are read by get_provider() only if config.yml doesn't specify a model.
     # Prefer setting llm.provider / llm.model in config.yml instead.

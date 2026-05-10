@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from planning.schema import Plan
-    from runtime.schema import ClassifierResult
+    from runtime.schema import ClassifierResult, ContinuationState
     from runtime.identity import RuntimeIdentity
 
 
@@ -20,6 +20,9 @@ class PipelineContext:
 
     # ── Set at pipeline entry (call-site) ────────────────────────────
     user_message: str
+    # RAG historical context block — injected into system prompt by execution stages.
+    # Built per-turn in agent.call() before the pipeline runs.
+    rag_context: str = ""
     # Runtime identity — minted by Pipeline.run, enriched by stages.
     identity: "RuntimeIdentity | None" = None
 
@@ -35,15 +38,24 @@ class PipelineContext:
     # Used by EntityCriticStage as the candidate source for path correction.
     entity_context: str | None = None
 
-    # ── Set by WorkflowMatchStage ────────────────────────────────────
-    # How the plan was produced: classifier_hint | classifier_hint_direct |
-    # regex | fallback | planner | None (not yet determined)
+    # ── Set by SkillHintStage (advisory only) ────────────────────────
+    # Name of a skill the planner is hinted to use. NOT load-bearing.
+    skill_hint: str | None = None
+
+    # ── Set by SkillExpansionStage ────────────────────────────────────
+    # Single-skill plans stamp this for ContinuationStage criteria lookup.
+    # Multi-skill plans and planner-only plans leave it None.
+    active_skill_name: str | None = None
+
+    # ── Legacy informational fields (not load-bearing) ────────────────
     routing_path: str | None = None
-    # Workflow name chosen during WorkflowMatchStage, if any.
     workflow_name: str | None = None
 
-    # ── Set by WorkflowMatchStage or PlanningStage ───────────────────
+    # ── Set by PlanningStage ─────────────────────────────────────────
     plan: Plan | None = None
+
+    # ── Continuation state (managed by ContinuationStage) ────────────
+    continuation_state: "ContinuationState | None" = None
 
     # ── Set by ExecutionStage or SynthesizerStage ────────────────────
     response: str | None = None
@@ -59,3 +71,8 @@ class PipelineContext:
     # ── Persistence (optional — gated by ENABLE_SESSION_PERSISTENCE) ────
     # Set by Agent.chat() before pipeline runs, read by ExecutionStage.
     db_session_id: str | None = None
+
+    # ── Streaming (optional) ─────────────────────────────────────────
+    # When set, SynthesizerStage calls this with each token chunk instead
+    # of buffering the full response. Caller receives tokens in real time.
+    on_token: object = None  # Callable[[str], None] | None

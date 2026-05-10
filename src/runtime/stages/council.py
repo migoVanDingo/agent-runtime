@@ -1,7 +1,7 @@
 """CouncilStage — adversarial plan critic review before execution.
 
-Workflow-generated plans bypass the council entirely — they are pre-designed
-and validated by intent, not hallucinated by the planner.
+Council scrutiny is based on plan structure and risk — not on how the plan
+was produced. High-risk plans and structurally complex plans run the council.
 
 Dynamic scaling: low=0 councillors (skip), moderate=1, high=N (full pool).
 On CHALLENGED with non-justify suggestions: sends challenges to planner for
@@ -10,7 +10,7 @@ If all steps are stripped: ABORT (broken plan should not execute).
 """
 from __future__ import annotations
 from planning.planner import Planner
-from planning.schema import Plan
+from planning.schema import Plan, ActionType
 from runtime.critic import PlanCritic
 from runtime.pipeline_context import PipelineContext
 from runtime.schema import CriticVerdict, ValidationStatus
@@ -23,8 +23,33 @@ from logger import get_logger
 
 logger = get_logger(__name__)
 
-# Routing paths that indicate a workflow-generated plan (bypass council).
-_WORKFLOW_PATHS = {"classifier_hint", "classifier_hint_direct", "regex", "fallback"}
+_DESTRUCTIVE_ACTION_TYPES = {ActionType.SHELL, ActionType.FILE_IO}
+
+
+def _plan_complexity(plan: Plan) -> int:
+    """Heuristic structural complexity score for council-bypass decision."""
+    score = len(plan.steps)
+    for s in plan.steps:
+        if s.action_type in _DESTRUCTIVE_ACTION_TYPES:
+            score += 2
+        if s.tool == "bash_exec":
+            score += 1
+    return score
+
+
+def _should_run_council(plan: Plan, risk: str, threshold: int) -> tuple[bool, str]:
+    """Return (run, reason). Council scrutiny depends on the plan, not provenance."""
+    if risk == "high":
+        return True, "high risk"
+    score = _plan_complexity(plan)
+    if score >= threshold:
+        return True, f"complexity score {score} >= threshold {threshold}"
+    if risk == "moderate" and any(s.action_type in _DESTRUCTIVE_ACTION_TYPES for s in plan.steps):
+        return True, "moderate risk + destructive action types present"
+    return False, (
+        f"skip: risk={risk}, complexity={score} < {threshold}, "
+        f"no destructive-types-on-moderate match"
+    )
 
 
 def _strip_challenged_steps(plan: Plan, critic_result) -> Plan | None:
@@ -62,7 +87,7 @@ def _strip_challenged_steps(plan: Plan, critic_result) -> Plan | None:
 class CouncilStage(Stage):
     """Adversarial critic review of the plan.
 
-    Reads:  context.plan, context.routing_path, context.classification.risk
+    Reads:  context.plan, context.classification.risk
     Writes: context.plan (may be revised or stripped)
 
     Returns ABORT if all steps are stripped (broken plan must not execute).
@@ -76,11 +101,13 @@ class CouncilStage(Stage):
         planner: Planner,
         validator: PlanValidator,
         spinner,
+        skill_expansion_stage=None,
     ) -> None:
         self._critic = critic
         self._planner = planner
         self._validator = validator
         self._spinner = spinner
+        self._skill_expansion = skill_expansion_stage
 
     def run(self, context: PipelineContext) -> StageResult:
         # No-op for direct mode.
@@ -90,19 +117,19 @@ class CouncilStage(Stage):
         if context.plan is None:
             return StageResult(status=StageStatus.OK, updated_context=context)
 
-        # Workflow-generated plans bypass the critic.
-        if context.routing_path in _WORKFLOW_PATHS:
-            logger.info(banner("Plan critic"))
-            logger.info(f"  critic: skipped (workflow-generated plan via '{context.routing_path}')")
-            return StageResult(status=StageStatus.OK, updated_context=context)
-
         risk = context.classification.risk
+        threshold = config.runtime.plan_critic.complexity_threshold
+        should_run, reason = _should_run_council(context.plan, risk, threshold)
+        logger.info(banner("Plan critic"))
+        if not should_run:
+            logger.info(f"  critic: skipped — {reason}")
+            return StageResult(status=StageStatus.OK, updated_context=context)
+        logger.info(f"  critic: running — {reason}")
+
         scaling = config.runtime.council.dynamic_scaling
         n_councillors = scaling.get(risk, 1)
         pool = config.runtime.council.councillors
         active = pool[:n_councillors]
-
-        logger.info(banner("Plan critic"))
 
         if not active:
             logger.info(f"  critic: skipped ({risk} risk → 0 councillors)")
@@ -135,6 +162,12 @@ class CouncilStage(Stage):
         revised = self._planner.revise(plan, challenges_text)
 
         if revised is not None:
+            # Expand any skill: steps the revision introduced before validating.
+            if self._skill_expansion is not None:
+                context.plan = revised
+                self._skill_expansion.run(context)
+                revised = context.plan
+
             for s in revised.steps:
                 logger.info(f"  Step {s.step} [{s.action_type.value}] tool={s.tool}: {s.description}")
             logger.info(banner("Plan validation (post-critic)"))
@@ -155,25 +188,19 @@ class CouncilStage(Stage):
                 reason="All plan steps stripped by council critic",
             )
 
-        # Phase 8 coherence check: if requires_synthesis but every remaining
-        # step is CONVERSATION type (no data-gathering steps), synthesis has
-        # nothing to work with — the plan is structurally incoherent.
-        if plan.requires_synthesis:
-            from planning.schema import ActionType
-            data_steps = [
-                s for s in plan.steps
-                if s.action_type != ActionType.CONVERSATION
-            ]
-            if not data_steps:
-                logger.info(
-                    "  council: plan requires synthesis but has no data-gathering steps "
-                    "after stripping — aborting to fallback"
-                )
-                return StageResult(
-                    status=StageStatus.ABORT,
-                    updated_context=context,
-                    reason="Plan stripped to synthesis-only: no data-gathering steps remain",
-                )
+        # Coherence check: if every remaining step is CONVERSATION type,
+        # there is nothing to synthesize — plan is structurally incoherent.
+        data_steps = [s for s in plan.steps if s.action_type != ActionType.CONVERSATION]
+        if not data_steps:
+            logger.info(
+                "  council: plan stripped to CONVERSATION-only steps with no "
+                "data-gathering — aborting to fallback"
+            )
+            return StageResult(
+                status=StageStatus.ABORT,
+                updated_context=context,
+                reason="Plan stripped to conversation-only: no data-gathering steps remain",
+            )
 
         logger.info(banner(f"Plan ready ({len(plan.steps)} steps)"))
 

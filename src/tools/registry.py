@@ -67,6 +67,13 @@ class ToolRegistry:
             return ""
         return f"[{tool.weight.value}] {tool.description}"
 
+    def toolset_tool_names(self, toolset_name: str) -> list[str]:
+        """Return the names of tools registered under a toolset."""
+        toolset = self._toolsets.get(toolset_name)
+        if toolset is None:
+            return []
+        return [t.name for t in toolset.tools]
+
     def get_all_rules(self) -> list[RoutingRule]:
         rules = []
         for toolset in self._toolsets.values():

@@ -20,7 +20,7 @@ from runtime.utils import (
     is_clean_inline_answer,
     extract_entity_context,
 )
-from workflows.matcher import WorkflowMatcher
+from skills.registry import SkillRegistry
 from app_config import config
 from logger import get_logger
 
@@ -43,26 +43,26 @@ class RoutingStage(Stage):
         self,
         provider: BaseProvider,
         context_mgr: ContextManager,
-        workflow_matcher: WorkflowMatcher,
+        skill_registry: SkillRegistry,
         messenger,
     ) -> None:
         self._provider = provider
         self._context_mgr = context_mgr
-        self._workflow_matcher = workflow_matcher
+        self._skill_registry = skill_registry
         self._messenger = messenger
 
     def run(self, context: PipelineContext) -> StageResult:
         logger.info(banner("Intent routing"))
 
-        wf_descriptions = self._workflow_matcher.get_descriptions()
-        valid_wf_names = {name for name, _ in wf_descriptions}
+        skill_descriptions = self._skill_registry.descriptions()
+        valid_skill_names = {name for name, _ in skill_descriptions}
 
         packed = self._context_mgr.pack(
             self._messenger.get_messages(),
             context.user_message,
         )
 
-        routing_system = build_routing_system(config.agent.system_prompt, wf_descriptions)
+        routing_system = build_routing_system(config.agent.system_prompt, skill_descriptions)
 
         routing_response = self._provider.chat(
             messages=packed,
@@ -75,11 +75,11 @@ class RoutingStage(Stage):
             (b.text for b in routing_response.content if isinstance(b, TextBlock)), ""
         )
 
-        classification, answer_text = parse_routing_response(full_text, valid_wf_names)
+        classification, answer_text = parse_routing_response(full_text, valid_skill_names)
 
         logger.info(
             f"  mode={classification.mode}  risk={classification.risk}"
-            f"  hint={classification.workflow_hint}"
+            f"  hint={classification.skill_hint}"
         )
 
         context.packed_messages = packed

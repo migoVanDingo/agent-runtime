@@ -4,7 +4,7 @@ import re
 import sys
 from pathlib import Path
 
-LOGS_DIR = Path(__file__).resolve().parent.parent / "_logs"
+from session_paths import log_path as _log_path
 
 _NOISY_LOGGERS = [
     "httpx",
@@ -90,7 +90,8 @@ def _log_session_banner(logger_instance: logging.Logger, session_id: str, label:
 
 def configure_logging(session_id: str, verbose: bool = False) -> None:
     from runtime.council_metrics import init_metrics_writer
-    LOGS_DIR.mkdir(exist_ok=True)
+    path = _log_path(session_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
 
     root = logging.getLogger()
     root.setLevel(logging.INFO)
@@ -99,7 +100,10 @@ def configure_logging(session_id: str, verbose: bool = False) -> None:
         "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     )
 
-    file_handler = logging.FileHandler(LOGS_DIR / f"{session_id}.log")
+    # Open with buffering=1 (line-buffered) so each log line is immediately
+    # visible to file watchers without an explicit flush or fsync.
+    log_stream = open(path, "a", buffering=1, encoding="utf-8")
+    file_handler = logging.StreamHandler(log_stream)
     file_handler.setFormatter(plain_formatter)
     file_handler.addFilter(_StripANSIFilter())
     root.addHandler(file_handler)
@@ -120,15 +124,16 @@ def configure_logging(session_id: str, verbose: bool = False) -> None:
     # Initialize council metrics writer for this session
     init_metrics_writer(session_id)
 
-    # Build provider info for the banner
-    from settings import settings
-    provider = settings.llm_provider
+    # Build provider info for the banner — read from config.yml (app_config), not env vars.
+    from app_config import config as _cfg
+    provider = _cfg.llm.provider
     if provider == "ollama":
-        provider_line = f"Provider   : ollama ({settings.ollama_model})"
+        from settings import settings as _s
+        provider_line = f"Provider   : ollama ({_s.ollama_model})"
     else:
-        rt_provider = settings.runtime_provider or provider
-        rt_model = settings.runtime_model or "(default)"
-        provider_line = f"Provider   : {provider}  |  Runtime: {rt_provider} ({rt_model})"
+        rt_provider = _cfg.llm.runtime_provider or provider
+        rt_model = _cfg.llm.runtime_model or "(default)"
+        provider_line = f"Provider   : {provider} / {_cfg.llm.model}  |  Runtime: {rt_provider} / {rt_model}"
 
     _log_session_banner(logging.getLogger("main"), session_id, "Session Started", [provider_line])
 

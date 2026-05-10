@@ -9,3 +9,12 @@ _references
 _tests
 src/arc.egg*
 _store/
+_plans
+_rag
+_sessions
+data
+docs
+proc_ghidra
+proc
+proc.c
+src/*.db

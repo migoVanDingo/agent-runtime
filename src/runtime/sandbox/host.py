@@ -22,10 +22,10 @@ class HostShellBackend:
             result = subprocess.run(
                 request.command,
                 shell=True,
+                executable="/bin/bash",
                 cwd=request.cwd or None,
                 env=None,
                 capture_output=True,
-                text=True,
                 timeout=request.limits.timeout_seconds,
             )
             timed_out = False
@@ -34,8 +34,8 @@ class HostShellBackend:
             exit_code = result.returncode
         except subprocess.TimeoutExpired as e:
             timed_out = True
-            stdout = e.stdout or ""
-            stderr = e.stderr or ""
+            stdout = e.stdout or b""
+            stderr = e.stderr or b""
             exit_code = None
 
         duration_ms = int((time.monotonic() - start) * 1000)

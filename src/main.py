@@ -6,7 +6,9 @@ from datetime import datetime
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 from pathlib import Path
 from utils import generate_id
-from logger import configure_logging, log_session_end, LOGS_DIR, get_logger
+from logger import configure_logging, log_session_end, get_logger
+from session_paths import session_dir
+from rag import init_rag_service, get_rag_service
 from runtime.token_tracker import get_tracker
 from runtime.artifact_store import init_store, get_artifact_store, ResumableSession
 from runtime.events import (
@@ -26,12 +28,12 @@ _RESUME_PICK = "__resume_pick__"
 
 
 def print_session_banner(session_id: str, resumed: bool = False) -> None:
-    log_path = LOGS_DIR / f"{session_id}.log"
+    sdir = session_dir(session_id)
     width = 52
     print("\n" + "─" * width)
     print(f"  Agent Session {'Resumed' if resumed else 'Started'}")
     print(f"  Session ID : {session_id}")
-    print(f"  Log file   : {log_path}")
+    print(f"  Session dir: {sdir}")
     print("─" * width + "\n")
 
 
@@ -178,19 +180,34 @@ def _build_session_summary(agent: Agent) -> str:
     return summary[:1200]
 
 
+def _shutdown_jvm_if_running() -> None:
+    """Shut down the JPype/PyGhidra JVM cleanly to suppress semaphore leak warnings."""
+    try:
+        import jpype
+        if jpype.isJVMStarted():
+            jpype.shutdownJVM()
+    except Exception:
+        pass
+
+
 def _finalize_session(session_id: str, agent: Agent | None, store_enabled: bool) -> None:
     if store_enabled and agent is not None:
         store = get_artifact_store()
         store.save_conversation(agent.messenger.get_messages())
-        if config.artifact_store.rag.enabled:
-            try:
-                summary = _build_session_summary(agent)
-                if summary:
-                    store.index_session_summary(session_id, summary)
-            except Exception as e:
-                logger.warning(f"session summary indexing skipped: {e}")
         store.flush()
         store.mark_detached()
+
+    if rag := get_rag_service():
+        try:
+            import time as _time
+            summary = _build_session_summary(agent) if agent else ""
+            if summary:
+                rag.index_session(session_id, summary, {
+                    "project": config.artifact_store.project.default or "",
+                    "timestamp": _time.time(),
+                })
+        except Exception as e:
+            logger.warning(f"rag session indexing skipped: {e}")
 
     get_tracker().log_summary()
     get_event_bus().emit(
@@ -201,11 +218,111 @@ def _finalize_session(session_id: str, agent: Agent | None, store_enabled: bool)
             stage="main",
         )
     )
+    _shutdown_jvm_if_running()
     print_session_end(session_id)
     log_session_end(session_id)
 
 
+def _cmd_wipe(argv: list[str]) -> None:
+    """arc wipe — delete generated runtime data directories."""
+    import shutil
+
+    p = argparse.ArgumentParser(
+        prog="arc wipe",
+        description="Delete generated runtime data. Prompts for confirmation unless --yes is set.",
+    )
+    p.add_argument("--all", "-a", action="store_true", help="Wipe all generated data")
+    p.add_argument("--sessions", "-s", action="store_true", help="Wipe _sessions/ (logs, metrics, events)")
+    p.add_argument("--rag", "-r", action="store_true", help="Wipe _rag/ (LanceDB chunk stores + global warehouse)")
+    p.add_argument("--analysis", "-n", action="store_true", help="Wipe _analysis/ (paged tool artifacts)")
+    p.add_argument("--store", action="store_true", help="Wipe artifact store DB and data (_store/artifacts.db + _store/data/)")
+    p.add_argument("--logs", "-l", action="store_true", help="Wipe legacy flat dirs (_logs/, _metrics/, _events/)")
+    p.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
+
+    args = p.parse_args(argv)
+    root = Path(__file__).resolve().parent.parent
+
+    # Build list of (label, path) targets based on flags
+    targets: list[tuple[str, Path]] = []
+
+    def _add(label: str, path: Path) -> None:
+        targets.append((label, path))
+
+    if args.all or args.sessions:
+        _add("sessions", root / "_sessions")
+    if args.all or args.rag:
+        _add("rag", root / "_rag")
+    if args.all or args.analysis:
+        _add("analysis", root / "_analysis")
+    if args.all or args.store:
+        _add("store/artifacts.db", root / "_store" / "artifacts.db")
+        _add("store/data", root / "_store" / "data")
+    if args.all or args.logs:
+        _add("logs (legacy)", root / "_logs")
+        _add("metrics (legacy)", root / "_metrics")
+        _add("events (legacy)", root / "_events")
+
+    if not targets:
+        p.print_help()
+        return
+
+    # Measure and display what will be deleted
+    def _measure(path: Path) -> tuple[int, float]:
+        if not path.exists():
+            return 0, 0.0
+        if path.is_file():
+            return 1, path.stat().st_size / 1_048_576
+        files = list(path.rglob("*"))
+        count = sum(1 for f in files if f.is_file())
+        mb = sum(f.stat().st_size for f in files if f.is_file()) / 1_048_576
+        return count, mb
+
+    print()
+    any_exists = False
+    for label, path in targets:
+        rel = path.relative_to(root)
+        if path.exists():
+            count, mb = _measure(path)
+            print(f"  {label:<22}  {rel}  ({count} files, {mb:.1f} MB)")
+            any_exists = True
+        else:
+            print(f"  {label:<22}  {rel}  (not found)")
+
+    if not any_exists:
+        print("\nNothing to delete.")
+        return
+
+    print()
+    if not args.yes:
+        confirm = input("Delete all of the above? [y/N]: ").strip().lower()
+        if confirm != "y":
+            print("Cancelled.")
+            return
+
+    deleted = 0
+    for label, path in targets:
+        if not path.exists():
+            continue
+        try:
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+            print(f"  deleted  {path.relative_to(root)}")
+            deleted += 1
+        except Exception as e:
+            print(f"  FAILED   {path.relative_to(root)}: {e}")
+
+    print(f"\nDone — {deleted} item(s) removed.")
+
+
 def main():
+    # Intercept wipe subcommand before the agent argparse so existing behaviour
+    # is completely unchanged for normal `arc` / `arc --resume` invocations.
+    if len(sys.argv) > 1 and sys.argv[1] == "wipe":
+        _cmd_wipe(sys.argv[2:])
+        return
+
     parser = argparse.ArgumentParser(description="Raw Tool Agent")
     parser.add_argument("--verbose", action="store_true", help="Stream logs to console")
     parser.add_argument(
@@ -237,6 +354,7 @@ def main():
 
     configure_logging(session_id, verbose=args.verbose)
     init_runtime_events(session_id, project_id=project_root.name)
+    init_rag_service(session_id)
     get_event_bus().emit(
         RuntimeEvent(
             "session.resumed" if resumed else "session.started",
@@ -252,6 +370,17 @@ def main():
     restored_messages: list[dict] = []
     if store_enabled and resumed:
         restored_messages = get_artifact_store().load_conversation(session_id)
+        # Cap resumed context to the most recent turns to prevent token blowout.
+        # Older turns are dropped; the manifest and RAG surface prior artifacts.
+        # 30 messages ≈ 15 turns — enough for immediate task continuity.
+        _RESUME_MSG_CAP = 30
+        if len(restored_messages) > _RESUME_MSG_CAP:
+            n_dropped = len(restored_messages) - _RESUME_MSG_CAP
+            logger.info(
+                f"resume: dropped {n_dropped} older message(s) to cap context "
+                f"({_RESUME_MSG_CAP} most recent kept)"
+            )
+            restored_messages = restored_messages[-_RESUME_MSG_CAP:]
 
     if store_enabled and config.artifact_store.project.enabled:
         store = get_artifact_store()
@@ -296,8 +425,19 @@ def main():
                 stage="main",
             )
         )
+
+        # Streaming state — shared between on_token callback and main thread.
+        _streaming_started = False
+
+        def _on_token(chunk: str) -> None:
+            nonlocal _streaming_started
+            if not _streaming_started:
+                print("\nAgent: ", end="", flush=True)
+                _streaming_started = True
+            print(chunk, end="", flush=True)
+
         try:
-            response = agent.call(user_input)
+            response = agent.call(user_input, on_token=_on_token)
         except Exception as exc:
             agent.spinner.stop()
             logger.exception("Unhandled error during agent.call")
@@ -311,6 +451,7 @@ def main():
             )
             print(f"\nAgent: Sorry, something went wrong: {exc}\n")
             continue
+
         get_event_bus().emit(
             RuntimeEvent(
                 "turn.completed",
@@ -320,7 +461,12 @@ def main():
             )
         )
         elapsed = agent.spinner.elapsed_display()
-        print(f"\nAgent: {response}\n")
+        if _streaming_started:
+            # Response was streamed — just print newline and timing
+            print("\n")
+        else:
+            # Non-streaming path (direct mode, or provider doesn't support streaming)
+            print(f"\nAgent: {response}\n")
         if elapsed:
             print(f"  ⏱  {elapsed}\n")
 

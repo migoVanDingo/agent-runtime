@@ -25,15 +25,14 @@ class NoopEventSink:
 
 
 class JsonlEventSink:
-    """Append events to a session-scoped JSONL file."""
+    """Append events to a fixed session-scoped JSONL file."""
 
-    def __init__(self, root: Path) -> None:
-        self._root = root
+    def __init__(self, path: Path) -> None:
+        self._path = path
 
     def emit(self, event: RuntimeEvent) -> None:
-        self._root.mkdir(parents=True, exist_ok=True)
-        path = self._root / f"{event.identity.session_id}.jsonl"
-        with open(path, "a", encoding="utf-8") as f:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self._path, "a", encoding="utf-8") as f:
             f.write(json.dumps(event.to_dict(), ensure_ascii=False, default=str) + "\n")
 
 

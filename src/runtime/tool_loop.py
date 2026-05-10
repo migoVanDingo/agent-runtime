@@ -7,6 +7,7 @@ ToolLoopHooks implementation that adapts the shared loop to its context.
 from __future__ import annotations
 
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Callable, Protocol
 
@@ -42,6 +43,9 @@ class ToolLoopResult:
     hit_max_tokens: bool = False
     hit_iteration_cap: bool = False
     hit_tool_call_cap: bool = False
+    # Raw output of the last successful tool call (not the model's prose summary).
+    # Criteria evaluators use this to inspect structured tool results.
+    last_tool_output: str = ""
 
 
 # ── Hooks protocol ────────────────────────────────────────────────────────────
@@ -120,11 +124,12 @@ class ToolLoop:
         force_end = False
         last_had_errors = False
         error_correction_sent = False
-        _last_tool_sig: tuple | None = None
+        _recent_sigs: deque[tuple] = deque(maxlen=8)  # sliding window for cycle detection
         tool_errors: list[str] = []
         hit_max_tokens = False
         hit_iteration_cap = False
         hit_tool_call_cap = False
+        last_tool_output: str = ""
 
         while True:
             iteration += 1
@@ -137,7 +142,7 @@ class ToolLoop:
                     "Stop all tool calls immediately and give the user a final response "
                     "summarizing what you were able to accomplish and what failed."
                 )
-                self._spinner.stop()
+                self._spinner.update("Wrapping up...")
                 packed = self._context_mgr.pack(
                     self._messenger.get_messages(), query, plan_start_index=plan_start_index
                 )
@@ -149,6 +154,7 @@ class ToolLoop:
                     response_text=next((b.text for b in response.content if isinstance(b, TextBlock)), ""),
                     tool_errors=tool_errors,
                     hit_iteration_cap=True,
+                    last_tool_output=last_tool_output,
                 )
 
             packed = self._context_mgr.pack(
@@ -176,7 +182,9 @@ class ToolLoop:
                     last_had_errors = False
                     continue
 
-                self._spinner.stop()
+                # Spinner ownership belongs to the calling stage — don't stop it here.
+                # The caller stops it after processing the result.
+                self._spinner.update(resume_message)
                 self._messenger.add_assistant_message(response.content)
 
                 if response.stop_reason == "max_tokens":
@@ -203,6 +211,7 @@ class ToolLoop:
                     hit_max_tokens=hit_max_tokens,
                     hit_iteration_cap=hit_iteration_cap,
                     hit_tool_call_cap=hit_tool_call_cap,
+                    last_tool_output=last_tool_output,
                 )
 
             # ── Tool use ─────────────────────────────────────────────────────
@@ -284,6 +293,10 @@ class ToolLoop:
                     total_tool_calls += 1
                     hooks.on_tool_complete(block.name, result)
 
+                    # Track last successful tool output for criteria evaluation.
+                    if not has_error_indicator(result):
+                        last_tool_output = result
+
                     # Error tracking
                     if has_error_indicator(result):
                         tool_errors.append(f"{block.name}: {result[:100]}")
@@ -296,14 +309,43 @@ class ToolLoop:
                         consecutive_errors = 0
                         last_had_errors = False
 
-                    # Repeat detection
+                    # Cycle detection — catches both identical consecutive calls and
+                    # alternating A→B→A→B patterns that fool single-sig detection.
+                    # Mutation tools (write, bash, etc.) clear the window on success
+                    # because state genuinely changed and prior sigs are stale.
+                    _MUTATION_TOOLS = {"write_file", "bash_exec", "make_directory",
+                                       "delete_file", "move_file", "copy_file"}
                     cur_sig = (block.name, str(sorted(block.input.items())))
-                    if cur_sig == _last_tool_sig and not has_error_indicator(result):
+
+                    if block.name in _MUTATION_TOOLS and not has_error_indicator(result):
+                        _recent_sigs.clear()  # state changed — reset window
+                    else:
+                        _recent_sigs.append(cur_sig)
+
+                    # Period-1: identical back-to-back
+                    sigs = list(_recent_sigs)
+                    cycle_detected = False
+                    if len(sigs) >= 2 and sigs[-1] == sigs[-2]:
+                        cycle_detected = True
+                    # Period-2: A→B→A→B
+                    elif len(sigs) >= 4 and sigs[-1] == sigs[-3] and sigs[-2] == sigs[-4]:
+                        cycle_detected = True
+                    # Period-3: A→B→C→A→B→C
+                    elif (len(sigs) >= 6
+                          and sigs[-1] == sigs[-4]
+                          and sigs[-2] == sigs[-5]
+                          and sigs[-3] == sigs[-6]):
+                        cycle_detected = True
+
+                    if cycle_detected:
+                        period = (1 if len(sigs) >= 2 and sigs[-1] == sigs[-2]
+                                  else 2 if len(sigs) >= 4 and sigs[-1] == sigs[-3]
+                                  else 3)
                         logger.info(
-                            f"  runtime: repeated identical tool call ({block.name}) — forcing wrap-up"
+                            f"  runtime: tool call cycle detected "
+                            f"(period={period}, tool={block.name}) — forcing wrap-up"
                         )
                         force_end = True
-                    _last_tool_sig = cur_sig
 
                     tool_results.append({
                         "type": "tool_result",

@@ -40,10 +40,18 @@ _TOOL_UNAVAILABLE_RE = re.compile(r"command not found", re.I)
 
 class ExecutionMonitor:
 
-    def __init__(self, provider: BaseProvider):
+    def __init__(self, provider: BaseProvider, skill_registry=None):
         self._provider = provider
+        self._skill_registry = skill_registry
 
-    def assess(self, step: Step, plan: Plan, result: str) -> StepAssessment:
+    def assess(
+        self,
+        step: Step,
+        plan: Plan,
+        result: str,
+        *,
+        active_skill_name: str | None = None,
+    ) -> StepAssessment:
         """Assess a step result. Heuristic-first, LLM only when flagged."""
         if not config.runtime.execution_monitor.enabled:
             return StepAssessment(decision=StepDecision.CONTINUE, reason="monitor disabled")
@@ -51,6 +59,15 @@ class ExecutionMonitor:
         flags = self._heuristic_triage(step, result)
 
         if not flags:
+            # Heuristics PASS — step succeeded. Check if skill criteria are met.
+            if active_skill_name and self._skill_registry is not None:
+                if self._check_skill_criteria(active_skill_name, step, plan, result):
+                    logger.info(f"  monitor: skill '{active_skill_name}' criteria MET → GOAL_ACHIEVED")
+                    return StepAssessment(
+                        decision=StepDecision.GOAL_ACHIEVED,
+                        reason=f"skill '{active_skill_name}' completion criteria satisfied",
+                        confidence=1.0,
+                    )
             logger.info("  monitor: heuristics PASS → auto-CONTINUE")
             return StepAssessment(decision=StepDecision.CONTINUE, reason="heuristics pass")
 
@@ -68,6 +85,29 @@ class ExecutionMonitor:
             )
 
         return self._llm_assess(step, plan, result, flags)
+
+    def _check_skill_criteria(
+        self, skill_name: str, step: Step, plan: Plan, result: str,
+    ) -> bool:
+        """Return True iff the active skill's structural criteria are MET after this step.
+
+        LLM-judged criteria are NOT evaluated here — they belong to ContinuationStage.
+        """
+        skill = self._skill_registry.get(skill_name)
+        if skill is None:
+            return False
+        criteria = skill.completion_criteria
+        if criteria is None:
+            return False
+        from skills.criteria import StructuralCriteria, CriteriaContext, CriteriaOutcome
+        if not isinstance(criteria, StructuralCriteria):
+            return False
+        cctx = CriteriaContext(plan=plan, user_message=plan.original_query)
+        try:
+            return criteria.evaluate(cctx) == CriteriaOutcome.MET
+        except Exception as e:
+            logger.info(f"  monitor: criteria eval raised ({e!r}) — ignoring")
+            return False
 
     def _heuristic_triage(self, step: Step, result: str) -> list[str]:
         """Quick code-level checks. Returns list of flag descriptions, empty if clean."""

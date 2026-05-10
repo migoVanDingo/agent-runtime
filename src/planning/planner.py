@@ -3,7 +3,7 @@ from runtime.json_extract import extract_json
 from messenger import Messenger
 from providers.base import BaseProvider, TextBlock
 from planning.schema import Plan, Step, StepStatus, ActionType, PLAN_JSON_SCHEMA
-from planning.prompts import PLANNING_SYSTEM_PROMPT, PLANNING_USER_TURN, build_tool_list
+from planning.prompts import PLANNING_SYSTEM_PROMPT, PLANNING_USER_TURN, build_tool_list, build_skill_list
 from tools.toolsets import ALL_TOOLSETS
 from app_config import config
 from logger import get_logger
@@ -35,11 +35,31 @@ class Planner:
 
     def __init__(self, provider: BaseProvider):
         self._provider = provider
+        self._skill_registry = None  # injected via set_skill_registry if available
 
-    def plan(self, user_message: str, context: str | None = None, messages: list[dict] | None = None) -> Plan | None:
+    def set_skill_registry(self, registry) -> None:
+        self._skill_registry = registry
+
+    def _build_system_prompt(self) -> str:
+        skill_list = ""
+        if self._skill_registry is not None:
+            skill_list = build_skill_list(self._skill_registry.descriptions())
+        return PLANNING_SYSTEM_PROMPT.format(
+            max_steps=config.planning.max_steps,
+            tool_list=build_tool_list(ALL_TOOLSETS),
+            skill_list=skill_list,
+        )
+
+    def plan(
+        self,
+        user_message: str,
+        context: str | None = None,
+        messages: list[dict] | None = None,
+        skill_hint: str | None = None,
+    ) -> Plan | None:
         messenger = Messenger()
 
-        system = PLANNING_SYSTEM_PROMPT.format(max_steps=config.planning.max_steps, tool_list=build_tool_list(ALL_TOOLSETS))
+        system = self._build_system_prompt()
 
         # If packed conversation messages are provided, seed the messenger with them
         # so the planner sees the full compressed history. Messages are already
@@ -61,6 +81,12 @@ class Planner:
             user_message=user_message,
             context_block=context_block,
         )
+        if skill_hint is not None:
+            user_turn += (
+                f"\n\nHint: a skill classifier suggested skill:{skill_hint} "
+                f"may be relevant. Use it as tool='skill:{skill_hint}' on a step "
+                f"if and only if it actually fits the request."
+            )
 
         messenger.add_user_message(user_turn)
 
@@ -114,7 +140,7 @@ class Planner:
     def revise(self, plan: Plan, challenges_text: str) -> Plan | None:
         """Revise a plan in response to critic challenges. Returns revised plan or None."""
         messenger = Messenger()
-        system = PLANNING_SYSTEM_PROMPT.format(max_steps=config.planning.max_steps, tool_list=build_tool_list(ALL_TOOLSETS))
+        system = self._build_system_prompt()
 
         # Format current plan for context
         plan_lines = []
@@ -203,7 +229,14 @@ class Planner:
         max_remaining = config.planning.max_steps - (next_num - 1)
 
         messenger = Messenger()
-        system = PLANNING_SYSTEM_PROMPT.format(max_steps=max_remaining, tool_list=build_tool_list(ALL_TOOLSETS))
+        skill_list = ""
+        if self._skill_registry is not None:
+            skill_list = build_skill_list(self._skill_registry.descriptions())
+        system = PLANNING_SYSTEM_PROMPT.format(
+            max_steps=max_remaining,
+            tool_list=build_tool_list(ALL_TOOLSETS),
+            skill_list=skill_list,
+        )
 
         user_turn = (
             f"You are RE-PLANNING the remaining steps of a task.\n\n"

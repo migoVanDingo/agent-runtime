@@ -26,7 +26,7 @@ def test_plan_run_delegates_spec_fields():
     plan = _plan(_step(1))
     run = PlanRun.from_plan(plan)
     assert run.original_query == "test"
-    assert run.requires_synthesis == plan.requires_synthesis
+    assert run.risk == plan.risk
 
 
 def test_step_run_wraps_spec():

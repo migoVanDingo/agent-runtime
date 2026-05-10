@@ -9,21 +9,32 @@ logger = get_logger(__name__)
 # Action types that map to real toolsets (conversation is toolless, so it's always valid)
 _TOOLSET_ACTION_TYPES = {a for a in ActionType if a != ActionType.CONVERSATION}
 
-# Signals that the user expects written output: explicit file paths OR
-# intent phrases like "write a report", "save to", "generate a summary".
+# Signals that the user explicitly wants new written output produced.
+# Only triggers when a write-action verb is present — bare file extensions are
+# NOT sufficient to trigger this (they appear in "iterate over proc_clone.c"
+# and "which file is proc_clone.c", not just "write to proc_clone.c").
 _WRITE_OUTPUT_RE = re.compile(
     r"\b(?:write|save|put|output)\s+(?:\w+\s+){0,3}(?:to|in)\b"   # write ... to / save ... in
     r"|\b(?:write|generate|create|produce)\s+a\s+(?:report|summary|file|analysis)\b"
-    r"|\S+\.(?:md|txt|c|h|py|js|ts|rs|go|java|json|csv|log)\b",   # explicit extension
+    r"|\b(?:write|save|create|output)\s+(?:it\s+)?to\s+\S+\.(?:md|txt|c|h|py|js|ts|rs|go|java|json|csv|log)\b",
     re.IGNORECASE,
 )
 
 
+_SKILL_PREFIX = "skill:"
+
+
 class PlanValidator:
 
-    def __init__(self, registered_toolsets: set[str], registered_tools: set[str]):
+    def __init__(
+        self,
+        registered_toolsets: set[str],
+        registered_tools: set[str],
+        registered_skills: set[str] | None = None,
+    ):
         self._registered_toolsets = registered_toolsets
         self._registered_tools = registered_tools
+        self._registered_skills = registered_skills or set()
 
     def validate(self, plan: Plan) -> ValidationResult:
         """Structural validation of a plan. No LLM call."""
@@ -77,7 +88,7 @@ class PlanValidator:
                     f"have identical descriptions."
                 )
 
-        # 6. Tool field validation — must be a real registered tool or null
+        # 6. Tool field validation — must be a real registered tool, skill reference, or null
         for step in plan.steps:
             if step.action_type == ActionType.CONVERSATION:
                 continue
@@ -85,6 +96,13 @@ class PlanValidator:
                 errors.append(
                     f"Step {step.step}: non-conversation step must declare a 'tool' field."
                 )
+            elif step.tool.startswith(_SKILL_PREFIX):
+                skill_name = step.tool[len(_SKILL_PREFIX):]
+                if skill_name not in self._registered_skills:
+                    errors.append(
+                        f"Step {step.step}: skill '{skill_name}' is not registered. "
+                        f"Available skills: {sorted(self._registered_skills)}"
+                    )
             elif step.tool not in self._registered_tools:
                 errors.append(
                     f"Step {step.step}: tool '{step.tool}' is not registered. "

@@ -8,7 +8,6 @@ from pathlib import Path
 
 from logger import get_logger
 from runtime.sandbox.base import MountSpec, ResourceLimits, SandboxCommandRequest, SandboxCommandResult
-from runtime.sandbox.docker import DockerShellBackend
 from runtime.sandbox.host import HostShellBackend
 
 logger = get_logger(__name__)
@@ -18,13 +17,15 @@ class SandboxManager:
     """Resolves which backend to use and dispatches shell commands.
 
     Backend resolution order for `backend: auto`:
-        1. Docker (if `docker` executable is present)
-        2. MacSandboxExec (if on macOS and `sandbox-exec` is present)
-        3. Host (with a loud warning)
+        1. MacSandboxExec (if on macOS and `sandbox-exec` is present)
+        2. Host (development fallback, no isolation)
 
-    `backend: docker` → fails fast on Docker infrastructure errors (no fallback).
-    `backend: host`   → host execution with a warning.
-    `backend: auto`   → as above with graceful degradation.
+    `backend: host`          → direct host execution (explicit opt-in).
+    `backend: mac_sandbox_exec` → macOS sandbox-exec profile (recommended).
+    `backend: auto`          → mac_sandbox_exec if available, else host.
+
+    Docker is intentionally excluded from bash_exec sandboxing.
+    It is reserved for the containerized dynamic-analysis toolset.
     """
 
     def __init__(self, sandbox_config=None) -> None:
@@ -69,9 +70,6 @@ class SandboxManager:
         return result
 
     def _dispatch(self, backend_name: str, request: SandboxCommandRequest) -> SandboxCommandResult:
-        if backend_name == "docker":
-            return self._run_docker(request, allow_host_fallback=False)
-
         if backend_name == "auto":
             return self._run_auto(request)
 
@@ -83,32 +81,8 @@ class SandboxManager:
 
         raise RuntimeError(f"unknown sandbox backend: {backend_name!r}")
 
-    def _run_docker(self, request: SandboxCommandRequest, allow_host_fallback: bool) -> SandboxCommandResult:
-        docker = DockerShellBackend(self._cfg.docker_image)
-        try:
-            result = docker.run(request)
-            if _is_docker_infrastructure_failure(result):
-                raise RuntimeError(
-                    (result.stderr or result.stdout).strip() or "docker infrastructure failure"
-                )
-            return result
-        except Exception as e:
-            if not allow_host_fallback:
-                raise RuntimeError(
-                    f"sandbox: docker backend failed and host fallback is disabled: {e}"
-                ) from e
-            logger.warning(f"sandbox: docker unavailable ({e}); falling back to host backend")
-            result = HostShellBackend().run(request)
-            return _with_fallback_warning(result, str(e))
-
     def _run_auto(self, request: SandboxCommandRequest) -> SandboxCommandResult:
-        """Graceful backend resolution: docker → mac_sandbox_exec → host."""
-        if shutil.which("docker"):
-            try:
-                return self._run_docker(request, allow_host_fallback=False)
-            except Exception as e:
-                logger.warning(f"sandbox: auto — docker failed ({e}), trying next backend")
-
+        """Graceful backend resolution: mac_sandbox_exec → host."""
         if platform.system() == "Darwin" and shutil.which("sandbox-exec"):
             try:
                 return self._run_mac_sandbox(request)
@@ -127,7 +101,7 @@ class SandboxManager:
     def _run_host(self, request: SandboxCommandRequest) -> SandboxCommandResult:
         if not self._cfg.allow_host_backend:
             raise RuntimeError("host sandbox backend is disabled by config")
-        logger.warning("sandbox: using host backend with no process isolation")
+        logger.debug("sandbox: using host backend with no process isolation")
         return HostShellBackend().run(request)
 
 
@@ -142,16 +116,3 @@ def _with_fallback_warning(result: SandboxCommandResult, reason: str) -> Sandbox
         sandbox_backend=result.sandbox_backend,
         isolation=result.isolation,
     )
-
-
-def _is_docker_infrastructure_failure(result: SandboxCommandResult) -> bool:
-    if result.sandbox_backend != "docker" or result.exit_code == 0:
-        return False
-    text = f"{result.stdout}\n{result.stderr}".lower()
-    signals = (
-        "cannot connect to the docker daemon",
-        "permission denied while trying to connect to the docker",
-        "is the docker daemon running",
-        "docker: command not found",
-    )
-    return any(s in text for s in signals)

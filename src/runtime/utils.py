@@ -19,6 +19,8 @@ _ERROR_INDICATORS = re.compile(
     r"^File not found|"
     r"^Tool call (?:blocked|denied)|"
     r"command not found|"
+    r"cannot open|"                   # file_info: "cannot open `path' (No such file or directory)"
+    r"No such file or directory|"    # shell / file_info failures
     r"Traceback \(most recent call last\)|"
     r"I don't have|I cannot|I'm unable"
     r")"
@@ -94,26 +96,26 @@ def parse_routing_response(
     """
     m = _ROUTE_RE.search(text)
     if not m:
-        return ClassifierResult(mode="direct", risk="low"), text
+        return ClassifierResult(mode="plan", risk="low"), text
 
     remaining = text[m.end():].strip()
     from runtime.json_extract import extract_json
     data = extract_json(m.group(1).strip())
     if not isinstance(data, dict):
-        return ClassifierResult(mode="direct", risk="low"), remaining
+        return ClassifierResult(mode="plan", risk="low"), remaining
 
     mode = data.get("mode", "direct")
     risk = data.get("risk", "low")
-    workflow_hint = data.get("workflow") or None
+    skill_hint = data.get("skill") or data.get("workflow") or None
 
     if mode not in ("plan", "direct"):
         mode = "direct"
     if risk not in ("low", "moderate", "high"):
         risk = "low"
-    if workflow_hint and valid_workflows and workflow_hint not in valid_workflows:
-        workflow_hint = None
+    if skill_hint and valid_workflows and skill_hint not in valid_workflows:
+        skill_hint = None
 
-    return ClassifierResult(mode=mode, risk=risk, workflow_hint=workflow_hint), remaining
+    return ClassifierResult(mode=mode, risk=risk, skill_hint=skill_hint), remaining
 
 
 def is_clean_inline_answer(text: str) -> bool:

@@ -78,6 +78,26 @@ class OpenAICompatibleProvider(BaseProvider):
 
         return result
 
+    def stream_completion(
+        self,
+        messages: list[dict],
+        system: str,
+        label: str = "",
+    ):
+        """Stream a no-tool completion, yielding text chunks as they arrive."""
+        openai_messages = self._translate_messages(messages, system)
+        _new_token_param = self.model.startswith(("gpt-5", "gpt-4o", "o1", "o3", "o4"))
+        _token_key = "max_completion_tokens" if _new_token_param else "max_tokens"
+        kwargs: dict = {
+            "model": self.model,
+            "messages": openai_messages,
+            _token_key: config.llm.max_tokens,
+        }
+        stream = self.client.chat.completions.create(**kwargs, stream=True)
+        for chunk in stream:
+            if chunk.choices and chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+
     def _translate_messages(self, messages: list[dict], system: str) -> list[dict]:
         result = [{"role": "system", "content": system}]
         # Track tool_call IDs that were dropped due to the 128-entry limit.

@@ -22,9 +22,44 @@ class TimeoutsConfig:
 
 
 @dataclass
+class Radare2Config:
+    timeout_seconds: int = 30
+
+
+@dataclass
+class GhidraConfig:
+    project_dir: str = "_store/ghidra_projects"
+    timeout_seconds: int = 120
+    scripts_dir: str = "src/tools/implementations/reversing/ghidra_scripts"
+
+
+@dataclass
+class AngrConfig:
+    # Per-tool timeouts (seconds); binary complexity multiplier applied at runtime
+    timeout_reachable: int = 60
+    timeout_solve: int = 120
+    timeout_constraints: int = 120
+    timeout_explore: int = 300
+    # Function-count thresholds for complexity scaling
+    complexity_medium_threshold: int = 50   # >=50 fns → 1.5× timeout
+    complexity_large_threshold: int = 200   # >=200 fns → 2.5× timeout
+
+
+@dataclass
 class ToolsConfig:
     strings_min_length: str
     hexdump_default_bytes: str
+    radare2: Radare2Config = None  # type: ignore[assignment]
+    ghidra: GhidraConfig = None    # type: ignore[assignment]
+    angr: AngrConfig = None        # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.radare2 is None:
+            self.radare2 = Radare2Config()
+        if self.ghidra is None:
+            self.ghidra = GhidraConfig()
+        if self.angr is None:
+            self.angr = AngrConfig()
 
 
 @dataclass
@@ -57,12 +92,20 @@ class ArtifactStoreWorkflowDiscoveryConfig:
 
 
 @dataclass
-class ArtifactStoreRagConfig:
+class StorageConfig:
+    base_uri: str = ""   # "" = local filesystem; "gs://bucket" = GCS
+
+
+@dataclass
+class RagConfig:
     enabled: bool = False
-    top_k: int = 3
-    similarity_threshold: float = 0.6
-    inject_on_start: bool = True
-    max_injected_chars: int = 3000
+    mode: str = "local"                              # local | http
+    http_base_url: str = "http://localhost:17433"   # used when mode=http
+    embedding_provider: str = "sentence_transformers"
+    embedding_model: str = "all-MiniLM-L6-v2"
+    top_k: int = 5
+    threshold: float = 0.65
+    injection_budget_chars: int = 2000
 
 
 @dataclass
@@ -85,7 +128,6 @@ class ArtifactStoreConfig:
     workflow_discovery: ArtifactStoreWorkflowDiscoveryConfig = field(
         default_factory=ArtifactStoreWorkflowDiscoveryConfig
     )
-    rag: ArtifactStoreRagConfig = field(default_factory=ArtifactStoreRagConfig)
     sqlite_vec: ArtifactStoreSqliteVecConfig = field(default_factory=ArtifactStoreSqliteVecConfig)
     project: ArtifactStoreProjectConfig = field(default_factory=ArtifactStoreProjectConfig)
 
@@ -109,6 +151,7 @@ class ExecutionMonitorConfig:
     max_step_retries: int
     max_defers_per_step: int
     step_max_tool_calls: int = 10
+    step_max_iterations: int = 3
     error_recovery_clears_step_error: bool = True
 
 
@@ -138,6 +181,7 @@ class PlanCriticConfig:
     enabled: bool
     skip_low_risk: bool = False
     consensus_on_high_risk: bool = True
+    complexity_threshold: int = 8
 
 
 @dataclass
@@ -168,10 +212,33 @@ class ImportanceCouncilConfig:
 class EventsConfig:
     enabled: bool = False
     jsonl_enabled: bool = False
-    directory: str = "_events"
+    directory: str = "_events"   # legacy — no longer used; path derived from session_paths
     raw_payloads: bool = False
     redact_on_emit: bool = False     # scrub secrets before writing to JSONL
     redact_on_export: bool = True    # scrub secrets in all exported datasets
+
+
+@dataclass
+class ToolPolicyConfig:
+    """Infrastructure policy for tool exposure to step execution.
+
+    utility_tools: when a step's base tool is the key, the value's tools
+    are also exposed. Data-driven so adding a new relationship doesn't
+    require editing code.
+    """
+    utility_tools: dict[str, list[str]] = field(default_factory=dict)
+
+
+@dataclass
+class ContinuationConfig:
+    """Owns task-level completion decisions and continuation loops."""
+    enabled: bool = True
+    max_iterations: int = 8
+    # LLM judge: off by default — only fires for skills with completion_criteria.
+    # Enable when skill criteria coverage is comprehensive enough to trust LOOP decisions.
+    use_llm_judge: bool = False
+    trust_skill_criteria: bool = True
+    llm_judge_label: str = "ContinuationStage"
 
 
 @dataclass
@@ -229,6 +296,31 @@ class RuntimeConfig:
     monitor_council: MonitorCouncilConfig = field(default_factory=MonitorCouncilConfig)
     synthesis_quality: SynthesisQualityConfig = field(default_factory=SynthesisQualityConfig)
     importance_council: ImportanceCouncilConfig = field(default_factory=ImportanceCouncilConfig)
+    tool_policy: ToolPolicyConfig = field(default_factory=ToolPolicyConfig)
+    continuation: ContinuationConfig = field(default_factory=ContinuationConfig)
+
+
+@dataclass
+class ContainerLimitsConfig:
+    timeout_seconds: float = 60.0
+    memory: str = "256m"
+    cpus: float = 1.0
+    pids_limit: int = 64
+    network: str = "none"
+
+
+@dataclass
+class ContainerImagesConfig:
+    native: str = "gcc:12"
+    jvm: str = "openjdk:17-slim"
+    python: str = "python:3.11-slim"
+    base: str = "ubuntu:22.04"
+
+
+@dataclass
+class ContainerConfig:
+    limits: ContainerLimitsConfig = field(default_factory=ContainerLimitsConfig)
+    images: ContainerImagesConfig = field(default_factory=ContainerImagesConfig)
 
 
 @dataclass
@@ -241,9 +333,24 @@ class AppConfig:
     artifact_store: ArtifactStoreConfig
     planning: PlanningConfig
     runtime: RuntimeConfig
+    storage: StorageConfig = field(default_factory=StorageConfig)
+    rag: RagConfig = field(default_factory=RagConfig)
+    container: ContainerConfig = field(default_factory=ContainerConfig)
 
 
 _CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.yml"
+
+
+def _load_tools_config(raw: dict) -> ToolsConfig:
+    r2_raw = raw.pop("radare2", {}) or {}
+    ghidra_raw = raw.pop("ghidra", {}) or {}
+    angr_raw = raw.pop("angr", {}) or {}
+    return ToolsConfig(
+        **raw,
+        radare2=Radare2Config(**r2_raw) if r2_raw else Radare2Config(),
+        ghidra=GhidraConfig(**ghidra_raw) if ghidra_raw else GhidraConfig(),
+        angr=AngrConfig(**angr_raw) if angr_raw else AngrConfig(),
+    )
 
 
 def load_config() -> AppConfig:
@@ -260,7 +367,6 @@ def load_config() -> AppConfig:
     artifact_store_raw = raw.get("artifact_store", {})
     decay_raw = artifact_store_raw.get("decay", {})
     workflow_raw = artifact_store_raw.get("workflow_discovery", {})
-    rag_raw = artifact_store_raw.get("rag", {})
     sqlite_vec_raw = artifact_store_raw.get("sqlite_vec", {})
     project_raw = artifact_store_raw.get("project", {})
     artifact_store = ArtifactStoreConfig(
@@ -278,13 +384,6 @@ def load_config() -> AppConfig:
             frequency_threshold=int(workflow_raw.get("frequency_threshold", 5)),
             recency_decay=float(workflow_raw.get("recency_decay", 0.95)),
         ),
-        rag=ArtifactStoreRagConfig(
-            enabled=rag_raw.get("enabled", False),
-            top_k=int(rag_raw.get("top_k", 3)),
-            similarity_threshold=float(rag_raw.get("similarity_threshold", 0.6)),
-            inject_on_start=rag_raw.get("inject_on_start", True),
-            max_injected_chars=int(rag_raw.get("max_injected_chars", 3000)),
-        ),
         sqlite_vec=ArtifactStoreSqliteVecConfig(
             enabled=sqlite_vec_raw.get("enabled", True),
             extension_path=sqlite_vec_raw.get("extension_path"),
@@ -293,6 +392,21 @@ def load_config() -> AppConfig:
             enabled=project_raw.get("enabled", True),
             default=project_raw.get("default"),
         ),
+    )
+
+    storage_raw = raw.get("storage", {})
+    storage = StorageConfig(base_uri=storage_raw.get("base_uri", ""))
+
+    rag_raw = raw.get("rag", {})
+    rag = RagConfig(
+        enabled=rag_raw.get("enabled", False),
+        mode=rag_raw.get("mode", "local"),
+        http_base_url=rag_raw.get("http_base_url", "http://localhost:17433"),
+        embedding_provider=rag_raw.get("embedding_provider", "sentence_transformers"),
+        embedding_model=rag_raw.get("embedding_model", "all-MiniLM-L6-v2"),
+        top_k=int(rag_raw.get("top_k", 5)),
+        threshold=float(rag_raw.get("threshold", 0.65)),
+        injection_budget_chars=int(rag_raw.get("injection_budget_chars", 2000)),
     )
 
     rt = raw["runtime"]
@@ -352,15 +466,41 @@ def load_config() -> AppConfig:
         monitor_council=MonitorCouncilConfig(**rt.get("monitor_council", {})),
         synthesis_quality=SynthesisQualityConfig(**rt.get("synthesis_quality", {})),
         importance_council=ImportanceCouncilConfig(**rt.get("importance_council", {})),
+        tool_policy=ToolPolicyConfig(
+            utility_tools=rt.get("tool_policy", {}).get("utility_tools", {}),
+        ),
+        continuation=ContinuationConfig(**rt.get("continuation", {})),
+    )
+
+    container_raw = raw.get("container", {})
+    container_limits_raw = container_raw.get("limits", {})
+    container_images_raw = container_raw.get("images", {})
+    container = ContainerConfig(
+        limits=ContainerLimitsConfig(
+            timeout_seconds=float(container_limits_raw.get("timeout_seconds", 60.0)),
+            memory=container_limits_raw.get("memory", "256m"),
+            cpus=float(container_limits_raw.get("cpus", 1.0)),
+            pids_limit=int(container_limits_raw.get("pids_limit", 64)),
+            network=container_limits_raw.get("network", "none"),
+        ),
+        images=ContainerImagesConfig(
+            native=container_images_raw.get("native", "gcc:12"),
+            jvm=container_images_raw.get("jvm", "openjdk:17-slim"),
+            python=container_images_raw.get("python", "python:3.11-slim"),
+            base=container_images_raw.get("base", "ubuntu:22.04"),
+        ),
     )
 
     return AppConfig(
         llm=LLMConfig(**raw["llm"]),
         timeouts=TimeoutsConfig(**raw["timeouts"]),
-        tools=ToolsConfig(**raw["tools"]),
+        tools=_load_tools_config(raw.get("tools", {})),
         routing=RoutingConfig(**raw["routing"]),
         agent=AgentConfig(**raw["agent"]),
         artifact_store=artifact_store,
         planning=planning,
         runtime=runtime,
+        storage=storage,
+        rag=rag,
+        container=container,
     )

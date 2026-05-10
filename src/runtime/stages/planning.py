@@ -1,6 +1,7 @@
-"""PlanningStage — runs the full LLM planner when no workflow matched.
+"""PlanningStage — runs the full LLM planner.
 
-Runs only in plan mode when context.plan is still None after WorkflowMatchStage.
+Runs in plan mode. The planner is the sole plan author;
+SkillHintStage provides an advisory hint the planner may use.
 
 Validation is folded in here because the retry-on-invalid loop requires
 re-running the planner. The pipeline RETRY mechanism re-runs this stage, so
@@ -47,10 +48,6 @@ class PlanningStage(Stage):
         if context.classification is None or context.classification.mode != "plan":
             return StageResult(status=StageStatus.OK, updated_context=context)
 
-        # No-op if a workflow already produced a plan.
-        if context.plan is not None:
-            return StageResult(status=StageStatus.OK, updated_context=context)
-
         logger.info(banner("Planning"))
         self._spinner.update("Planning...")
 
@@ -59,7 +56,11 @@ class PlanningStage(Stage):
         if context.failure_reason:
             user_message = user_message + "\n\nPrevious plan was invalid:\n" + context.failure_reason
 
-        plan = self._planner.plan(user_message, messages=context.packed_messages)
+        plan = self._planner.plan(
+            user_message,
+            messages=context.packed_messages,
+            skill_hint=context.skill_hint,
+        )
 
         if plan is None:
             logger.info("  planner returned None — aborting to fallback")

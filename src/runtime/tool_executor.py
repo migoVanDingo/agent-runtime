@@ -7,12 +7,89 @@ controllers around it.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+from pathlib import Path
 
 from runtime.escalation import Escalation
 from runtime.events import RuntimeEvent, get_event_bus, get_runtime_identity
 from runtime.guard import ActionGuard, GuardDecision
 from runtime.tool_result import ToolResult
+from tools.base import ToolWeight
+
+_PAGE_THRESHOLD_CHARS = 8_000
+
+
+_NO_PAGE_TOOLS = frozenset({
+    # These tools exist specifically to bring content into context — never page them.
+    # Paging their output would swallow the content the agent is trying to read.
+    "read_file", "read_file_lines", "read_url",
+    # LLDB tools — their output IS the analysis data; paging defeats the purpose.
+    # lldb_trace is always small (~200 chars/hit). lldb_step can be larger but the
+    # agent must see register snapshots to synthesize code from them.
+    "lldb_trace", "lldb_step",
+})
+
+
+def _maybe_page(tool, raw: str, tool_input: dict) -> str:
+    """Write large tool output to an artifact file; return a short summary instead.
+
+    Prevents heavy reversing tool results (Ghidra decompile, radare2 full disasm,
+    etc.) from saturating the LLM context and triggering TPM rate-limit 429s.
+    The full output is preserved on disk; the agent reads it on demand.
+
+    read_file / read_file_lines / read_url are never paged — their entire purpose
+    is to bring content into context; paging them would swallow the content twice.
+    """
+    if getattr(tool, "name", "") in _NO_PAGE_TOOLS:
+        return raw
+    if getattr(tool, "weight", ToolWeight.MODERATE) != ToolWeight.HEAVY and len(raw) <= _PAGE_THRESHOLD_CHARS:
+        return raw
+
+    from session_paths import analysis_dir
+
+    binary_path = tool_input.get("path", "unknown")
+    fn_suffix = tool_input.get("function", "")
+    slug = f"{tool.name}_{fn_suffix}" if fn_suffix else tool.name
+    slug = re.sub(r"[^\w\-]", "_", slug)
+
+    artifact = analysis_dir(binary_path) / f"{slug}.txt"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text(raw, encoding="utf-8")
+
+    # Index chunks into the per-session RAG store for semantic retrieval.
+    try:
+        from rag import get_rag_service
+        from rag.chunker import chunk_text
+        if rag := get_rag_service():
+            session_id = get_runtime_identity().session_id
+            rag.index_chunks(session_id, chunk_text(raw, source_file=str(artifact)))
+    except Exception:
+        pass  # RAG indexing is best-effort; never block the main path
+
+    n_chars = len(raw)
+    n_tok = n_chars // 4
+    return (
+        f"[artifact saved → {artifact}  ({n_chars:,} chars / ~{n_tok:,} tokens)]\n"
+        f"Full output written to disk. Use a file-read tool to access it when needed. "
+        f"Do not re-run this tool."
+    )
+
+
+def _index_analysis_write(path: str, content: str) -> None:
+    """Index agent-written analysis files into the per-session RAG chunk store.
+
+    Called by ToolCallExecutor after a successful write_file call targeting
+    _analysis/. The tool stays passive; the runtime decides what to index.
+    """
+    try:
+        from rag import get_rag_service
+        from rag.chunker import chunk_text
+        if rag := get_rag_service():
+            session_id = get_runtime_identity().session_id
+            rag.index_chunks(session_id, chunk_text(content, source_file=path))
+    except Exception:
+        pass  # best-effort; never block the main path
 
 
 @dataclass(frozen=True)
@@ -115,7 +192,15 @@ class ToolCallExecutor:
     def _safe_execute(self, tool_name: str, tool_input: dict) -> ToolResult:
         try:
             tool = self._registry.get(tool_name)
-            return ToolResult.success(tool.safe_execute(tool_input))
+            raw = tool.safe_execute(tool_input)
+            paged = _maybe_page(tool, raw, tool_input)
+            # Runtime indexes agent-written analysis files — tool stays passive.
+            if tool_name == "write_file" and "_analysis" in str(tool_input.get("path", "")):
+                _index_analysis_write(
+                    tool_input.get("path", ""),
+                    tool_input.get("content", ""),
+                )
+            return ToolResult.success(paged)
         except KeyError:
             return ToolResult.error(
                 f"Error: tool '{tool_name}' does not exist.",

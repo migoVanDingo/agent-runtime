@@ -159,6 +159,10 @@ def _approval_key(tool_name: str, tool_input: dict) -> str | None:
         return f"dataframe_query:{tool_input.get('expression', '')}"
     if tool_name == "expel_artifact":
         return f"expel_artifact:{tool_input.get('key', '')}"
+    # ghidra_* and angr_* — key on tool name + binary path so one approval covers all calls
+    if tool_name.startswith("ghidra_") or tool_name.startswith("angr_"):
+        binary = tool_input.get("path", tool_input.get("binary", ""))
+        return f"{tool_name}:{binary}"
     return None
 
 
@@ -256,6 +260,21 @@ class ActionGuard:
         if tool_name == "expel_artifact":
             key = tool_input.get("key", "?")
             return GuardDecision.ESCALATE, f"expel_artifact deleting '{key}'"
+
+        # ── ghidra_*: runs analyzeHeadless on the host outside the sandbox ──
+        if tool_name.startswith("ghidra_"):
+            binary = tool_input.get("path", tool_input.get("binary", "?"))
+            return GuardDecision.ESCALATE, f"host execution: {tool_name} on '{binary}'"
+
+        # ── angr_*: symbolic execution runs the binary on the host ──
+        if tool_name.startswith("angr_"):
+            binary = tool_input.get("path", tool_input.get("binary", "?"))
+            return GuardDecision.ESCALATE, f"host symbolic execution: {tool_name} on '{binary}'"
+
+        # ── lldb_*: attaches LLDB to run and inspect a binary on the host ──
+        if tool_name.startswith("lldb_"):
+            binary = tool_input.get("path", "?")
+            return GuardDecision.ESCALATE, f"host execution: {tool_name} on '{binary}'"
 
         return GuardDecision.ALLOW, ""
 

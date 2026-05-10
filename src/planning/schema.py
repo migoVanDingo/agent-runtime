@@ -11,7 +11,6 @@ PLAN_JSON_SCHEMA = {
         "type": "object",
         "properties": {
             "original_query": {"type": "string"},
-            "requires_synthesis": {"type": "boolean"},
             "steps": {
                 "type": "array",
                 "items": {
@@ -38,23 +37,13 @@ PLAN_JSON_SCHEMA = {
                         },
                         "tool": {"type": ["string", "null"]},
                         "produces": {"type": ["string", "null"]},
-                        "flags": {
-                            "type": "object",
-                            "properties": {
-                                "retry": {"type": "boolean"},
-                                "escalate": {"type": "boolean"},
-                                "defer": {"type": "boolean"},
-                            },
-                            "required": ["retry", "escalate", "defer"],
-                            "additionalProperties": False,
-                        },
                     },
-                    "required": ["step", "description", "action_type", "tool", "produces", "flags"],
+                    "required": ["step", "description", "action_type", "tool", "produces"],
                     "additionalProperties": False,
                 },
             },
         },
-        "required": ["original_query", "requires_synthesis", "steps"],
+        "required": ["original_query", "steps"],
         "additionalProperties": False,
     },
 }
@@ -72,6 +61,8 @@ class ActionType(str, Enum):
     GIT = "git"
     DOCUMENT = "document"
     BRIEFBOT = "briefbot"
+    REVERSING = "reversing"
+    SYMBOLIC = "symbolic"
     CONVERSATION = "conversation"
 
 
@@ -83,34 +74,33 @@ class StepStatus(str, Enum):
 
 
 @dataclass
-class StepFlags:
-    retry: bool = False
-    escalate: bool = False
-    defer: bool = False
+class StepRuntimeState:
+    """Runtime-managed state for a step. Never set by the planner or skills.
+
+    The execution stage and monitor mutate these as the step runs.
+    """
     retry_count: int = 0
     deferred: bool = False
     skipped: bool = False
 
     def to_dict(self) -> dict:
         return {
-            "retry": self.retry,
-            "escalate": self.escalate,
-            "defer": self.defer,
             "retry_count": self.retry_count,
             "deferred": self.deferred,
             "skipped": self.skipped,
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> StepFlags:
+    def from_dict(cls, data: dict) -> "StepRuntimeState":
         return cls(
-            retry=data.get("retry", False),
-            escalate=data.get("escalate", False),
-            defer=data.get("defer", False),
             retry_count=data.get("retry_count", 0),
             deferred=data.get("deferred", False),
             skipped=data.get("skipped", False),
         )
+
+
+# Alias kept for compatibility with any remaining callers.
+StepFlags = StepRuntimeState
 
 
 @dataclass
@@ -127,11 +117,11 @@ class Step:
     action_type: ActionType
     tool: str | None = None
     produces: str | None = None
-    # ── Runtime state — migrating to runtime.run_state.StepRun ───────
+    # ── Runtime state ──────────────────────────────────────────────────
     status: StepStatus = StepStatus.PENDING
     result: str | None = None
     error: str | None = None
-    flags: StepFlags = field(default_factory=StepFlags)
+    flags: StepRuntimeState = field(default_factory=StepRuntimeState)
 
     def to_dict(self) -> dict:
         return {
@@ -165,22 +155,21 @@ class Step:
 class Plan:
     original_query: str
     steps: list[Step]
-    requires_synthesis: bool = True
-    risk: str = "low"  # "low", "moderate", "high" — set by classifier
+    # risk is set by the routing classifier; council reads it.
+    # Descriptive (the assessment of the request), not prescriptive.
+    risk: str = "low"
 
     def to_dict(self) -> dict:
         return {
             "original_query": self.original_query,
             "steps": [s.to_dict() for s in self.steps],
-            "requires_synthesis": self.requires_synthesis,
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> Plan:
+    def from_dict(cls, data: dict) -> "Plan":
         return cls(
             original_query=data["original_query"],
             steps=[Step.from_dict(s) for s in data["steps"]],
-            requires_synthesis=data.get("requires_synthesis", True),
         )
 
     def summary(self) -> str:

@@ -16,22 +16,114 @@ from logger import get_logger
 
 logger = get_logger(__name__)
 
-# Matches paths containing at least one slash component (relative or absolute)
+# Matches paths containing at least one slash component (relative or absolute).
+# We further filter out English prose fragments (e.g. "encrypt/decrypt",
+# "usage/error") in _looks_like_real_path() below.
 _PATH_RE = re.compile(r'(?<!\w)(?:\.{0,2}/)?[\w.\-]+(?:/[\w.\-]+)+')
+
+def _looks_like_real_path(path: str) -> bool:
+    """Return True only if this token looks like an actual filesystem path.
+
+    Works for any project structure — no hardcoded directory names.
+    Distinguishes real paths from English prose fragments that happen to
+    contain '/', e.g. 'usage/error', 'encrypt/decrypt', 'strings/nm.'.
+
+    Real path signals (any one is sufficient):
+      - Starts with '/' (absolute path)
+      - Any component has a dot-extension (file.c, report.md, data.json)
+      - Any component starts with '_' (underscore-prefixed dirs/files)
+      - Any component contains a digit
+      - Path is long (>= 30 chars) — prose rarely runs that long
+
+    Prose signals (all must be true to reject):
+      - All components are lowercase-only words (no digits, no underscores,
+        no extensions)
+      - Path ends with '.' (sentence-ending period attached to last word)
+      - Short (< 30 chars)
+    """
+    # Absolute path
+    if path.startswith("/"):
+        return True
+
+    parts = path.split("/")
+
+    # Any component has a dot-extension (non-empty string after last dot)
+    for part in parts:
+        _, dot, ext = part.rpartition(".")
+        if dot and ext:
+            return True
+
+    # Any component starts with underscore or contains a digit
+    for part in parts:
+        if not part:
+            continue
+        if part[0] == "_":
+            return True
+        if any(c.isdigit() for c in part):
+            return True
+
+    # Long paths are unlikely to be English prose
+    if len(path) >= 30:
+        return True
+
+    # Path ends with bare '.' → sentence-ending period attached to a word
+    if path.endswith("."):
+        return False
+
+    # All components are purely lowercase alphabetic words → prose
+    # "usage/error", "encrypt/decrypt", "strings/nm", "main/encrypt"
+    def _all_alpha_lower(p: str) -> bool:
+        return bool(p) and p.isalpha() and p.islower()
+    if all(_all_alpha_lower(p) for p in parts if p):
+        return False
+
+    return True
 
 # Matches bare filenames with extensions (e.g. proc-analysis.md, report.txt)
 _FILENAME_RE = re.compile(r'\b[\w.\-]+\.(?:md|txt|json|csv|log|c|py|sh|bin|elf|out)\b')
 
+# Paths under these directories are runtime-generated artifacts, NOT entities the user
+# mentioned. Using them as correction candidates causes the agent to target wrong files
+# (e.g. correcting "proc" → "_analysis/proc/ghidra_decompile.txt").
+# .txt files in _analysis/ are paged tool output; operational dirs are never valid targets.
+_ARTIFACT_SKIP_PATTERNS = (
+    # Paged tool outputs: _analysis/**/*.txt
+    ("_analysis/", ".txt"),
+)
+_OPERATIONAL_SKIP_DIRS = (
+    "_sessions/", "_rag/", "_store/", "_logs/", "_metrics/", "_events/",
+)
+
+
+def _is_runtime_artifact(path: str) -> bool:
+    """Return True if this path is a runtime-generated artifact, not a user entity."""
+    norm = path.replace("\\", "/")
+    # Operational directories — never correction candidates
+    for skip in _OPERATIONAL_SKIP_DIRS:
+        if f"/{skip}" in norm or norm.startswith(skip):
+            return True
+    # Paged tool output files: _analysis/**/*.txt
+    for dir_prefix, ext in _ARTIFACT_SKIP_PATTERNS:
+        if (f"/{dir_prefix}" in norm or norm.startswith(dir_prefix)) and norm.endswith(ext):
+            return True
+    return False
+
 
 def _extract_entities(text: str) -> tuple[list[str], list[str]]:
-    """Return (paths, filenames) found in text, preserving mention order."""
+    """Return (paths, filenames) found in text, preserving mention order.
+
+    Filters out English prose fragments that happen to contain '/' but are
+    not actual filesystem paths (e.g. 'encrypt/decrypt', 'usage/error').
+    """
     paths = _PATH_RE.findall(text)
     filenames = _FILENAME_RE.findall(text)
-    # deduplicate while preserving order
+    # deduplicate while preserving order; filter prose fragments
     seen: set[str] = set()
     unique_paths = []
     for p in paths:
-        if p not in seen:
+        # Strip trailing punctuation that regex may absorb from sentence endings
+        p = p.rstrip(".,;:!?)'\"")
+        if p not in seen and _looks_like_real_path(p):
             seen.add(p)
             unique_paths.append(p)
     seen_f: set[str] = set()
@@ -60,6 +152,12 @@ class EntityCritic:
             return plan, []
 
         ctx_paths, ctx_files = _extract_entities(context)
+
+        # Remove runtime-generated artifact paths from the candidate pool.
+        # These are files the runtime wrote automatically (paged tool outputs,
+        # session logs, RAG stores) — not entities the user mentioned.
+        # Keeping them causes false corrections like proc → _analysis/proc/ghidra_decompile.txt.
+        ctx_paths = [p for p in ctx_paths if not _is_runtime_artifact(p)]
 
         # Extract authoritative entities from the current user message.
         # These take precedence over history-based corrections.
@@ -109,7 +207,13 @@ class EntityCritic:
                         # Correcting same-directory siblings destroys intentional naming.
                         path_dir = path.rsplit("/", 1)[0] if "/" in path else ""
                         cand_dir = candidate.rsplit("/", 1)[0] if "/" in candidate else ""
-                        if path_dir and path_dir == cand_dir:
+                        # Normalize: a relative path like "_analysis/proc" matches an
+                        # absolute path that ends with "/_analysis/proc".
+                        if path_dir and (
+                            path_dir == cand_dir
+                            or cand_dir.endswith("/" + path_dir)
+                            or path_dir.endswith("/" + cand_dir)
+                        ):
                             continue
                         step.description = step.description.replace(path, candidate)
                         corrections.append(
@@ -141,14 +245,12 @@ class EntityCritic:
     def _best_path_match(self, path: str, candidates: list[str]) -> str | None:
         """Find the most likely intended path from context candidates.
 
-        Strategy: prefer candidates that share the most path components
-        or the same filename stem. Falls back to the last-mentioned candidate
-        if there's only one option.
+        Only returns a match when there is genuine evidence of a relationship:
+        same filename stem, or at least one shared path component.
+        Returns None when there is no structural overlap — do not guess.
         """
         if not candidates:
             return None
-        if len(candidates) == 1:
-            return candidates[-1]
 
         path_stem = path.rstrip("/").split("/")[-1]
 
@@ -158,14 +260,15 @@ class EntityCritic:
                 return c
 
         # Prefer candidate with the most shared path components
-        path_parts = set(path.split("/"))
+        path_parts = set(p for p in path.split("/") if p and p != ".")
         best = max(candidates, key=lambda c: len(set(c.split("/")) & path_parts))
         shared = len(set(best.split("/")) & path_parts)
         if shared > 0:
             return best
 
-        # Last resort: most recently mentioned candidate
-        return candidates[-1]
+        # No structural relationship — do not correct.
+        # A random "last resort" correction is worse than no correction.
+        return None
 
     def _best_file_match(self, fname: str, candidates: list[str]) -> str | None:
         """Find the most likely intended filename from context candidates.

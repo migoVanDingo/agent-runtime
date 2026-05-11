@@ -38,10 +38,9 @@ class PlanningStage(Stage):
 
     name = "PlanningStage"
 
-    def __init__(self, planner: Planner, validator: PlanValidator, spinner) -> None:
+    def __init__(self, planner: Planner, validator: PlanValidator) -> None:
         self._planner = planner
         self._validator = validator
-        self._spinner = spinner
 
     def run(self, context: PipelineContext) -> StageResult:
         # No-op for direct mode.
@@ -49,7 +48,6 @@ class PlanningStage(Stage):
             return StageResult(status=StageStatus.OK, updated_context=context)
 
         logger.info(banner("Planning"))
-        self._spinner.update("Planning...")
 
         user_message = context.user_message
         # On retry, append the validation feedback so the planner can self-correct.

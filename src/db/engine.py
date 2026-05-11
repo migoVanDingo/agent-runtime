@@ -31,8 +31,19 @@ async def get_agent_engine() -> AsyncEngine:
         kwargs: dict = {"echo": False, "future": True}
         if _is_sqlite(url):
             kwargs["connect_args"] = {"check_same_thread": False}
+            # Ensure the parent directory exists — SQLite will not create it.
+            _ensure_sqlite_parent(url)
         _agent_engine = create_async_engine(url, **kwargs)
     return _agent_engine
+
+
+def _ensure_sqlite_parent(url: str) -> None:
+    """For sqlite+aiosqlite:///<path>/agent.db URLs, mkdir -p <path>."""
+    import re
+    from pathlib import Path
+    m = re.match(r"sqlite(?:\+\w+)?:///(?!:memory:)(.+)$", url)
+    if m:
+        Path(m.group(1)).expanduser().parent.mkdir(parents=True, exist_ok=True)
 
 
 async def get_briefbot_engine() -> AsyncEngine:

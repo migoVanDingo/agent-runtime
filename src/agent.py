@@ -49,7 +49,6 @@ def _build_pipeline(agent: "Agent") -> Pipeline:
         messenger=p.messenger,
         guard=p.guard,
         user_gate=p.user_gate,
-        spinner=p.spinner,
         agent_system=system,
     )
 
@@ -66,7 +65,6 @@ def _build_pipeline(agent: "Agent") -> Pipeline:
         user_gate=p.user_gate,
         importance_scorer=p.importance_scorer,
         planner=p.planner,
-        spinner=p.spinner,
         agent_system=system,
         skill_expansion=skill_expansion,
     )
@@ -83,12 +81,10 @@ def _build_pipeline(agent: "Agent") -> Pipeline:
         SkillHintStage(
             skill_registry=p.skill_registry,
             skill_selector=p.workflow_selector,
-            spinner=p.spinner,
         ),
         PlanningStage(
             planner=p.planner,
             validator=p.validator,
-            spinner=p.spinner,
         ),
         skill_expansion,
         EntityCriticStage(entity_critic=p.entity_critic),
@@ -97,7 +93,6 @@ def _build_pipeline(agent: "Agent") -> Pipeline:
             critic=p.critic,
             planner=p.planner,
             validator=p.validator,
-            spinner=p.spinner,
             skill_expansion_stage=skill_expansion,
         ),
         execution,
@@ -105,11 +100,10 @@ def _build_pipeline(agent: "Agent") -> Pipeline:
             provider=get_runtime_provider(),
             planner=p.planner,
             execution_stage=execution,
-            spinner=p.spinner,
             skill_registry=p.skill_registry,
             skill_expansion_stage=skill_expansion,
         ),
-        SynthesizerStage(synthesizer=p.synthesizer, spinner=p.spinner),
+        SynthesizerStage(synthesizer=p.synthesizer),
         direct_execution,
     ]
 
@@ -174,8 +168,16 @@ class Agent:
     def last_response(self) -> str:
         return self._last_response
 
-    def call(self, user_message: str, on_token=None) -> str:
-        """Run the agent pipeline."""
+    def call(self, user_message: str, on_token=None, checkpoint_fn=None) -> str:
+        """Run the agent pipeline.
+
+        Args:
+            user_message: The user's input text.
+            on_token: Optional callable invoked with each streamed token string.
+            checkpoint_fn: Optional callable invoked between pipeline stages and
+                tool-loop iterations. May raise TurnCancelledError to abort the turn.
+                Set by InProcessAgentService; None on the legacy CLI path.
+        """
         from runtime.utils import banner
         from runtime.persistence import PersistenceWriter
 
@@ -197,6 +199,7 @@ class Agent:
             user_message=user_message,
             db_session_id=db_session_id,
             on_token=on_token,
+            _pause_check=checkpoint_fn,
         )
         response = self._pipeline.run(context)
         self.spinner.stop()

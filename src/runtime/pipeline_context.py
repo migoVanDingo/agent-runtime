@@ -76,3 +76,10 @@ class PipelineContext:
     # When set, SynthesizerStage calls this with each token chunk instead
     # of buffering the full response. Caller receives tokens in real time.
     on_token: object = None  # Callable[[str], None] | None
+
+    # ── Pause/cancel check (optional) ────────────────────────────────
+    # Set by InProcessAgentService (via agent.call checkpoint_fn) before each turn.
+    # Called between pipeline stages and between tool-loop iterations.
+    # May raise TurnCancelledError to abort the turn.
+    # None when running under the legacy CLI (no service layer).
+    _pause_check: object = None  # Callable[[], None] | None

@@ -1,5 +1,6 @@
 from tools.base import BaseTool, InputSchema, ToolProperty, ToolWeight
 from runtime.policy import check_path_allowed
+from runtime.path_resolver import resolve_path
 
 
 class ReadFileLinesTool(BaseTool):
@@ -23,11 +24,12 @@ class ReadFileLinesTool(BaseTool):
         decision = check_path_allowed(path, "read")
         if not decision.allowed:
             return decision.error_message()
+        real_path = resolve_path(path)
         try:
             start = int(tool_input["start"])
             end = int(tool_input["end"]) if "end" in tool_input else None
 
-            with open(path, "r") as f:
+            with open(real_path, "r") as f:
                 lines = f.readlines()
 
             total = len(lines)

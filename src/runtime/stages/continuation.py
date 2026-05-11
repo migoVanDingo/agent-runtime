@@ -45,14 +45,12 @@ class ContinuationStage(Stage):
         provider: BaseProvider,
         planner: Planner,
         execution_stage: "ExecutionStage",
-        spinner,
         skill_registry: "SkillRegistry | None" = None,
         skill_expansion_stage: "SkillExpansionStage | None" = None,
     ) -> None:
         self._provider = provider
         self._planner = planner
         self._execution = execution_stage
-        self._spinner = spinner
         self._skill_registry = skill_registry
         self._skill_expansion = skill_expansion_stage
 
@@ -104,7 +102,6 @@ class ContinuationStage(Stage):
                 f"  continuation: LOOP iteration {context.continuation_state.iteration_count} — "
                 f"{len(new_plan.steps)} new step(s)"
             )
-            self._spinner.update(f"Continuation #{context.continuation_state.iteration_count}...")
 
             # Expand any skill:<name> steps before executing.
             if self._skill_expansion is not None:

@@ -100,6 +100,11 @@ class Pipeline:
 
         t0 = _time.monotonic()
         while True:
+            # Cooperative yield point — gives InProcessAgentService a chance
+            # to pause or cancel between stage invocations (including retries).
+            if context._pause_check is not None:
+                context._pause_check()  # may raise TurnCancelledError
+
             result = stage.run(context)
             context = result.updated_context
 

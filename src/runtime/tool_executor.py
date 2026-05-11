@@ -100,11 +100,10 @@ class ToolExecutionOutcome:
 
 
 class ToolCallExecutor:
-    def __init__(self, registry, guard: ActionGuard, user_gate, spinner) -> None:
+    def __init__(self, registry, guard: ActionGuard, user_gate) -> None:
         self._registry = registry
         self._guard = guard
         self._user_gate = user_gate
-        self._spinner = spinner
 
     def execute(
         self,
@@ -162,17 +161,14 @@ class ToolCallExecutor:
                 tool_name=tool_name,
                 tool_input=tool_input,
             )
-            self._spinner.stop()
             if self._user_gate.prompt(escalation):
                 self._guard.record_approval(tool_name, tool_input)
-                self._spinner.start(f"Running {tool_name}...")
                 result = self._safe_execute(tool_name, tool_input)
             else:
                 result = ToolResult.error(
                     f"Tool call denied by user: {guard_reason}",
                     error_code="policy_denied",
                 )
-            self._spinner.start(resume_spinner_message)
             self._emit_completed(identity, tool_name, result)
             return ToolExecutionOutcome(
                 result=result,
@@ -180,7 +176,6 @@ class ToolCallExecutor:
                 guard_reason=guard_reason,
             )
 
-        self._spinner.update(f"Running {tool_name}...")
         result = self._safe_execute(tool_name, tool_input)
         self._emit_completed(identity, tool_name, result)
         return ToolExecutionOutcome(

@@ -25,11 +25,9 @@ class SkillHintStage(Stage):
         self,
         skill_registry: SkillRegistry,
         skill_selector: WorkflowSelector,
-        spinner,
     ) -> None:
         self._registry = skill_registry
         self._selector = skill_selector
-        self._spinner = spinner
 
     def run(self, context: PipelineContext) -> StageResult:
         if context.classification is None or context.classification.mode != "plan":
@@ -37,7 +35,6 @@ class SkillHintStage(Stage):
 
         logger.info(banner("Skill hint"))
         descriptions = self._registry.descriptions()
-        self._spinner.update("Routing...")
         chosen = self._selector.select(context.user_message, descriptions)
         if chosen and self._registry.get(chosen) is not None:
             logger.info(f"  hint: '{chosen}' (advisory; planner may override)")

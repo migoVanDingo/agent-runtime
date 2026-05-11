@@ -20,8 +20,6 @@ def handle_injection_warning(
     result: str,
     *,
     user_gate,
-    spinner,
-    resume_spinner_message: str,
 ) -> InjectionGateResult:
     """Route web-content injection warnings through the user gate.
 
@@ -33,7 +31,6 @@ def handle_injection_warning(
         return InjectionGateResult(content=result, approved=True, cancelled=False)
 
     display = result.replace(INJECTION_WARNING_PREFIX + "\n", "")
-    spinner.stop()
     approved = user_gate.prompt(
         Escalation(
             reason=(
@@ -44,7 +41,6 @@ def handle_injection_warning(
             tool_input={"warning": display[:1000]},
         )
     )
-    spinner.start(resume_spinner_message)
 
     if approved:
         return InjectionGateResult(

@@ -231,16 +231,27 @@ def _cmd_wipe(argv: list[str]) -> None:
         prog="arc wipe",
         description="Delete generated runtime data. Prompts for confirmation unless --yes is set.",
     )
-    p.add_argument("--all", "-a", action="store_true", help="Wipe all generated data")
-    p.add_argument("--sessions", "-s", action="store_true", help="Wipe _sessions/ (logs, metrics, events)")
-    p.add_argument("--rag", "-r", action="store_true", help="Wipe _rag/ (LanceDB chunk stores + global warehouse)")
-    p.add_argument("--analysis", "-n", action="store_true", help="Wipe _analysis/ (paged tool artifacts)")
-    p.add_argument("--store", action="store_true", help="Wipe artifact store DB and data (_store/artifacts.db + _store/data/)")
-    p.add_argument("--logs", "-l", action="store_true", help="Wipe legacy flat dirs (_logs/, _metrics/, _events/)")
+    p.add_argument("--all", "-a", action="store_true",
+                   help="Wipe all current data under ARC_HOME (~/.arc/)")
+    p.add_argument("--sessions", "-s", action="store_true",
+                   help="Wipe ARC_HOME/sessions/ (logs, metrics, events)")
+    p.add_argument("--rag", "-r", action="store_true",
+                   help="Wipe ARC_HOME/rag/ (LanceDB chunk stores + global warehouse)")
+    p.add_argument("--analysis", "-n", action="store_true",
+                   help="Wipe ARC_HOME/analysis/ (paged tool artifacts)")
+    p.add_argument("--store", action="store_true",
+                   help="Wipe ARC_HOME/store/ (artifact store DB + payload data)")
+    p.add_argument("--legacy", "-L", action="store_true",
+                   help="Wipe legacy project-dir data (_sessions, _rag, _store, _analysis, _logs, _metrics, _events, data/agent.db)")
     p.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
 
     args = p.parse_args(argv)
-    root = Path(__file__).resolve().parent.parent
+
+    # All runtime data lives under ARC_HOME (default ~/.arc/). The project
+    # directory itself is no longer touched.
+    from session_paths import arc_home
+    root = arc_home()
+    project_root = Path(__file__).resolve().parent.parent
 
     # Build list of (label, path) targets based on flags
     targets: list[tuple[str, Path]] = []
@@ -248,19 +259,27 @@ def _cmd_wipe(argv: list[str]) -> None:
     def _add(label: str, path: Path) -> None:
         targets.append((label, path))
 
+    # ── Current data under ARC_HOME ───────────────────────────────────────────
     if args.all or args.sessions:
-        _add("sessions", root / "_sessions")
+        _add("sessions", root / "sessions")
     if args.all or args.rag:
-        _add("rag", root / "_rag")
+        _add("rag", root / "rag")
     if args.all or args.analysis:
-        _add("analysis", root / "_analysis")
+        _add("analysis", root / "analysis")
     if args.all or args.store:
-        _add("store/artifacts.db", root / "_store" / "artifacts.db")
-        _add("store/data", root / "_store" / "data")
-    if args.all or args.logs:
-        _add("logs (legacy)", root / "_logs")
-        _add("metrics (legacy)", root / "_metrics")
-        _add("events (legacy)", root / "_events")
+        _add("store/artifacts.db", root / "store" / "artifacts.db")
+        _add("store/data", root / "store" / "data")
+
+    # ── Legacy project-dir data (pre-centralization layout) ──────────────────
+    if args.legacy:
+        _add("_sessions    (legacy)", project_root / "_sessions")
+        _add("_rag         (legacy)", project_root / "_rag")
+        _add("_store       (legacy)", project_root / "_store")
+        _add("_analysis    (legacy)", project_root / "_analysis")
+        _add("_logs        (legacy)", project_root / "_logs")
+        _add("_metrics     (legacy)", project_root / "_metrics")
+        _add("_events      (legacy)", project_root / "_events")
+        _add("data/        (legacy SQLModel DB)", project_root / "data")
 
     if not targets:
         p.print_help()
@@ -316,11 +335,94 @@ def _cmd_wipe(argv: list[str]) -> None:
     print(f"\nDone — {deleted} item(s) removed.")
 
 
+def _cmd_bootstrap(argv: list[str]) -> None:
+    """arc bootstrap — create the centralized ARC_HOME data layout.
+
+    Run this once after installing. Idempotent — safe to re-run.
+    Also migrates legacy project-dir data (_sessions/, _rag/, _store/, _analysis/)
+    into ARC_HOME if --migrate is passed.
+    """
+    p = argparse.ArgumentParser(
+        prog="arc bootstrap",
+        description="Initialize the arc data directory layout.",
+    )
+    p.add_argument("--migrate", "-m", action="store_true",
+                   help="Move legacy project-dir data into ARC_HOME")
+    args = p.parse_args(argv)
+
+    from session_paths import arc_home, ensure_data_layout
+    import shutil
+
+    project_root = Path(__file__).resolve().parent.parent
+
+    print()
+    home = ensure_data_layout()
+    print(f"✓ Data layout created at {home}")
+    for sub in ("sessions", "rag/global", "rag/sessions", "store/data",
+                "ghidra/projects", "analysis"):
+        print(f"    {sub}")
+
+    if args.migrate:
+        print()
+        print("Migrating legacy project-dir data…")
+        # Directory-to-directory migrations
+        legacy_map = {
+            "_sessions": "sessions",
+            "_rag":      "rag",
+            "_store":    "store",
+            "_analysis": "analysis",
+        }
+        moved = 0
+        for old_name, new_name in legacy_map.items():
+            old = project_root / old_name
+            new = home / new_name
+            if not old.exists():
+                continue
+            if new.exists() and any(new.iterdir()):
+                print(f"  ⚠ skip   {old_name}  (target {new_name} non-empty)")
+                continue
+            try:
+                if new.exists():
+                    new.rmdir()
+                shutil.move(str(old), str(new))
+                print(f"  ✓ moved  {old_name}  →  {new_name}")
+                moved += 1
+            except Exception as e:
+                print(f"  ✗ FAILED {old_name}: {e}")
+
+        # Single-file migration: data/agent.db → ~/.arc/agent.db
+        old_db = project_root / "data" / "agent.db"
+        new_db = home / "agent.db"
+        if old_db.exists():
+            if new_db.exists() and new_db.stat().st_size > 0:
+                print(f"  ⚠ skip   data/agent.db  (target agent.db non-empty)")
+            else:
+                try:
+                    shutil.move(str(old_db), str(new_db))
+                    print(f"  ✓ moved  data/agent.db  →  agent.db")
+                    moved += 1
+                    # Clean up the empty data/ dir if nothing else is in it.
+                    data_dir = project_root / "data"
+                    if data_dir.exists() and not any(data_dir.iterdir()):
+                        data_dir.rmdir()
+                        print(f"  ✓ removed empty data/ dir")
+                except Exception as e:
+                    print(f"  ✗ FAILED data/agent.db: {e}")
+
+        print(f"\nMigrated {moved} item(s).")
+
+    print()
+    print(f"To override the data location, add ARC_HOME=/path to .env")
+
+
 def main():
-    # Intercept wipe subcommand before the agent argparse so existing behaviour
-    # is completely unchanged for normal `arc` / `arc --resume` invocations.
+    # Intercept wipe / bootstrap subcommands before the agent argparse so
+    # existing behaviour is completely unchanged for normal `arc` invocations.
     if len(sys.argv) > 1 and sys.argv[1] == "wipe":
         _cmd_wipe(sys.argv[2:])
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == "bootstrap":
+        _cmd_bootstrap(sys.argv[2:])
         return
 
     parser = argparse.ArgumentParser(description="Raw Tool Agent")
@@ -337,9 +439,10 @@ def main():
     store_enabled = config.artifact_store.enabled
     project_root = Path(__file__).resolve().parent.parent
     if store_enabled:
+        from session_paths import store_db_path, store_data_dir
         init_store(
-            db_path=project_root / "_store" / "artifacts.db",
-            data_dir=project_root / "_store" / "data",
+            db_path=store_db_path(),
+            data_dir=store_data_dir(),
             inline_threshold=config.artifact_store.inline_threshold_bytes,
         )
 
@@ -471,5 +574,34 @@ def main():
             print(f"  ⏱  {elapsed}\n")
 
 
+def dispatch():
+    """Top-level `arc` entry point.
+
+    Default: launch the Textual-UI replacement (`arc-tui`).
+    Override: `arc --cli` or `arc -t` runs the legacy text CLI.
+    Subcommands `arc wipe …` and `arc bootstrap …` always go to legacy
+    (they are CLI-only operations).
+
+    Forwards all other arguments through unchanged.
+    """
+    argv = sys.argv[1:]
+
+    # Subcommands that are CLI-only — always go through legacy main().
+    if argv and argv[0] in ("wipe", "bootstrap"):
+        main()
+        return
+
+    # Explicit legacy CLI flag — strip it from argv, then call legacy main().
+    if "--cli" in argv or "-t" in argv:
+        cleaned = [a for a in argv if a not in ("--cli", "-t")]
+        sys.argv[1:] = cleaned
+        main()
+        return
+
+    # Default: TUI.
+    from ui.app import run as tui_run
+    tui_run()
+
+
 if __name__ == "__main__":
-    main()
+    dispatch()

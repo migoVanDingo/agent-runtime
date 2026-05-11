@@ -46,7 +46,6 @@ class DirectExecutionStage(Stage):
         messenger,
         guard: ActionGuard,
         user_gate,
-        spinner,
         agent_system: str,
     ) -> None:
         self._provider = provider
@@ -56,18 +55,17 @@ class DirectExecutionStage(Stage):
         self._messenger = messenger
         self._guard = guard
         self._user_gate = user_gate
-        self._spinner = spinner
         self._agent_system = agent_system
-        self._tool_executor = ToolCallExecutor(registry, guard, user_gate, spinner)
+        self._tool_executor = ToolCallExecutor(registry, guard, user_gate)
         self._identity = None
 
     def run(self, context: PipelineContext) -> StageResult:
         if context.classification is not None and context.classification.mode != "plan":
-            self._spinner.update("Thinking...")
             logger.info(banner("Direct execution"))
 
         self._identity = context.identity
         self._rag_context = context.rag_context
+        self._checkpoint = context._pause_check  # stored for _run_loop
         response = self._run_loop(context.user_message)
         context.response = response
         return StageResult(status=StageStatus.OK, updated_context=context)
@@ -106,10 +104,10 @@ class DirectExecutionStage(Stage):
             messenger=self._messenger,
             context_mgr=self._context_mgr,
             tool_executor=self._tool_executor,
-            spinner=self._spinner,
             user_gate=self._user_gate,
             config=loop_cfg,
             parent_identity=self._identity,
+            checkpoint=getattr(self, "_checkpoint", None),
         )
 
         result = loop.run(

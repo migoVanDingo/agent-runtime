@@ -3,6 +3,7 @@ import re
 
 from tools.base import BaseTool, InputSchema, ToolProperty, ToolWeight
 from runtime.policy import check_path_allowed
+from runtime.path_resolver import resolve_path, to_virtual
 
 # File extensions that should contain raw code — strip markdown code fences if present
 _CODE_EXTENSIONS = {
@@ -71,6 +72,9 @@ class WriteFileTool(BaseTool):
         from logger import get_logger
         logger = get_logger(__name__)
 
+        # The agent sees `path` as a logical path (e.g. `_analysis/proc/foo.c`).
+        # Policy check uses the logical path; the actual write uses the resolved
+        # path so files land under ARC_HOME instead of cluttering the project dir.
         path = tool_input["path"]
         content = tool_input["content"]
         decision = check_path_allowed(path, "write")
@@ -92,11 +96,12 @@ class WriteFileTool(BaseTool):
             logger.info(f"  write_file: rejected markdown prose in code file {path}")
             return msg
 
+        real_path = resolve_path(path)
         try:
-            parent = os.path.dirname(path)
+            parent = os.path.dirname(real_path)
             if parent:
                 os.makedirs(parent, exist_ok=True)
-            with open(path, "w") as f:
+            with open(real_path, "w") as f:
                 f.write(content)
             return f"Successfully wrote {len(content)} bytes to {path}"
         except Exception as e:

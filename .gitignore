@@ -18,3 +18,5 @@ proc_ghidra
 proc
 proc.c
 src/*.db
+.claude
+.pytest_cache

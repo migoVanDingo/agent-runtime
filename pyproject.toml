@@ -7,8 +7,101 @@ name = "arc"
 version = "0.1.0"
 requires-python = ">=3.10"
 
+# Core dependencies: everything needed to run the legacy `arc` CLI end-to-end.
+# Includes LLM providers, RAG, all default tools, DB, routing.
+# `arc-tui` adds prompt_toolkit on top via the [tui] extra.
+dependencies = [
+    # ── LLM providers ────────────────────────────────────────────────
+    "anthropic",                # Anthropic API + base provider
+    "openai",                   # OpenAI + Gemini/DeepSeek/Grok (all use openai client)
+
+    # ── Config & validation ──────────────────────────────────────────
+    "pydantic>=2.0",
+    "pydantic-settings",        # .env loading for src/settings.py
+    "pyyaml",                   # config.yml
+
+    # ── Display ──────────────────────────────────────────────────────
+    "rich",                     # Markdown rendering, spinner colors, tables
+
+    # ── Database (SQLModel + SQLAlchemy async + Alembic migrations) ──
+    "sqlmodel",
+    "sqlalchemy>=2.0",
+    "alembic",                  # DB migrations CLI
+    "aiosqlite",                # Async SQLite driver (sqlite+aiosqlite:// URLs)
+
+    # ── HTTP & web ───────────────────────────────────────────────────
+    "httpx",                    # API clients, HTTP RAG transport, web tools
+
+    # ── IDs ──────────────────────────────────────────────────────────
+    "ulid-py",                  # ULID generation (utils.generate_id)
+
+    # ── Routing & context manager ───────────────────────────────────
+    "scikit-learn",             # cosine_similarity for static routing
+
+    # ── RAG (vector store + embeddings) ─────────────────────────────
+    "lancedb",                  # Vector DB
+    "pyarrow",                  # lancedb storage format
+    # sentence-transformers 3.4+ requires torch>=2.4. On macOS x86_64 + Python
+    # 3.10, the latest torch available is 2.2.2 — newer wheels aren't published
+    # for that combo. Pin to 3.3.x which works with torch 2.2.x.
+    "sentence-transformers<3.4",
+    # PyTorch 2.2.x was compiled against NumPy 1.x. NumPy 2.0 broke the C ABI —
+    # without this pin, RAG calls fail with binary-compat errors.
+    "numpy<2",
+
+    # ── Tool dependencies (registered tool implementations) ─────────
+    "pandas",                   # Tabular data, artifact export
+    "beautifulsoup4",           # HTML parsing (web tools)
+    "trafilatura",              # Web article extraction
+    "jinja2",                   # Template rendering tool
+    "jsonpath-ng",              # JSON query tool
+    "python-docx",              # Word document reading
+    "pypdf",                    # PDF reading
+    "EbookLib",                 # EPUB reading
+]
+
+[project.optional-dependencies]
+# Terminal UI — arc-tui entry point uses prompt_toolkit.
+tui = [
+    "prompt_toolkit>=3.0",
+]
+
+# Reversing tools (Ghidra integration). Heavy — Java/JVM required at runtime.
+# Also requires Ghidra installed separately (see system dependencies below).
+reversing = [
+    "pyghidra",
+    "jpype1",
+]
+
+# Google Gemini embeddings (only needed if embedding_provider: google in config).
+# The Gemini LLM provider uses the openai client, not this package.
+google = [
+    "google-generativeai",
+]
+
+# Future FastAPI server (not implemented yet — listed so pyproject is ready).
+api = [
+    "fastapi>=0.110",
+    "uvicorn[standard]",
+    "websockets",
+]
+
+# Developer tools.
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+    "mypy",
+    "import-linter",
+]
+
 [project.scripts]
-arc = "main:main"
+# `arc` launches the Textual UI by default. Use `arc --cli` or `arc -t` to run
+# the legacy text CLI. `arc wipe …` and `arc bootstrap …` are CLI-only and
+# always dispatched to the legacy entry regardless of flags.
+arc     = "main:dispatch"
+# Explicit alias for users who want to skip the dispatcher.
+arc-tui = "ui.app:run"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -16,10 +109,12 @@ where = ["src"]
 [tool.setuptools.package-dir]
 "" = "src"
 
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q --tb=short"
 pythonpath = ["src"]
+asyncio_mode = "auto"
 
 # ── System dependencies (not pip-installable) ────────────────────────────────
 # These must be installed separately before running arc.

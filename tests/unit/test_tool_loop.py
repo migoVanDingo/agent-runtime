@@ -88,7 +88,7 @@ class _ScriptedProvider:
 def _make_loop(provider, tools=None, authorized=None, registry=None, max_tool_calls=15):
     registry = registry or _FakeRegistry(tools or {})
     guard = ActionGuard()
-    executor = ToolCallExecutor(registry, guard, _AutoDenyGate(), _FakeSpinner())
+    executor = ToolCallExecutor(registry, guard, _AutoDenyGate())
     cfg = ToolLoopConfig(
         max_iterations=20,
         max_tool_calls=max_tool_calls,
@@ -101,7 +101,6 @@ def _make_loop(provider, tools=None, authorized=None, registry=None, max_tool_ca
         messenger=_FakeMessenger(),
         context_mgr=_FakeContextMgr(),
         tool_executor=executor,
-        spinner=_FakeSpinner(),
         user_gate=_AutoDenyGate(),
         config=cfg,
     )

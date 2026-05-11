@@ -67,6 +67,11 @@ def init_rag_service(session_id: str) -> RagService | None:
             f"dim={embedder.dim})"
         )
         return _service
+    except ImportError as e:
+        # Expected when optional deps (sentence_transformers, etc.) aren't installed.
+        from logger import get_logger
+        get_logger(__name__).debug(f"  rag: disabled — {e}")
+        return None
     except Exception as e:
         from logger import get_logger
         get_logger(__name__).warning(f"  rag: init failed — {e}")

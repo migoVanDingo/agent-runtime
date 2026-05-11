@@ -28,7 +28,9 @@ class Radare2Config:
 
 @dataclass
 class GhidraConfig:
-    project_dir: str = "_store/ghidra_projects"
+    # Empty default — when blank, resolves at runtime to <ARC_HOME>/ghidra/projects/
+    # via session_paths.ghidra_projects_dir(). Set explicitly only to override.
+    project_dir: str = ""
     timeout_seconds: int = 120
     scripts_dir: str = "src/tools/implementations/reversing/ghidra_scripts"
 

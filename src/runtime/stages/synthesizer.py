@@ -37,9 +37,8 @@ class SynthesizerStage(Stage):
 
     name = "SynthesizerStage"
 
-    def __init__(self, synthesizer: Synthesizer, spinner) -> None:
+    def __init__(self, synthesizer: Synthesizer) -> None:
         self._synthesizer = synthesizer
-        self._spinner = spinner
 
     def run(self, context: PipelineContext) -> StageResult:
         # SynthesizerStage runs whenever the pipeline reaches it.
@@ -52,13 +51,9 @@ class SynthesizerStage(Stage):
         on_token = context.on_token  # Callable[[str], None] | None
 
         if on_token is not None:
-            # Streaming: stop spinner first so tokens print cleanly
-            self._spinner.stop()
             response = self._synthesizer.stream_synthesize(context.plan, on_token)
         else:
-            self._spinner.start("Synthesizing response...")
             response = self._synthesizer.synthesize(context.plan)
-            self._spinner.stop()
 
         logger.info(banner("Done"))
 

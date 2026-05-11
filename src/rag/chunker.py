@@ -16,13 +16,16 @@ def chunk_text(
     binary_name = ""
     if source_file:
         parts = Path(source_file).parts
-        # _analysis/<binary_name>/file.txt → parts index -2 is the binary dir
-        try:
-            idx = parts.index("_analysis")
-            if idx + 1 < len(parts):
-                binary_name = parts[idx + 1]
-        except ValueError:
-            pass
+        # Look for either the new on-disk layout (<ARC_HOME>/analysis/<binary>/...)
+        # or the agent-facing logical path (_analysis/<binary>/...).
+        for marker in ("analysis", "_analysis"):
+            try:
+                idx = parts.index(marker)
+                if idx + 1 < len(parts):
+                    binary_name = parts[idx + 1]
+                break
+            except ValueError:
+                continue
 
     chunks: list[Chunk] = []
     start = 0

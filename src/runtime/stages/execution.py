@@ -100,7 +100,6 @@ class ExecutionStage(Stage):
         user_gate,
         importance_scorer: ImportanceScorer,
         planner: Planner,
-        spinner,
         agent_system: str,
         skill_expansion=None,
     ) -> None:
@@ -115,9 +114,8 @@ class ExecutionStage(Stage):
         self._importance_scorer = importance_scorer
         self._planner = planner
         self._skill_expansion = skill_expansion  # may be None if not wired
-        self._spinner = spinner
         self._agent_system = agent_system
-        self._tool_executor = ToolCallExecutor(registry, guard, user_gate, spinner)
+        self._tool_executor = ToolCallExecutor(registry, guard, user_gate)
 
     def _resolve_step_tools(self, step: Step) -> list[dict]:
         """Single point of tool resolution for a step.
@@ -179,6 +177,7 @@ class ExecutionStage(Stage):
 
         self._active_skill_name = context.active_skill_name
         self._rag_context = context.rag_context
+        self._checkpoint = context._pause_check  # stored for _run_step
         response = self._execute_plan(context.plan, db_session_id=context.db_session_id)
         context.response = response
 
@@ -229,7 +228,6 @@ class ExecutionStage(Stage):
             import time as _step_time
             _step_t0 = _step_time.monotonic()
             retry_label = f" RETRY ({step.flags.retry_count}/{max_retries})" if step.flags.retry_count > 0 else ""
-            self._spinner.update(f"Step {step_display}/{n_total} — {desc_short}")
             logger.info(banner(f"Step {step_display}/{n_total} [{step.action_type.value}]{retry_label}"))
             logger.info(f"  {step.description}")
             if _identity is not None:
@@ -268,19 +266,15 @@ class ExecutionStage(Stage):
                     reason=f"Step contains potentially destructive operation: {step.description}",
                     source="guard",
                 )
-                self._spinner.stop()
                 system = _step_system(plan, step, self._agent_system, self._rag_context, step_display)
                 if self._user_gate.prompt(escalation):
                     result = self._run_step(step, n_total, tools, system, query=plan.original_query, plan_start_index=plan_start_index, step_display=step_display)
                 else:
                     result = f"Step denied by user: {step.description}"
                     step.error = "user denied escalation"
-                self._spinner.start(f"Step {step_display}/{n_total}")
             else:
                 system = _step_system(plan, step, self._agent_system, self._rag_context, step_display)
                 result = self._run_step(step, n_total, tools, system, query=plan.original_query, plan_start_index=plan_start_index, step_display=step_display)
-                # Spinner keeps running — ToolLoop no longer stops it mid-step.
-                self._spinner.update(f"Step {step_display}/{n_total} — done")
 
             step.result = result[:1000] if result else None
 
@@ -367,7 +361,6 @@ class ExecutionStage(Stage):
 
             elif decision == StepDecision.REPLAN:
                 logger.info(banner("Replanning"))
-                self._spinner.update("Replanning...")
                 if _identity is not None:
                     _bus.emit(RuntimeEvent(
                         "replan.triggered",
@@ -448,7 +441,6 @@ class ExecutionStage(Stage):
                     reason=f"Monitor flagged step {step.step}: {assessment.reason}",
                     source="monitor",
                 )
-                self._spinner.stop()
                 if self._user_gate.prompt(escalation):
                     logger.info("  user approved — continuing")
                     step.status = StepStatus.COMPLETED
@@ -457,12 +449,7 @@ class ExecutionStage(Stage):
                     step.flags.skipped = True
                     step.status = StepStatus.COMPLETED
                     step.error = "user denied escalation"
-                self._spinner.start("Continuing...")
                 idx += 1
-
-        # Spinner lifecycle belongs to agent.call() — only update, don't stop.
-        # ContinuationStage and SynthesizerStage will use the same thread.
-        self._spinner.update("Analyzing...")
 
         logger.info(banner("Execution complete"))
         last_completed = next(
@@ -520,10 +507,10 @@ class ExecutionStage(Stage):
             messenger=self._messenger,
             context_mgr=self._context_mgr,
             tool_executor=self._tool_executor,
-            spinner=self._spinner,
             user_gate=self._user_gate,
             config=loop_cfg,
             parent_identity=step_identity,
+            checkpoint=getattr(self, "_checkpoint", None),
         )
 
         result = loop.run(

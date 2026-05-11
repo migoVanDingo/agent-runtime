@@ -100,13 +100,11 @@ class CouncilStage(Stage):
         critic: PlanCritic,
         planner: Planner,
         validator: PlanValidator,
-        spinner,
         skill_expansion_stage=None,
     ) -> None:
         self._critic = critic
         self._planner = planner
         self._validator = validator
-        self._spinner = spinner
         self._skill_expansion = skill_expansion_stage
 
     def run(self, context: PipelineContext) -> StageResult:
@@ -137,7 +135,6 @@ class CouncilStage(Stage):
 
         labels = [c.label for c in active]
         logger.info(f"  critic: {risk} risk → {len(active)} councillor(s): {labels}")
-        self._spinner.update("Reviewing plan...")
 
         plan = context.plan
         critic_result = self._critic.review(

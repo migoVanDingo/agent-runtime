@@ -78,7 +78,6 @@ class ToolLoop:
         messenger: conversation history holder.
         context_mgr: budget-constrained context packer.
         tool_executor: pre-wired guard+execute helper.
-        spinner: UI spinner (may be a no-op).
         user_gate: user approval gate for escalations.
         config: loop caps and authorization policy.
         parent_identity: RuntimeIdentity to attach to tool-call events.
@@ -90,19 +89,19 @@ class ToolLoop:
         messenger,
         context_mgr: ContextManager,
         tool_executor: ToolCallExecutor,
-        spinner,
         user_gate,
         config: ToolLoopConfig,
         parent_identity=None,
+        checkpoint=None,  # Callable[[], None] | None — set by InProcessAgentService
     ) -> None:
         self._provider = provider
         self._messenger = messenger
         self._context_mgr = context_mgr
         self._tool_executor = tool_executor
-        self._spinner = spinner
         self._user_gate = user_gate
         self._config = config
         self._identity = parent_identity
+        self._checkpoint = checkpoint  # may raise TurnCancelledError when called
 
     def run(
         self,
@@ -134,6 +133,11 @@ class ToolLoop:
         while True:
             iteration += 1
 
+            # Cooperative yield point — gives the service a chance to pause
+            # or cancel between every tool-loop iteration.
+            if self._checkpoint is not None:
+                self._checkpoint()  # may raise TurnCancelledError
+
             if iteration > cfg.max_iterations:
                 logger.info(f"  runtime: iteration cap ({cfg.max_iterations}) reached — forcing wrap-up")
                 hit_iteration_cap = True
@@ -142,7 +146,6 @@ class ToolLoop:
                     "Stop all tool calls immediately and give the user a final response "
                     "summarizing what you were able to accomplish and what failed."
                 )
-                self._spinner.update("Wrapping up...")
                 packed = self._context_mgr.pack(
                     self._messenger.get_messages(), query, plan_start_index=plan_start_index
                 )
@@ -182,9 +185,6 @@ class ToolLoop:
                     last_had_errors = False
                     continue
 
-                # Spinner ownership belongs to the calling stage — don't stop it here.
-                # The caller stops it after processing the result.
-                self._spinner.update(resume_message)
                 self._messenger.add_assistant_message(response.content)
 
                 if response.stop_reason == "max_tokens":
@@ -270,8 +270,6 @@ class ToolLoop:
                     injection = handle_injection_warning(
                         result,
                         user_gate=self._user_gate,
-                        spinner=self._spinner,
-                        resume_spinner_message=resume_message,
                     )
                     result = injection.content
                     if injection.cancelled:
@@ -353,7 +351,6 @@ class ToolLoop:
                         "content": result,
                     })
 
-                self._spinner.update(resume_message)
                 self._messenger.add_tool_results(tool_results)
 
                 # Consecutive error injection

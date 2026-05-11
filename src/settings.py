@@ -5,6 +5,8 @@ Provider selection and model names come from config.yml [llm] section.
 Settings fields that are no longer env-driven keep their defaults for
 backwards compatibility but config.yml takes precedence via get_provider().
 """
+import os
+from pathlib import Path
 from typing import Optional
 from functools import lru_cache
 from pydantic import AliasChoices, Field
@@ -13,6 +15,20 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 def env_alias(*names: str) -> AliasChoices:
     return AliasChoices(*names)
+
+
+def _default_arc_home() -> str:
+    """Resolve the arc data home from ARC_HOME or ~/.arc/.
+
+    Used by multiple field defaults below. Resolved at instance creation, not
+    at module import, so .env values for ARC_HOME are picked up correctly.
+    """
+    return os.environ.get("ARC_HOME") or str(Path.home() / ".arc")
+
+
+def _default_agent_db_url() -> str:
+    """Default agent DB lives at <ARC_HOME>/agent.db so the project dir stays clean."""
+    return f"sqlite+aiosqlite:///{_default_arc_home()}/agent.db"
 
 
 class Settings(BaseSettings):
@@ -50,8 +66,11 @@ class Settings(BaseSettings):
     )
 
     # ── Database / persistence (infrastructure secrets) ───────────────────────
+    # Defaults to sqlite+aiosqlite:///<ARC_HOME>/agent.db so all runtime data
+    # lives under one directory. Override with AGENT_DB_URL in .env to point
+    # at Postgres (e.g. postgresql+asyncpg://user:pass@host/dbname).
     agent_db_url: str = Field(
-        default="sqlite+aiosqlite:///./data/agent.db",
+        default_factory=_default_agent_db_url,
         validation_alias=env_alias("AGENT_DB_URL"),
     )
     briefbot_db_path: Optional[str] = Field(
@@ -64,6 +83,14 @@ class Settings(BaseSettings):
     # ── Tool paths (machine-local, vary per install — live in .env) ──────────
     ghidra_home: Optional[str] = Field(
         default=None, validation_alias=env_alias("GHIDRA_HOME"),
+    )
+
+    # ── Centralized data directory ────────────────────────────────────────────
+    # All runtime data (sessions, RAG vectors, artifact store, Ghidra projects,
+    # tool analysis outputs) live under this directory. Defaults to ~/.arc/.
+    # Override with ARC_HOME=/custom/path in .env to use a different location.
+    arc_home: Optional[str] = Field(
+        default=None, validation_alias=env_alias("ARC_HOME"),
     )
 
     # ── Deprecated env overrides (kept for backwards compat, config.yml wins) ─

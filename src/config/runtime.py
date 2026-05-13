@@ -7,7 +7,11 @@ class PlanningConfig:
     enabled: bool
     model: str | None
     max_steps: int
-    retry_on_invalid: bool
+    retry_on_invalid: bool  # deprecated — parse-retry policy now lives in stages
+    # How many times a stage (PlanningStage / CouncilStage) may retry after a
+    # parse failure before returning StageStatus.RETRY to the pipeline.
+    # Default 1 reproduces the old Planner-internal "retry once" behavior.
+    max_parse_retries: int = 1
 
 
 @dataclass

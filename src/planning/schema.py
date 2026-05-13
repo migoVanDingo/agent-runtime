@@ -2,6 +2,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
+# StepRuntimeState and StepFlags live in runtime/run_state.py (the runtime owns
+# their lifecycle).  Re-exported here so existing imports from planning.schema
+# continue to work without changes.
+from runtime.run_state import StepRuntimeState, StepFlags  # noqa: F401 — re-export
+
 # JSON schema for structured output enforcement (OpenAI response_format).
 # Keeps the revision/planning loop from producing structurally invalid JSON.
 PLAN_JSON_SCHEMA = {
@@ -73,35 +78,6 @@ class StepStatus(str, Enum):
     ERROR = "error"
 
 
-@dataclass
-class StepRuntimeState:
-    """Runtime-managed state for a step. Never set by the planner or skills.
-
-    The execution stage and monitor mutate these as the step runs.
-    """
-    retry_count: int = 0
-    deferred: bool = False
-    skipped: bool = False
-
-    def to_dict(self) -> dict:
-        return {
-            "retry_count": self.retry_count,
-            "deferred": self.deferred,
-            "skipped": self.skipped,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "StepRuntimeState":
-        return cls(
-            retry_count=data.get("retry_count", 0),
-            deferred=data.get("deferred", False),
-            skipped=data.get("skipped", False),
-        )
-
-
-# Alias kept for compatibility with any remaining callers.
-StepFlags = StepRuntimeState
-
 
 @dataclass
 class Step:
@@ -124,6 +100,8 @@ class Step:
     flags: StepRuntimeState = field(default_factory=StepRuntimeState)
 
     def to_dict(self) -> dict:
+        # flags is runtime state, not part of the plan JSON contract.
+        # It is intentionally omitted so serialized plans remain planner-only data.
         return {
             "step": self.step,
             "description": self.description,
@@ -133,11 +111,14 @@ class Step:
             "status": self.status.value,
             "result": self.result,
             "error": self.error,
-            "flags": self.flags.to_dict(),
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> Step:
+        # flags is runtime-only; it is never serialized into plan JSON (see to_dict).
+        # If a stale payload happens to include a "flags" key, we ignore it and
+        # always start with a fresh StepRuntimeState() so the planner cannot
+        # smuggle runtime state into the execution engine.
         return cls(
             step=data["step"],
             description=data["description"],
@@ -147,7 +128,6 @@ class Step:
             status=StepStatus(data.get("status", StepStatus.PENDING)),
             result=data.get("result"),
             error=data.get("error"),
-            flags=StepFlags.from_dict(data.get("flags", {})),
         )
 
 

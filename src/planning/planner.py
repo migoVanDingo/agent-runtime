@@ -1,4 +1,7 @@
 import platform
+from dataclasses import dataclass
+from typing import Union
+
 from runtime.json_extract import extract_json
 from messenger import Messenger
 from providers.base import BaseProvider, TextBlock
@@ -9,6 +12,23 @@ from app_config import config
 from logger import get_logger
 
 logger = get_logger(__name__)
+
+
+@dataclass
+class PlanParseFailure:
+    """Returned by Planner.plan / Planner.revise when the model output could not
+    be parsed into a Plan.  The calling stage (PlanningStage / CouncilStage)
+    decides whether to retry — the planner itself makes no retry decision.
+
+    Per 0079 / 0086: whether and when to re-attempt a failed sub-operation is
+    a runtime decision, so the planner returns data and the stage acts on it.
+    """
+    error: str        # parser error message — passed back as schema_correction_hint on retry
+    raw_output: str = ""  # the model's raw text response (for logging / debugging)
+
+
+# Union type alias for Planner.plan / Planner.revise return values.
+PlanResult = Union[Plan, PlanParseFailure]
 
 
 def _platform_note() -> str:
@@ -56,7 +76,14 @@ class Planner:
         context: str | None = None,
         messages: list[dict] | None = None,
         skill_hint: str | None = None,
-    ) -> Plan | None:
+        schema_correction_hint: str | None = None,
+    ) -> PlanResult:
+        """Call the LLM once and return either a parsed Plan or a PlanParseFailure.
+
+        The caller (PlanningStage) is responsible for retry decisions.  Pass the
+        previous PlanParseFailure.error back as schema_correction_hint to give the
+        model a concrete parse-error message on the retry attempt.
+        """
         messenger = Messenger()
 
         system = self._build_system_prompt()
@@ -87,6 +114,14 @@ class Planner:
                 f"may be relevant. Use it as tool='skill:{skill_hint}' on a step "
                 f"if and only if it actually fits the request."
             )
+        # When the stage is retrying after a parse failure it passes the parser
+        # error as a correction hint so the model knows what to fix.
+        if schema_correction_hint is not None:
+            user_turn = (
+                f"[Schema correction required] The previous response could not be "
+                f"parsed: {schema_correction_hint}\n"
+                f"Return ONLY the raw JSON object, nothing else.\n\n"
+            ) + user_turn
 
         messenger.add_user_message(user_turn)
 
@@ -99,46 +134,34 @@ class Planner:
             context="plan",
         )
         if response is None:
-            logger.info("Planner: provider call failed — falling back to direct execution")
-            return None
+            logger.info("Planner: provider call failed")
+            return PlanParseFailure(error="provider call failed", raw_output="")
 
         raw = next(
             (b.text for b in response.content if isinstance(b, TextBlock)), ""
         )
         plan = self._parse(raw)
 
-        if plan is None and config.planning.retry_on_invalid:
-            logger.info("Planner: invalid response — retrying once")
-            messenger.add_assistant_message(response.content)
-            messenger.add_user_message(
-                "Your response was not valid JSON or did not match the required schema. "
-                "Try again. Return ONLY the raw JSON object, nothing else."
-            )
-            response = self._safe_chat(
-                messages=messenger.get_messages(),
-                tools=[],
-                system=system,
-                json_schema=PLAN_JSON_SCHEMA,
-                label="Planner",
-                context="plan retry",
-            )
-            if response is None:
-                logger.info("Planner: retry provider call failed — falling back to direct execution")
-                return None
-            raw = next(
-                (b.text for b in response.content if isinstance(b, TextBlock)), ""
-            )
-            plan = self._parse(raw)
-
         if plan is None:
-            logger.info("Planner: falling back to direct execution")
-            return None
+            error_msg = "response was not valid JSON or did not match the required schema"
+            logger.info(f"Planner: {error_msg}")
+            return PlanParseFailure(error=error_msg, raw_output=raw)
 
         plan.original_query = user_message
         return plan
 
-    def revise(self, plan: Plan, challenges_text: str) -> Plan | None:
-        """Revise a plan in response to critic challenges. Returns revised plan or None."""
+    def revise(
+        self,
+        plan: Plan,
+        challenges_text: str,
+        schema_correction_hint: str | None = None,
+    ) -> PlanResult:
+        """Revise a plan in response to critic challenges.
+
+        Returns a Plan on success or PlanParseFailure on parse error.
+        The caller (CouncilStage) is responsible for retry decisions.  Pass the
+        previous PlanParseFailure.error back as schema_correction_hint on retry.
+        """
         messenger = Messenger()
         system = self._build_system_prompt()
 
@@ -162,6 +185,14 @@ class Planner:
             + _platform_note() +
             f"\nReturn a revised plan as JSON. Same format as before."
         )
+        # When the stage is retrying after a parse failure it passes the parser
+        # error as a correction hint so the model knows what to fix.
+        if schema_correction_hint is not None:
+            user_turn = (
+                f"[Schema correction required] The previous response could not be "
+                f"parsed: {schema_correction_hint}\n"
+                f"Return ONLY the raw JSON plan object, nothing else.\n\n"
+            ) + user_turn
 
         messenger.add_user_message(user_turn)
 
@@ -175,40 +206,17 @@ class Planner:
         )
         if response is None:
             logger.info("Planner.revise: provider call failed")
-            return None
+            return PlanParseFailure(error="provider call failed", raw_output="")
 
         raw = next(
             (b.text for b in response.content if isinstance(b, TextBlock)), ""
         )
-
         revised = self._parse(raw)
-        if revised is None:
-            # Retry once with feedback
-            logger.info("Planner.revise: invalid response — retrying once")
-            messenger.add_assistant_message(response.content)
-            messenger.add_user_message(
-                "Your response was not valid JSON or was missing required fields. "
-                "Return ONLY the raw JSON plan object, nothing else."
-            )
-            response = self._safe_chat(
-                messages=messenger.get_messages(),
-                tools=[],
-                system=system,
-                json_schema=PLAN_JSON_SCHEMA,
-                label="Planner",
-                context="revise retry",
-            )
-            if response is None:
-                logger.info("Planner.revise: retry provider call failed")
-                return None
-            raw = next(
-                (b.text for b in response.content if isinstance(b, TextBlock)), ""
-            )
-            revised = self._parse(raw)
 
         if revised is None:
-            logger.info("Planner.revise: failed to produce valid revised plan after retry")
-            return None
+            error_msg = "response was not valid JSON or was missing required fields"
+            logger.info(f"Planner.revise: {error_msg}")
+            return PlanParseFailure(error=error_msg, raw_output=raw)
 
         revised.original_query = plan.original_query
         logger.info(f"Planner.revise: revised plan has {len(revised.steps)} steps")

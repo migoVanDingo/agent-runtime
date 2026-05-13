@@ -98,30 +98,32 @@ class DynamicAnalysis(Skill):
                  description=(
                      f"Decompile ONLY the main cipher or processing function of {binary_ref} "
                      f"using ghidra_decompile with the 'function' argument set to the target "
-                     f"function name or address identified in the previous step. "
+                     f"function name or address identified by ghidra_functions. "
                      f"Do NOT decompile all functions — just the one cipher/processing function. "
                      f"Goal: identify the inner loop address for LLDB breakpoints."
                  ),
                  action_type=ActionType.REVERSING, tool="ghidra_decompile"),
         ]
 
-        # Phase 2: Dynamic traces — two inputs for differential analysis
+        # Phase 2: Dynamic traces — two inputs for differential analysis (trace_a / trace_b).
+        # Semantic tags "trace_a" / "trace_b" identify the traces by input, not by position,
+        # so the step descriptions remain valid if the runtime drops or reorders steps.
         input1, input2 = self._pick_trace_inputs(oracle)
         trace_steps = [
             Step(step=n + 3,
                  description=(
-                     f"Trace the binary {binary_ref} with lldb_trace using args {input1}. "
+                     f"Trace the binary {binary_ref} with lldb_trace using args {input1} (trace_a). "
                      f"Set breakpoints at: (1) the entry point or main function, "
                      f"(2) the cipher function entry identified from ghidra_functions. "
                      f"Capture registers rax, rbx, rcx, rdx, rdi, rsi, r8, r9, r10, r11, r12, r13, r14, r15. "
-                     f"This is trace #1 — record all register values at each breakpoint hit."
+                     f"Record all register values at each breakpoint hit."
                  ),
                  action_type=ActionType.REVERSING, tool="lldb_trace"),
             Step(step=n + 4,
                  description=(
-                     f"Trace {binary_ref} again with lldb_trace using args {input2}. "
-                     f"Use the SAME breakpoints as trace #1. "
-                     f"This is trace #2 — compare with trace #1: "
+                     f"Trace {binary_ref} again with lldb_trace using args {input2} (trace_b). "
+                     f"Use the SAME breakpoints as trace_a. "
+                     f"Compare with trace_a: "
                      f"registers that differ = input/output data. "
                      f"Registers that are identical = key material, constants, or IV."
                  ),
@@ -150,10 +152,12 @@ class DynamicAnalysis(Skill):
             Step(step=synthesis_num,
                  description=(
                      f"{synthesis_desc}\n\n"
-                     f"Use the differential register analysis from steps {n+3} and {n+4} to "
+                     f"Use the differential register analysis from trace_a (args {input1}) "
+                     f"and trace_b (args {input2}) to "
                      f"identify: key material (same across both traces), plaintext/ciphertext "
                      f"(different), constants (same, non-key). "
-                     f"Use the step trace from step {n+5} to confirm exact operations per instruction. "
+                     f"Use the step trace (lldb_step on {binary_ref} with args {input1}) to "
+                     f"confirm exact operations per instruction. "
                      f"IMPORTANT: Build the implementation from observed register values, "
                      f"not from the Ghidra decompile."
                  ),

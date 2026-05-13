@@ -2,6 +2,10 @@
 
 Plan and Step (in planning/schema.py) are the planner's output — immutable spec.
 PlanRun and StepRun carry mutable execution state so spec and runtime are separate.
+
+Also owns StepRuntimeState / StepFlags — the per-step runtime flags (retry_count,
+deferred, skipped).  These belong here because the runtime, not the planner, owns
+their lifecycle.  planning/schema.py re-exports both names for backwards compat.
 """
 from __future__ import annotations
 
@@ -18,6 +22,38 @@ class StepStatus(str, Enum):
     RUNNING   = "running"
     COMPLETED = "completed"
     ERROR     = "error"
+
+
+@dataclass
+class StepRuntimeState:
+    """Runtime-managed state for a step. Never set by the planner or skills.
+
+    The execution stage and monitor mutate these as the step runs.
+    Defined here (runtime/run_state.py) because the runtime owns the lifecycle.
+    planning/schema.py re-exports this class for backwards-compatible imports.
+    """
+    retry_count: int = 0
+    deferred: bool = False
+    skipped: bool = False
+
+    def to_dict(self) -> dict:
+        return {
+            "retry_count": self.retry_count,
+            "deferred": self.deferred,
+            "skipped": self.skipped,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "StepRuntimeState":
+        return cls(
+            retry_count=data.get("retry_count", 0),
+            deferred=data.get("deferred", False),
+            skipped=data.get("skipped", False),
+        )
+
+
+# Alias kept for compatibility with any remaining callers.
+StepFlags = StepRuntimeState
 
 
 @dataclass

@@ -9,7 +9,7 @@ revision. If revision fails or is invalid: strips challenged steps.
 If all steps are stripped: ABORT (broken plan should not execute).
 """
 from __future__ import annotations
-from planning.planner import Planner
+from planning.planner import Planner, PlanParseFailure
 from planning.schema import Plan, ActionType
 from runtime.critic import PlanCritic
 from runtime.pipeline_context import PipelineContext
@@ -154,9 +154,22 @@ class CouncilStage(Stage):
             return StageResult(status=StageStatus.OK, updated_context=context)
 
         # Send challenges to planner for revision.
+        # Parse-failure retry policy lives here (per 0086b): the planner returns
+        # Plan | PlanParseFailure and the stage decides whether to retry.
         logger.info("  sending challenges to planner for revision")
         challenges_text = self._critic.format_challenges(critic_result)
-        revised = self._planner.revise(plan, challenges_text)
+        max_parse_retries = config.planning.max_parse_retries
+        hint: str | None = None
+        revise_outcome = None
+        for attempt in range(max_parse_retries + 1):
+            revise_outcome = self._planner.revise(plan, challenges_text, schema_correction_hint=hint)
+            if not isinstance(revise_outcome, PlanParseFailure):
+                break
+            logger.info(
+                f"  CouncilStage: revise parse failure on attempt {attempt + 1}: {revise_outcome.error}"
+            )
+            hint = revise_outcome.error
+        revised = None if isinstance(revise_outcome, PlanParseFailure) else revise_outcome
 
         if revised is not None:
             # Expand any skill: steps the revision introduced before validating.
@@ -175,7 +188,8 @@ class CouncilStage(Stage):
                 logger.info("  revised plan failed validation — stripping challenged steps")
                 plan = _strip_challenged_steps(plan, critic_result)
         else:
-            logger.info("  planner revision returned None — stripping challenged steps")
+            # Covers both provider failure and exhausted parse retries.
+            logger.info("  planner revision failed (parse failure or provider error) — stripping challenged steps")
             plan = _strip_challenged_steps(plan, critic_result)
 
         if plan is None:

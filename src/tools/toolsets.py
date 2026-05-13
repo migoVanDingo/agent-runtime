@@ -1,5 +1,13 @@
-import re
 from tools.toolset import Toolset
+from routing.toolset_patterns import (
+    ANALYSIS_PATTERN,
+    SEARCH_PATTERN,
+    GIT_PATTERN,
+    BRIEFBOT_PATTERN,
+    REVERSING_PATTERN,
+    SYMBOLIC_PATTERN,
+    CONTAINER_PATTERN,
+)
 from tools.implementations.file_io.read_file import ReadFileTool
 from tools.implementations.file_io.write_file import WriteFileTool
 from tools.implementations.file_io.list_files import ListFilesTool
@@ -161,13 +169,7 @@ ANALYSIS = Toolset(
         )),
         RoutingRule(
             toolset="analysis",
-            condition=lambda msg, _: bool(re.search(
-                r"\bwhat\s+(?:kind|type|sort)\s+of\s+(?:file|binary|program)\b"
-                r"|\bwhat\s+is\s+this\s+(?:file|binary|program)\b"
-                r"|\bfile\s+type\b"
-                r"|\bwhat(?:'s|'s| is)\s+(?:the\s+)?(?:file\s+)?(?:type|format|architecture)\b",
-                msg, re.IGNORECASE,
-            )),
+            condition=lambda msg, _: bool(ANALYSIS_PATTERN.search(msg)),
         ),
         RoutingRule(toolset="analysis", condition=last_tools_were(
             "strings", "objdump", "hexdump", "nm", "readelf",
@@ -296,13 +298,7 @@ SEARCH = Toolset(
         )),
         RoutingRule(
             toolset="search",
-            condition=lambda msg, _: bool(re.search(
-                r"\bsearch\s+(?:the\s+)?(?:web|internet|online)\b"
-                r"|\bfind\s+(?:me\s+)?(?:information|articles|images|news)\b"
-                r"|\bwhat(?:'s|'s| is)\s+(?:the\s+)?(?:latest|current)\b"
-                r"|\blook\s+(?:it\s+)?up\b",
-                msg, re.IGNORECASE,
-            )),
+            condition=lambda msg, _: bool(SEARCH_PATTERN.search(msg)),
         ),
     ],
 )
@@ -337,11 +333,7 @@ GIT = Toolset(
         )),
         RoutingRule(
             toolset="git",
-            condition=lambda msg, _: bool(re.search(
-                r"\bgit\s+\w+\b|\bcommit\s+history\b|\bworking\s+tree\b"
-                r"|\bwho\s+(?:wrote|added|changed|modified)\b",
-                msg, re.IGNORECASE,
-            )),
+            condition=lambda msg, _: bool(GIT_PATTERN.search(msg)),
         ),
     ],
 )
@@ -408,13 +400,7 @@ BRIEFBOT = Toolset(
         )),
         RoutingRule(
             toolset="briefbot",
-            condition=lambda msg, _: bool(re.search(
-                r"\b(?:find|search\s+for|look\s+for)\s+(?:research\s+)?papers?\b"
-                r"|\bwhat(?:'s|'s| is)\s+(?:trending|hot|new)\s+in\b"
-                r"|\brecent\s+(?:papers?|research|articles?)\s+(?:on|about)\b"
-                r"|\blatest\s+(?:research|papers?|developments?)\s+(?:on|in|about)\b",
-                msg, re.IGNORECASE,
-            )),
+            condition=lambda msg, _: bool(BRIEFBOT_PATTERN.search(msg)),
         ),
     ],
 )
@@ -467,14 +453,7 @@ REVERSING = Toolset(
         )),
         RoutingRule(
             toolset="reversing",
-            condition=lambda msg, _: bool(re.search(
-                r"\bwhat\s+functions?\s+(?:exist|are|does)\b"
-                r"|\bhow\s+does\s+\w+\s+call\b"
-                r"|\bcall\s+(?:graph|chain|tree)\b"
-                r"|\bdecompil(?:e|ed|ing)\b"
-                r"|\bfunction\s+(?:list|inventory|map)\b",
-                msg, re.IGNORECASE,
-            )),
+            condition=lambda msg, _: bool(REVERSING_PATTERN.search(msg)),
         ),
     ],
 )
@@ -507,14 +486,7 @@ SYMBOLIC = Toolset(
         )),
         RoutingRule(
             toolset="symbolic",
-            condition=lambda msg, _: bool(re.search(
-                r"\bcan\s+execution\s+reach\b"
-                r"|\bwhat\s+input\s+(?:reaches|triggers|causes)\b"
-                r"|\bsolve\s+(?:the\s+)?(?:password|key|checksum|crackme)\b"
-                r"|\bprove\s+(?:this|the)\s+buffer\b"
-                r"|\bfind\s+(?:an?\s+)?input\s+that\b",
-                msg, re.IGNORECASE,
-            )),
+            condition=lambda msg, _: bool(SYMBOLIC_PATTERN.search(msg)),
         ),
     ],
 )
@@ -547,13 +519,7 @@ CONTAINER = Toolset(
         )),
         RoutingRule(
             toolset="container",
-            condition=lambda msg, _: bool(re.search(
-                r"\biterate\s+on\s+(?:the\s+)?(?:code|source|clone|reconstruction)\b"
-                r"|\bverify\s+(?:the\s+)?reconstruction\b"
-                r"|\btest\s+(?:the\s+)?(?:clone|reconstruction)\s+against\b"
-                r"|\bdoes\s+\S+\s+match\s+(?:the\s+)?(?:original|binary)\b",
-                msg, re.IGNORECASE,
-            )),
+            condition=lambda msg, _: bool(CONTAINER_PATTERN.search(msg)),
         ),
     ],
 )

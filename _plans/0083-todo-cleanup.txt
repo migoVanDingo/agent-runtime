@@ -1,0 +1,6 @@
+src/ui/app.py:125:            # TODO(0083-cleanup): call store.load_conversation(session_id) and inject into agent.
+src/runtime/pipeline.py:105:            # TODO(0083-cleanup): consider formal injection mechanism for _service_checkpoint.
+src/runtime/tool_loop.py:141:            # TODO(0083-cleanup): remove spinner kwarg from ToolLoop / stages.
+src/runtime/pipeline_context.py:84:    # TODO(0083-cleanup): consider a more formal injection mechanism.
+src/service/inprocess.py:40:    TODO(0083-cleanup): Remove spinner from stage signatures entirely.
+src/service/inprocess.py:186:        # TODO(0083-cleanup): remove spinner from stage signatures entirely.

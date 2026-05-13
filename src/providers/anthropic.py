@@ -108,6 +108,8 @@ class AnthropicProvider(BaseProvider):
             usage = TokenUsage(
                 input_tokens=response.usage.input_tokens,
                 output_tokens=response.usage.output_tokens,
+                cache_input_tokens=getattr(response.usage, "cache_read_input_tokens", None),
+                cache_creation_tokens=getattr(response.usage, "cache_creation_input_tokens", None),
             )
             get_tracker().record(self.model, label, usage.input_tokens, usage.output_tokens)
 
@@ -127,6 +129,8 @@ class AnthropicProvider(BaseProvider):
             usage = TokenUsage(
                 input_tokens=response.usage.input_tokens,
                 output_tokens=response.usage.output_tokens,
+                cache_input_tokens=getattr(response.usage, "cache_read_input_tokens", None),
+                cache_creation_tokens=getattr(response.usage, "cache_creation_input_tokens", None),
             )
             get_tracker().record(self.model, label, usage.input_tokens, usage.output_tokens)
 

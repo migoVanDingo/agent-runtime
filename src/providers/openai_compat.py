@@ -70,9 +70,13 @@ class OpenAICompatibleProvider(BaseProvider):
         result = self._translate_response(response)
 
         if response.usage:
+            # OpenAI exposes cached_tokens via prompt_tokens_details when caching is active.
+            details = getattr(response.usage, "prompt_tokens_details", None)
+            cache_in = getattr(details, "cached_tokens", None) if details else None
             result.usage = TokenUsage(
                 input_tokens=response.usage.prompt_tokens,
                 output_tokens=response.usage.completion_tokens,
+                cache_input_tokens=cache_in,
             )
             get_tracker().record(self.model, label, result.usage.input_tokens, result.usage.output_tokens)
 

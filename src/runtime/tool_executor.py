@@ -8,6 +8,7 @@ controllers around it.
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,6 +32,26 @@ _NO_PAGE_TOOLS = frozenset({
 })
 
 
+# Detect error responses so they're never persisted as fake artifacts.
+# A short tool response that starts with "Error:" or "error" (case-insensitive
+# at line start) is almost certainly a failure, not analysis data.
+_ERROR_PATTERN = re.compile(r"^\s*(?:error|exception|traceback|failed)\b", re.IGNORECASE)
+
+
+def _looks_like_error(raw: str) -> bool:
+    """Return True if the tool output is a short error message that should not be paged.
+
+    Heuristics: starts with "Error:" / "Exception" / "Traceback" / "Failed" AND
+    is short enough to fit comfortably in context. Long stderr dumps (e.g. a
+    big traceback from a heavy tool) are still paged so the runtime can decide
+    what to do without context blowup, but a 95-byte "Error: GHIDRA_HOME not set"
+    must never become a permanent artifact.
+    """
+    if len(raw) > 4_000:
+        return False  # too long for inline; let it page even if it starts with "Error"
+    return bool(_ERROR_PATTERN.match(raw))
+
+
 def _maybe_page(tool, raw: str, tool_input: dict) -> str:
     """Write large tool output to an artifact file; return a short summary instead.
 
@@ -40,8 +61,17 @@ def _maybe_page(tool, raw: str, tool_input: dict) -> str:
 
     read_file / read_file_lines / read_url are never paged — their entire purpose
     is to bring content into context; paging them would swallow the content twice.
+
+    Error responses are NEVER paged — persisting an error as a "decompile artifact"
+    causes the agent to later read the error string and treat it as analysis data.
+    Errors must surface up to the monitor for the runtime to decide on retry/replan.
     """
     if getattr(tool, "name", "") in _NO_PAGE_TOOLS:
+        return raw
+    # Never persist error responses as artifacts. A short error string from a
+    # HEAVY tool would otherwise be written to disk as e.g. ghidra_decompile.txt
+    # and the agent would re-read it expecting real decompile output.
+    if _looks_like_error(raw):
         return raw
     if getattr(tool, "weight", ToolWeight.MODERATE) != ToolWeight.HEAVY and len(raw) <= _PAGE_THRESHOLD_CHARS:
         return raw
@@ -117,17 +147,19 @@ class ToolCallExecutor:
         # fall back to process-level identity for calls outside the pipeline.
         base = parent_identity if parent_identity is not None else get_runtime_identity()
         identity = base.for_tool_call()
-        get_event_bus().emit(
-            RuntimeEvent(
-                "tool.call.started",
-                identity,
-                payload={
-                    "tool_name": tool_name,
-                    "input_preview": str(tool_input)[:500],
-                },
-                stage="ToolCallExecutor",
-            )
+        started = RuntimeEvent(
+            "tool.call.started",
+            identity,
+            payload={
+                "tool_name": tool_name,
+                "tool_call_id": identity.tool_call_id,
+                "input_preview": str(tool_input)[:500],
+            },
+            content={"input": tool_input},
+            stage="ToolCallExecutor",
         )
+        get_event_bus().emit(started)
+        t0 = time.monotonic()
         guard_decision, guard_reason = self._guard.check_tool_call(tool_name, tool_input)
         get_event_bus().emit(
             RuntimeEvent(
@@ -147,7 +179,7 @@ class ToolCallExecutor:
                 f"Tool call blocked by safety policy: {guard_reason}",
                 error_code="policy_blocked",
             )
-            self._emit_completed(identity, tool_name, result)
+            self._emit_completed(identity, tool_name, result, started.event_id, t0)
             return ToolExecutionOutcome(
                 result=result,
                 guard_decision=guard_decision,
@@ -169,7 +201,7 @@ class ToolCallExecutor:
                     f"Tool call denied by user: {guard_reason}",
                     error_code="policy_denied",
                 )
-            self._emit_completed(identity, tool_name, result)
+            self._emit_completed(identity, tool_name, result, started.event_id, t0)
             return ToolExecutionOutcome(
                 result=result,
                 guard_decision=guard_decision,
@@ -177,7 +209,7 @@ class ToolCallExecutor:
             )
 
         result = self._safe_execute(tool_name, tool_input)
-        self._emit_completed(identity, tool_name, result)
+        self._emit_completed(identity, tool_name, result, started.event_id, t0)
         return ToolExecutionOutcome(
             result=result,
             guard_decision=guard_decision,
@@ -202,18 +234,34 @@ class ToolCallExecutor:
                 error_code="tool_not_found",
             )
 
-    def _emit_completed(self, identity, tool_name: str, result: ToolResult) -> None:
+    def _emit_completed(
+        self,
+        identity,
+        tool_name: str,
+        result: ToolResult,
+        parent_event_id: str,
+        t0: float,
+    ) -> None:
+        duration_ms = int((time.monotonic() - t0) * 1000)
         get_event_bus().emit(
             RuntimeEvent(
                 "tool.call.completed",
                 identity,
                 payload={
                     "tool_name": tool_name,
+                    "tool_call_id": identity.tool_call_id,
                     "ok": result.ok,
                     "error_code": result.error_code,
                     "result_preview": result.content[:500],
                     "result_bytes": len(result.content.encode(errors="replace")),
                 },
+                content={
+                    "output": result.content,
+                    "output_bytes": len(result.content.encode(errors="replace")),
+                },
                 stage="ToolCallExecutor",
+                parent_event_id=parent_event_id,
+                duration_ms=duration_ms,
+                severity="info" if result.ok else "error",
             )
         )

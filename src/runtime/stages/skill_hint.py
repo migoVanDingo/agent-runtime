@@ -36,11 +36,27 @@ class SkillHintStage(Stage):
         logger.info(banner("Skill hint"))
         descriptions = self._registry.descriptions()
         chosen = self._selector.select(context.user_message, descriptions)
-        if chosen and self._registry.get(chosen) is not None:
+        valid = bool(chosen and self._registry.get(chosen) is not None)
+        if valid:
             logger.info(f"  hint: '{chosen}' (advisory; planner may override)")
             context.skill_hint = chosen
         else:
             logger.info("  hint: none")
             context.skill_hint = None
+
+        try:
+            from runtime.events import RuntimeEvent, get_event_bus, get_runtime_identity
+            get_event_bus().emit(RuntimeEvent(
+                "skill.match.evaluated",
+                get_runtime_identity(),
+                payload={
+                    "chosen": chosen if valid else None,
+                    "n_candidates": len(descriptions),
+                    "candidate_names": list(descriptions.keys()) if isinstance(descriptions, dict) else [],
+                },
+                stage="SkillHintStage",
+            ))
+        except Exception:
+            pass
 
         return StageResult(status=StageStatus.OK, updated_context=context)

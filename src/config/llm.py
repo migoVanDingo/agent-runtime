@@ -11,3 +11,5 @@ class LLMConfig:
     # Runtime LLM (classifier, monitor, importance, council)
     runtime_provider: str | None = None
     runtime_model: str | None = None
+    # Sampling temperature (telemetry-exposed; providers may ignore if unset).
+    temperature: float | None = None

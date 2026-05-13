@@ -185,6 +185,7 @@ class Agent:
         logger.info(f"  {user_message}")
 
         self.messenger.add_user_message(user_message)
+        _emit_conversation_message("user", user_message)
         self.spinner.start("Thinking...")
 
         # ── Persistence: open session ──────────────────────────────────
@@ -201,7 +202,12 @@ class Agent:
             on_token=on_token,
             _pause_check=checkpoint_fn,
         )
-        response = self._pipeline.run(context)
+        try:
+            response = self._pipeline.run(context)
+        except Exception as exc:
+            _emit_error_event(exc, where="agent.call")
+            self.spinner.stop()
+            raise
         self.spinner.stop()
 
         # ── Persistence: close session ─────────────────────────────────
@@ -222,4 +228,53 @@ class Agent:
         logger.info(banner("Assistant"))
         logger.info(f"  {response}")
         self._last_response = response
+        _emit_conversation_message("assistant", response)
         return response
+
+
+def _emit_error_event(exc: BaseException, *, where: str) -> None:
+    """Emit a structured error event for any exception that escapes a turn."""
+    try:
+        import traceback as _tb
+        from runtime.events import RuntimeEvent, get_event_bus, get_runtime_identity
+        get_event_bus().emit(RuntimeEvent(
+            "error.raised",
+            get_runtime_identity(),
+            payload={
+                "error_type": type(exc).__name__,
+                "error_message": str(exc)[:1000],
+                "where": where,
+            },
+            content={"traceback": _tb.format_exc()},
+            severity="error",
+            stage="Agent",
+        ))
+    except Exception:
+        pass
+
+
+def _emit_conversation_message(role: str, content) -> None:
+    """Emit conversation.message.added for the user-visible message stream.
+
+    Internal LLM-call Messengers (council, continuation judge, etc.) do not
+    emit — only the top-level agent conversation does.
+    """
+    try:
+        import json as _json
+        from runtime.events import RuntimeEvent, get_event_bus, get_runtime_identity
+        try:
+            text_length = len(content) if isinstance(content, str) else len(_json.dumps(content, default=str))
+        except Exception:
+            text_length = 0
+        get_event_bus().emit(RuntimeEvent(
+            "conversation.message.added",
+            get_runtime_identity(),
+            payload={
+                "role": role,
+                "content_text_length": text_length,
+            },
+            content={"role": role, "content": content},
+            stage="Agent",
+        ))
+    except Exception:
+        pass

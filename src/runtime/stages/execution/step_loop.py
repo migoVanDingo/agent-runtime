@@ -217,6 +217,20 @@ def apply_decision(
                 stage="ExecutionStage",
             ))
         _handle_replan(state, plan, step, assessment, planner, skill_expansion, db_session_id)
+        # Emit the full new plan after a successful replan so analysts can
+        # diff plan versions across the same turn.
+        if identity is not None:
+            get_event_bus().emit(RuntimeEvent(
+                "plan.replanned",
+                identity,
+                payload={
+                    "replan_count": state.replan_count,
+                    "n_steps": len(plan.steps),
+                    "reason": assessment.reason,
+                },
+                content={"plan": plan.to_dict()},
+                stage="ExecutionStage",
+            ))
 
     elif decision == StepDecision.DEFER:
         _handle_defer(state, plan, step)

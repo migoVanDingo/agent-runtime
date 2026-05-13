@@ -162,6 +162,7 @@ class ExecutionStage(Stage):
                 _identity,
                 payload={"n_steps": len(plan.steps),
                          "action_types": list({s.action_type.value for s in plan.steps})},
+                content={"plan": plan.to_dict()},
                 stage="ExecutionStage",
             ))
 

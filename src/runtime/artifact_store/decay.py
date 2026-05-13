@@ -77,5 +77,11 @@ class _DecayMixin:
                 self.set_tag(row["key"], "archived", "1")
                 archived.append(row["key"])
         self._conn.commit()
+        if archived:
+            from runtime.artifact_store.crud import _emit_artifact_event
+            _emit_artifact_event(
+                "artifact.decay.applied",
+                payload={"n_archived": len(archived), "factor": factor, "threshold": threshold},
+            )
         return archived
 

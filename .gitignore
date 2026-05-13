@@ -9,7 +9,7 @@ _references
 _tests
 src/arc.egg*
 _store/
-
+.arc
 _rag
 _sessions
 data

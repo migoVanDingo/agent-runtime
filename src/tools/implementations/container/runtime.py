@@ -119,7 +119,7 @@ class ContainerSession:
         start = time.monotonic()
         try:
             result = subprocess.run(cmd, capture_output=True, timeout=timeout)
-            return ContainerResult(
+            container_result = ContainerResult(
                 stdout=result.stdout,
                 stderr=result.stderr,
                 exit_code=result.returncode,
@@ -127,7 +127,22 @@ class ContainerSession:
                 duration_ms=int((time.monotonic() - start) * 1000),
                 runtime=cmd[0],
             )
+            # 137 = SIGKILL (commonly OOM under Docker); 124 = coreutils timeout
+            if result.returncode in (137, 124):
+                _emit_resource_limit(
+                    resource="memory" if result.returncode == 137 else "timeout",
+                    runtime=cmd[0],
+                    exit_code=result.returncode,
+                    observed=timeout,
+                )
+            return container_result
         except subprocess.TimeoutExpired as e:
+            _emit_resource_limit(
+                resource="timeout",
+                runtime=cmd[0],
+                exit_code=None,
+                observed=timeout,
+            )
             return ContainerResult(
                 stdout=e.stdout or b"",
                 stderr=e.stderr or b"",
@@ -136,3 +151,23 @@ class ContainerSession:
                 duration_ms=int((time.monotonic() - start) * 1000),
                 runtime=cmd[0],
             )
+
+
+def _emit_resource_limit(*, resource: str, runtime: str, exit_code: int | None, observed: float | None) -> None:
+    """Best-effort emit: never raise from container telemetry."""
+    try:
+        from runtime.events import RuntimeEvent, get_event_bus, get_runtime_identity
+        get_event_bus().emit(RuntimeEvent(
+            "tool.call.resource_limit",
+            get_runtime_identity(),
+            payload={
+                "resource": resource,
+                "container_runtime": runtime,
+                "exit_code": exit_code,
+                "observed": observed,
+            },
+            severity="warn",
+            stage="ContainerSession",
+        ))
+    except Exception:
+        pass

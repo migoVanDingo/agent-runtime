@@ -8,6 +8,21 @@ from runtime.artifact_store.schema_sql import _serialize, _deserialize, _summary
 from logger import get_logger
 logger = get_logger(__name__)
 
+
+def _emit_artifact_event(event_type: str, *, payload: dict) -> None:
+    """Best-effort artifact telemetry — never raise."""
+    try:
+        from runtime.events import RuntimeEvent, get_event_bus, get_runtime_identity
+        get_event_bus().emit(RuntimeEvent(
+            event_type,
+            get_runtime_identity(),
+            payload=payload,
+            stage="ArtifactStore",
+        ))
+    except Exception:
+        pass
+
+
 class _CRUDMixin:
 
     def flush(self) -> None:
@@ -158,6 +173,16 @@ class _CRUDMixin:
             except Exception:
                 pass
 
+        _emit_artifact_event(
+            "artifact.stored",
+            payload={
+                "key": key,
+                "kind": kind,
+                "summary_preview": (meta.summary or "")[:200],
+                "stored_inline": has_value,
+                "has_data_path": has_data_path,
+            },
+        )
         return meta
 
     def get(self, key: str) -> Any | None:
@@ -167,6 +192,7 @@ class _CRUDMixin:
                 m.last_accessed = time.time()
                 m.access_count += 1
                 self._dirty.add(key)
+            _emit_artifact_event("artifact.read", payload={"key": key, "cache_hit": True})
             return self._cache[key]
 
         row = self._conn.execute(
@@ -203,6 +229,7 @@ class _CRUDMixin:
             (now, key),
         )
         self._conn.commit()
+        _emit_artifact_event("artifact.read", payload={"key": key, "cache_hit": False})
         return value
 
     def meta(self, key: str) -> ArtifactMeta | None:
@@ -280,6 +307,7 @@ class _CRUDMixin:
         self._conn.execute("DELETE FROM artifacts WHERE key = ?", (key,))
         self._conn.execute("DELETE FROM artifact_tags WHERE key = ?", (key,))
         self._conn.commit()
+        _emit_artifact_event("artifact.expelled", payload={"key": key})
         return True
 
     def expel_pattern(self, pattern: str) -> list[str]:

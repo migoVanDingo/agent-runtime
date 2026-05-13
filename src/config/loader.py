@@ -141,6 +141,9 @@ def load_config() -> AppConfig:
             raw_payloads=events_raw.get("raw_payloads", False),
             redact_on_emit=events_raw.get("redact_on_emit", False),
             redact_on_export=events_raw.get("redact_on_export", True),
+            blobs_enabled=events_raw.get("blobs_enabled", True),
+            blob_inline_threshold_bytes=int(events_raw.get("blob_inline_threshold_bytes", 4096)),
+            redact_blobs=events_raw.get("redact_blobs", True),
         ),
         sandbox=SandboxConfig(
             backend=sandbox_raw.get("backend", "host"),

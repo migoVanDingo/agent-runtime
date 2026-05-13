@@ -135,15 +135,13 @@ class DeepDisassembly(Skill):
 
         read_num = n + 8
         synthesis_num = n + 9
+        from session_paths import virtual_analysis_path
+        decompile_path = virtual_analysis_path(target, "ghidra_decompile.txt")
         read_step = Step(
             step=read_num,
             description=(
-                f"Read the Ghidra decompile artifact for {target} using read_file. "
-                f"Check the analysis manifest in the system prompt for the exact path — "
-                f"it will be under _analysis/<binary_name>/ghidra_decompile.txt. "
-                f"If {basename} is the binary name, the path is _analysis/{basename}/ghidra_decompile.txt. "
-                f"Read whichever ghidra_decompile.txt exists in _analysis/. "
-                f"Do NOT skip this step — the decompile must be in context for synthesis."
+                f"Read {decompile_path} using read_file. "
+                f"The decompile output must be in context for synthesis — do not skip."
             ),
             action_type=ActionType.ANALYSIS,
             tool="read_file",

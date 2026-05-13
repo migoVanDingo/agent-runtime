@@ -28,6 +28,15 @@ logger = get_logger(__name__)
 T = TypeVar("T")
 
 
+def _summarize_vote(adapter, parsed) -> dict:
+    """Best-effort vote summary for telemetry — never raises."""
+    try:
+        result = adapter.summarize_decision(parsed)
+        return result if isinstance(result, dict) else {"value": str(result)[:200]}
+    except Exception:
+        return {"value": str(parsed)[:200]}
+
+
 # ── Data types ──────────────────────────────────────────────────────────────
 
 @dataclass
@@ -266,7 +275,24 @@ class Council(Generic[T]):
         identity = getattr(self, "_identity", None)
         if identity is not None:
             from runtime.events import RuntimeEvent, get_event_bus
-            get_event_bus().emit(RuntimeEvent(
+            bus = get_event_bus()
+            # One event per councillor — keeps the vote auditable without
+            # ballooning JSONL with full raw responses (those go in the blob).
+            for d in clean_decisions:
+                bus.emit(RuntimeEvent(
+                    "council.councillor.responded",
+                    identity,
+                    payload={
+                        "label": d.label,
+                        "round_number": round_number,
+                        "vote": _summarize_vote(self.adapter, d.parsed),
+                    },
+                    content={"raw_response": d.raw_response},
+                    stage="Council",
+                    provider=d.provider,
+                    model=d.model,
+                ))
+            bus.emit(RuntimeEvent(
                 "council.round.completed",
                 identity,
                 payload={"round_number": round_number, "converged": converged,

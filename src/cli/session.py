@@ -110,6 +110,12 @@ def finalize_session(session_id: str, agent: "Agent | None", store_enabled: bool
             stage="main",
         )
     )
+    # Aggregate the session's events into a one-shot summary file.
+    try:
+        from runtime.events.summary import write_session_summary
+        write_session_summary(session_id, outcome="completed")
+    except Exception as e:
+        logger.warning(f"session summary write skipped: {e}")
     _shutdown_jvm_if_running()
     # print_session_end is imported lazily to avoid circular dependency
     from main import print_session_end

@@ -6,6 +6,8 @@ and assigning fidelity levels (FULL / COMPRESSED / PLACEHOLDER).
 """
 from __future__ import annotations
 
+import time
+
 from runtime.schema import Importance
 from runtime.context.scoring import score_messages, message_text, estimate_tokens
 from runtime.context.fidelity import assign_fidelity
@@ -74,7 +76,31 @@ class ContextManager:
             return messages
 
         total = sum(estimate_tokens(message_text(m)) for m in messages)
+        bus, identity = _bus_and_identity()
+        t0 = time.monotonic()
+        if bus is not None:
+            bus.emit(_pack_event(
+                "context.pack.started", identity,
+                payload={
+                    "n_messages_in": len(messages),
+                    "input_token_estimate": total,
+                    "budget": self._budget,
+                    "plan_start_index": plan_start_index,
+                    "over_budget": total > self._budget,
+                },
+            ))
+
         if total <= self._budget:
+            if bus is not None:
+                bus.emit(_pack_event(
+                    "context.pack.completed", identity,
+                    payload={
+                        "n_messages_out": len(messages),
+                        "output_token_estimate": total,
+                        "packed": False,
+                    },
+                    duration_ms=int((time.monotonic() - t0) * 1000),
+                ))
             return messages
 
         logger.info(f"  context_manager: {total} tokens est. > budget {self._budget} — packing")
@@ -105,4 +131,36 @@ class ContextManager:
             fidelity_counts[s.fidelity.value] = fidelity_counts.get(s.fidelity.value, 0) + 1
         logger.info(f"  context_manager: packed to {packed_total} tokens — {fidelity_counts}")
 
+        if bus is not None:
+            bus.emit(_pack_event(
+                "context.pack.completed", identity,
+                payload={
+                    "n_messages_out": len(packed),
+                    "output_token_estimate": packed_total,
+                    "fidelity_counts": fidelity_counts,
+                    "n_dropped": len(scored) - len(packed),
+                    "packed": True,
+                },
+                duration_ms=int((time.monotonic() - t0) * 1000),
+            ))
+
         return [s.message for s in packed]
+
+
+def _bus_and_identity():
+    try:
+        from runtime.events import get_event_bus, get_runtime_identity
+        return get_event_bus(), get_runtime_identity()
+    except Exception:
+        return None, None
+
+
+def _pack_event(event_type, identity, *, payload, duration_ms=None):
+    from runtime.events import RuntimeEvent
+    return RuntimeEvent(
+        event_type,
+        identity,
+        payload=payload,
+        stage="ContextManager",
+        duration_ms=duration_ms,
+    )

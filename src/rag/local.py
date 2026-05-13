@@ -139,6 +139,10 @@ class LocalRagService(RagService):
                 })
             tbl.add(rows)
             logger.info(f"  rag: indexed {len(chunks)} chunks for session {session_id}")
+            _emit_rag_event(
+                "rag.index.updated",
+                payload={"session_id": session_id, "n_chunks": len(chunks)},
+            )
         except Exception as e:
             logger.warning(f"  rag: index_chunks failed — {e}")
 
@@ -173,6 +177,11 @@ class LocalRagService(RagService):
     def query_session(
         self, session_id: str, query: str, top_k: int, threshold: float
     ) -> list[ChunkHit]:
+        _emit_rag_event(
+            "rag.query.issued",
+            payload={"scope": "session", "session_id": session_id, "top_k": top_k},
+            content={"query": query},
+        )
         try:
             vec = self._embedder.embed(query)
             tbl = self._get_chunks_table(session_id)
@@ -196,10 +205,37 @@ class LocalRagService(RagService):
                     binary_name=row.get("binary_name", "") or "",
                     offset=int(row.get("offset", 0)),
                 ))
+            _emit_rag_event(
+                "rag.query.returned",
+                payload={"scope": "session", "session_id": session_id, "n_hits": len(hits)},
+                content={
+                    "query": query,
+                    "hits": [
+                        {"chunk_id": h.chunk_id, "score": h.score,
+                         "source_file": h.source_file, "text": h.text}
+                        for h in hits
+                    ],
+                },
+            )
             return hits
         except Exception as e:
             logger.warning(f"  rag: query_session({session_id}) failed — {e}")
             return []
+
+
+def _emit_rag_event(event_type: str, *, payload: dict, content: dict | None = None) -> None:
+    """Best-effort RAG telemetry — never raise."""
+    try:
+        from runtime.events import RuntimeEvent, get_event_bus, get_runtime_identity
+        get_event_bus().emit(RuntimeEvent(
+            event_type,
+            get_runtime_identity(),
+            payload=payload,
+            content=content or {},
+            stage="RAG",
+        ))
+    except Exception:
+        pass
 
     def build_context_block(
         self, query: str, current_session_id: str, budget_chars: int

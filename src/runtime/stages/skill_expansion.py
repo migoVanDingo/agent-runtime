@@ -119,6 +119,22 @@ class SkillExpansionStage(Stage):
             new_steps.extend(expanded)
             expanded_skill_names.append(skill_name)
 
+            try:
+                from runtime.events import RuntimeEvent, get_event_bus, get_runtime_identity
+                get_event_bus().emit(RuntimeEvent(
+                    "skill.expanded",
+                    get_runtime_identity(),
+                    payload={
+                        "skill_name": skill_name,
+                        "original_step_index": s.step,
+                        "n_expanded_steps": len(expanded),
+                    },
+                    content={"expanded_steps": [es.to_dict() for es in expanded]},
+                    stage="SkillExpansionStage",
+                ))
+            except Exception:
+                pass
+
         # Re-number sequentially
         for i, st in enumerate(new_steps, 1):
             st.step = i

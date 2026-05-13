@@ -86,6 +86,21 @@ def analysis_dir(binary_path: str) -> Path:
     return arc_home() / "analysis" / Path(binary_path).name
 
 
+def virtual_analysis_path(binary_path: str, filename: str) -> str:
+    """Return the agent-facing logical path for a paged tool output.
+
+    Always returns `_analysis/<basename>/<filename>` regardless of where ARC_HOME
+    actually points. Skills should use this when constructing step descriptions
+    that reference paged tool outputs — the path resolver in runtime.path_resolver
+    translates the virtual prefix at read/write time.
+
+    Example:
+        virtual_analysis_path("/abs/path/proc", "ghidra_decompile.txt")
+        → "_analysis/proc/ghidra_decompile.txt"
+    """
+    return f"_analysis/{Path(binary_path).name}/{filename}"
+
+
 def store_db_path() -> Path:
     """Path to the artifact store SQLite database."""
     return arc_home() / "store" / "artifacts.db"

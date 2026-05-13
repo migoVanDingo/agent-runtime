@@ -75,6 +75,13 @@ class ContinuationStage(Stage):
                 "plan_steps": len(context.plan.steps) if context.plan else 0,
                 "decision": decision.value,
             })
+            _emit_continuation_event(
+                "continuation.decided",
+                iteration=context.continuation_state.iteration_count,
+                max_iterations=cfg.max_iterations,
+                decision=decision.value,
+                skill_name=context.active_skill_name,
+            )
 
             if decision == ContinuationDecision.DONE:
                 logger.info("  continuation: DONE — no synthesis needed")
@@ -101,6 +108,14 @@ class ContinuationStage(Stage):
             logger.info(
                 f"  continuation: LOOP iteration {context.continuation_state.iteration_count} — "
                 f"{len(new_plan.steps)} new step(s)"
+            )
+            _emit_continuation_event(
+                "continuation.iteration.started",
+                iteration=context.continuation_state.iteration_count,
+                max_iterations=cfg.max_iterations,
+                decision="LOOP",
+                skill_name=context.active_skill_name,
+                n_new_steps=len(new_plan.steps),
             )
 
             # Expand any skill:<name> steps before executing.
@@ -183,8 +198,24 @@ class ContinuationStage(Stage):
         raw = next((b.text for b in response.content if isinstance(b, TextBlock)), "")
         data = extract_json(raw)
         if not isinstance(data, dict) or "satisfied" not in data:
-            return CriteriaOutcome.INCONCLUSIVE
-        return CriteriaOutcome.MET if bool(data["satisfied"]) else CriteriaOutcome.NOT_MET
+            outcome = CriteriaOutcome.INCONCLUSIVE
+        else:
+            outcome = CriteriaOutcome.MET if bool(data["satisfied"]) else CriteriaOutcome.NOT_MET
+        try:
+            from runtime.events import RuntimeEvent, get_event_bus, get_runtime_identity
+            get_event_bus().emit(RuntimeEvent(
+                "skill.completion.evaluated",
+                get_runtime_identity(),
+                payload={
+                    "skill_name": context.active_skill_name,
+                    "criteria_type": type(criteria).__name__,
+                    "outcome": outcome.value,
+                },
+                stage="ContinuationStage",
+            ))
+        except Exception:
+            pass
+        return outcome
 
     def _llm_judge(self, context: PipelineContext, cfg) -> ContinuationDecision:
         """Single focused LLM call. Defaults to SYNTHESIZE on parse failure."""
@@ -292,3 +323,16 @@ class ContinuationStage(Stage):
         if plan is None:
             return StageResult(status=StageStatus.OK, updated_context=context)
         return StageResult(status=StageStatus.OK, updated_context=context)
+
+
+def _emit_continuation_event(event_type: str, **payload) -> None:
+    try:
+        from runtime.events import RuntimeEvent, get_event_bus, get_runtime_identity
+        get_event_bus().emit(RuntimeEvent(
+            event_type,
+            get_runtime_identity(),
+            payload={k: v for k, v in payload.items() if v is not None},
+            stage="ContinuationStage",
+        ))
+    except Exception:
+        pass

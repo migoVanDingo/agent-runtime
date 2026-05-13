@@ -130,3 +130,8 @@ def finalize_session(session_id: str) -> None:
         # No-op if persistence is disabled.
     except Exception:
         pass
+    try:
+        from runtime.events.summary import write_session_summary
+        write_session_summary(session_id, outcome="completed")
+    except Exception:
+        pass

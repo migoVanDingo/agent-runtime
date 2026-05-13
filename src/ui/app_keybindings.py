@@ -132,6 +132,13 @@ def build_key_bindings(
         buf = event.current_buffer
         if buf is None:
             return
+        # Empty input → arrows scroll the conversation (intuitive when you
+        # have nothing to edit). Non-empty input → cursor navigation within
+        # the multiline buffer.
+        if not buf.text:
+            conv.scroll_up(3)
+            event.app.invalidate()
+            return
         width = _effective_width(event, input_model)
         row, col = _pos_to_visual(buf.text, buf.cursor_position, width)
         if row == 0:
@@ -145,6 +152,11 @@ def build_key_bindings(
     def _visual_down(event):
         buf = event.current_buffer
         if buf is None:
+            return
+        # Empty input → arrows scroll the conversation.
+        if not buf.text:
+            conv.scroll_down(3)
+            event.app.invalidate()
             return
         width = _effective_width(event, input_model)
         row, col = _pos_to_visual(buf.text, buf.cursor_position, width)

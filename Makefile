@@ -16,7 +16,7 @@ endif
 
 .PHONY: help test lint \
         venv install install-all install-python install-system \
-        install-radare2 install-r2ghidra install-angr \
+        install-radare2 install-r2ghidra install-reversing install-angr \
         bootstrap migrate \
         check check-system uninstall-r2ghidra \
         os-info
@@ -36,6 +36,7 @@ help:
 	@echo "Individual system deps:"
 	@echo "  make install-radare2      Install radare2 (brew or apt)"
 	@echo "  make install-r2ghidra     Install r2ghidra plugin (requires radare2)"
+	@echo "  make install-reversing    Install pyghidra + jpype1 (Ghidra Python bridge)"
 	@echo "  make install-angr         Install angr Python package (heavy)"
 	@echo ""
 	@echo "Verification:"
@@ -123,6 +124,19 @@ install-r2ghidra: install-radare2
 
 uninstall-r2ghidra:
 	@r2pm -uci r2ghidra && echo "✓ r2ghidra uninstalled"
+
+# ── Reversing extras: pyghidra + jpype1 (Python bridge for Ghidra) ──────────
+# Required for ghidra_analyze / ghidra_decompile / ghidra_functions /
+# ghidra_callgraph / ghidra_find_constants tools. Ghidra binary itself must
+# also be installed and GHIDRA_HOME set in .env.
+install-reversing: venv
+	@if $(PYTHON) -c "import pyghidra" 2>/dev/null; then \
+	  echo "✓ pyghidra already installed in $(VENV)"; \
+	else \
+	  echo "Installing pyghidra + jpype1 into $(VENV)..."; \
+	  $(PIP) install pyghidra jpype1 && echo "✓ pyghidra installed"; \
+	  echo "  Don't forget: set GHIDRA_HOME=/path/to/ghidra in .env"; \
+	fi
 
 # ── System deps: angr (Python, very heavy — opt-in only) ────────────────────
 # angr has native deps (unicorn, pyvex, ailment, claripy) that often fail to

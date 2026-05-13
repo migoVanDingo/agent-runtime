@@ -90,6 +90,10 @@ class EventsConfig:
     raw_payloads: bool = False
     redact_on_emit: bool = False     # scrub secrets before writing to JSONL
     redact_on_export: bool = True    # scrub secrets in all exported datasets
+    # Schema v2 content paging.
+    blobs_enabled: bool = True
+    blob_inline_threshold_bytes: int = 4096
+    redact_blobs: bool = True        # apply emit-time redaction to blob writes
 
 
 @dataclass

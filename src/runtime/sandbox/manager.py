@@ -61,12 +61,25 @@ class SandboxManager:
                 "backend": result.sandbox_backend,
                 "isolation": result.isolation,
                 "exit_code": result.exit_code,
-                "duration_ms": result.duration_ms,
                 "timed_out": result.timed_out,
                 "network": self._cfg.default_network,
             },
+            duration_ms=result.duration_ms,
             stage="SandboxManager",
         ))
+        if result.timed_out or result.exit_code in (137, 124):
+            bus.emit(RuntimeEvent(
+                "tool.call.resource_limit",
+                identity,
+                payload={
+                    "resource": "memory" if result.exit_code == 137 else "timeout",
+                    "backend": result.sandbox_backend,
+                    "exit_code": result.exit_code,
+                    "observed": self._cfg.command_timeout_seconds,
+                },
+                severity="warn",
+                stage="SandboxManager",
+            ))
         return result
 
     def _dispatch(self, backend_name: str, request: SandboxCommandRequest) -> SandboxCommandResult:

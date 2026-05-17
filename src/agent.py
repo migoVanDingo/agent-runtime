@@ -8,7 +8,7 @@ from runtime.entity_critic import EntityCritic
 from runtime.guard import ActionGuard
 from runtime.escalation import CLIUserGate
 from runtime.monitor import ExecutionMonitor
-from runtime.context_manager import ContextManager
+from runtime.context import build_strategy
 from runtime.importance import ImportanceScorer
 from runtime.pipeline import Pipeline
 from runtime.pipeline_context import PipelineContext
@@ -39,7 +39,10 @@ logger = get_logger(__name__)
 def _build_pipeline(agent: "Agent") -> Pipeline:
     """Assemble the ordered stage pipeline from agent dependencies."""
     p = agent
-    system = config.agent.system_prompt
+    # 0090c — Sub-agents can override the system prompt by setting
+    # ``child._system_prompt_override`` before _build_pipeline is invoked.
+    # Falls back to the global config.agent.system_prompt when no override.
+    system = getattr(p, "_system_prompt_override", "") or config.agent.system_prompt
 
     direct_execution = DirectExecutionStage(
         provider=p.provider,
@@ -76,6 +79,7 @@ def _build_pipeline(agent: "Agent") -> Pipeline:
             context_mgr=p.context_mgr,
             skill_registry=p.skill_registry,
             messenger=p.messenger,
+            agent_system=system,  # sub-agents override; main uses config default
         ),
         DirectInlineStage(messenger=p.messenger),
         SkillHintStage(
@@ -88,7 +92,7 @@ def _build_pipeline(agent: "Agent") -> Pipeline:
         ),
         skill_expansion,
         EntityCriticStage(entity_critic=p.entity_critic),
-        ValidatorStage(),
+        ValidatorStage(validator=p.validator),
         CouncilStage(
             critic=p.critic,
             planner=p.planner,
@@ -122,6 +126,7 @@ class Agent:
         user_gate=None,
         initial_messages: list[dict] | None = None,
         container=None,  # runtime.container.Container — optional; builds its own if absent
+        spinner=None,    # injection point — TUI passes NoopSpinner, sub-agents inherit parent's
     ):
         # Resolve provider and registry either from an injected container or module globals.
         if container is not None:
@@ -138,15 +143,29 @@ class Agent:
         self.messenger = Messenger()
         if initial_messages:
             self.messenger.get_messages().extend(initial_messages)
-        self.spinner = Spinner(verbose=verbose)
+        # Spinner injection — the legacy CLI Spinner writes BRAILLE-dot frames
+        # to stdout via carriage-return overprinting, which corrupts the TUI's
+        # alt-screen render. The TUI service passes a NoopSpinner here; sub-
+        # agents inherit the parent's spinner so they can never "upgrade" to
+        # a real spinner against the parent's wishes. Default = real Spinner
+        # for the legacy CLI path. See SES01KRV1XJ7WK4177X1KHDYEWQ4B.
+        self.spinner = spinner if spinner is not None else Spinner(verbose=verbose)
 
-        self.context_mgr = ContextManager()
+        self.context_mgr = build_strategy()
         self.context_mgr.set_summarizer(get_runtime_provider())
         self.workflow_selector = WorkflowSelector(get_runtime_provider())
         self.critic = PlanCritic(self.registry)
-        self.guard = ActionGuard()
+        self.guard = ActionGuard(registry=self.registry)
         self.user_gate = user_gate or CLIUserGate()
         self.skill_registry = SkillRegistry()
+        # Plugin discovery — register tools/skills/toolsets that ship outside
+        # the core distribution. Built-ins always win on name conflicts.
+        try:
+            from plugins.loader import load_into
+            load_into(self.registry, self.skill_registry)
+        except Exception as exc:
+            from logger import get_logger as _gl
+            _gl(__name__).warning(f"plugin loading skipped: {exc}")
         self.validator = PlanValidator(
             set(self.registry.toolset_names()),
             self.registry.tool_names(),
@@ -202,8 +221,19 @@ class Agent:
             on_token=on_token,
             _pause_check=checkpoint_fn,
         )
+
+        # Make this agent + checkpoint_fn discoverable by SubAgentTool.execute()
+        # during the pipeline run. This is the contextvar that lets sub-agent
+        # tools dispatch through SubAgentRunner without changing the BaseTool
+        # signature. See _plans/0090-context-discipline-and-subagents.md §6 0090c.
+        from runtime.subagents import parent_context
         try:
-            response = self._pipeline.run(context)
+            with parent_context(
+                agent=self,
+                pause_check=checkpoint_fn,
+                turn_id=db_session_id,  # best-effort linkage; real turn_id lives in identity
+            ):
+                response = self._pipeline.run(context)
         except Exception as exc:
             _emit_error_event(exc, where="agent.call")
             self.spinner.stop()

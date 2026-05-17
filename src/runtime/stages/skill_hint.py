@@ -7,6 +7,7 @@ load-bearing. The planner is free to ignore it.
 from __future__ import annotations
 from runtime.classifier import WorkflowSelector
 from runtime.pipeline_context import PipelineContext
+from runtime.scope import RUNTIME, scoped
 from runtime.stage_base import Stage
 from runtime.stage_result import StageResult, StageStatus
 from runtime.utils import banner
@@ -35,7 +36,10 @@ class SkillHintStage(Stage):
 
         logger.info(banner("Skill hint"))
         descriptions = self._registry.descriptions()
-        chosen = self._selector.select(context.user_message, descriptions)
+        # WorkflowSelector hits the runtime provider — enter runtime scope so
+        # its packing picks the smaller budget and logs/events get tagged.
+        with scoped(RUNTIME):
+            chosen = self._selector.select(context.user_message, descriptions)
         valid = bool(chosen and self._registry.get(chosen) is not None)
         if valid:
             logger.info(f"  hint: '{chosen}' (advisory; planner may override)")

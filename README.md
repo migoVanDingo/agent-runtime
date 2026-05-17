@@ -82,6 +82,13 @@ arc --print "what is 2+2"   # → headless: one turn, print, exit
 arc --resume            # → open the session picker
 arc wipe --help         # → cleanup runtime data
 arc bootstrap           # → re-create ~/.arc/ data layout
+arc plugin list         # → list installed plugins (tools, skills, toolsets)
+arc plugin info <name>  # → details for one plugin
+arc plugin install <pkg-or-path>   # → pip-install a package, or copy a local file
+arc plugin remove <name>           # → remove a filesystem plugin
+arc plugin doctor       # → diagnose plugin discovery (entry points + ~/.arc/plugins/)
+arc subagent list       # → list registered sub-agent specs + effective config
+arc subagent info <name>           # → full spec including system prompt + JSON schema
 ```
 
 ### Inside the TUI
@@ -93,8 +100,13 @@ arc bootstrap           # → re-create ~/.arc/ data layout
 | **↑ / ↓** | Move cursor between lines (multi-line text or wrapped visual lines) |
 | **Page Up / Page Down** | Scroll the conversation |
 | **ESC** | Pause / resume a running turn |
-| **Ctrl+D** | Exit |
-| **Ctrl+C** | Ignored (use `/exit` or `Ctrl+D` to quit) |
+| **Ctrl+D** | Graceful exit |
+| **Ctrl+C** | Graceful exit; press again within 1s for hard exit (use when JVM/Ghidra is stuck) |
+
+**Mouse:** native terminal mouse handling is preserved — click-drag selects text
+(useful for copying session IDs, code snippets, error messages). Mouse scroll
+wheel uses your terminal's scrollback buffer; to scroll the conversation
+itself, use **PageUp/PageDown** or **↑/↓** with an empty input line.
 
 ### Slash commands
 
@@ -367,6 +379,12 @@ AGENT_DB_URL=postgresql+asyncpg://user:pass@host/dbname
 
 # Optional: enable per-session persistence to agent.db
 ENABLE_SESSION_PERSISTENCE=true
+
+# Optional: wall-clock cap (seconds) for individual Ghidra tool calls.
+# Defaults to 600 (10 min). First-time analysis on a binary triggers the
+# full Ghidra auto-analyzer pipeline, which can be slow on complex targets.
+# Subsequent calls reuse the on-disk project cache at ~/.arc/ghidra/projects/.
+ARC_GHIDRA_TIMEOUT=600
 ```
 
 ### `config.yml` — runtime tuning
@@ -475,16 +493,326 @@ make test
 
 ---
 
+## Context strategies
+
+The agent's context manager is **swappable at config-time** so research into
+packing strategies doesn't require a code edit. Pick a strategy in
+`config.yml` under `runtime.context.strategy`:
+
+| Strategy | Behavior | Best for |
+|---|---|---|
+| `afm` (default) | AFM-inspired non-destructive packing — semantic similarity + recency + importance, with FULL/COMPRESSED/PLACEHOLDER fidelity tiers | General use; rich session preservation |
+| `truncate` | Drop oldest messages until under budget; preserve first user message and tool pairs | Baseline; latency-sensitive |
+| `sliding` | Keep last N messages verbatim; older messages collapse into a single LLM-generated summary | Long sessions where early context is summarisable |
+| `rag` | Pack only past messages whose embeddings score above threshold for the current query | Long sessions where relevance is search-driven |
+
+Each strategy reads its own params block under `runtime.context.params.<strategy>`:
+
+```yaml
+runtime:
+  context:
+    strategy: rag
+    params:
+      rag:
+        top_k: 12
+        score_threshold: 0.45
+        keep_last_n: 8
+```
+
+Every `pack()` call emits `context.pack.started` / `context.pack.completed`
+events with a `strategy` field, so the 0087 telemetry pipeline can compare
+strategies in pandas:
+
+```python
+df = pd.read_json("~/.arc/sessions/<id>/events/runtime.jsonl", lines=True)
+df[df.event_type == "context.pack.completed"].groupby("strategy")[
+    ["duration_ms", "input_token_estimate", "output_token_estimate"]
+].mean()
+```
+
+Custom strategies plug in via `runtime.context.factory.register_strategy(name, cls)`
+— the future `arc.context_strategies` plugin entry-point group will wire
+this up automatically.
+
+The legacy `runtime.context_manager.*` config block continues to work via a
+loader compat shim — it's translated into `runtime.context.params.afm` at
+load time.
+
+---
+
+## Plugins
+
+Third parties can extend arc with new tools, skills, and toolsets **without
+forking the codebase**. There are two installation paths:
+
+### 1. Packaged plugins (PyPI)
+
+Plugin authors register their classes via Python entry points in `pyproject.toml`:
+
+```toml
+[project.entry-points."arc.tools"]
+my_tool = "my_pkg:MyTool"
+
+[project.entry-points."arc.skills"]
+my_skill = "my_pkg:MySkill"
+
+[project.entry-points."arc.toolsets"]
+my_toolset = "my_pkg:MY_TOOLSET"
+```
+
+Users install with `pip install <package>` and restart arc.
+
+### 2. Filesystem plugins (~/.arc/plugins/)
+
+For local experiments, drop a `.py` file into `~/.arc/plugins/tools/` or
+`~/.arc/plugins/skills/`:
+
+```python
+# ~/.arc/plugins/tools/word_count.py
+from tools.base import BaseTool, InputSchema, ToolProperty
+
+ARC_PLUGIN = {
+    "name": "word-count",
+    "version": "0.0.1",
+    "extends_toolset": "data",        # optional — join an existing toolset
+    "requires": {"python": ["regex>=2024.0"]},   # optional pre-flight checks
+    "permissions": {"network": False, "filesystem_write": False},
+}
+
+class WordCountTool(BaseTool):
+    name = "word_count"
+    description = "Count words in a string"
+    @property
+    def input_schema(self):
+        return InputSchema(
+            properties={"text": ToolProperty(type="string", description="...")},
+            required=["text"],
+        )
+    def execute(self, tool_input):
+        return str(len(tool_input["text"].split()))
+```
+
+Restart arc, then check `arc plugin list` — the new tool is registered.
+
+### Permission policy
+
+A plugin's `permissions` block is consulted by the `ActionGuard` at invocation
+time. `network: true` or `filesystem_write: true` causes the first call per
+session to escalate for user approval, just like built-in tools that touch
+sensitive surfaces.
+
+### Conflict resolution
+
+Built-in tool / skill names always win. If a plugin declares a tool named
+`read_file`, the loader logs a warning and drops the plugin tool — the
+built-in `read_file` remains active.
+
+### Plugin telemetry
+
+Every plugin discovery emits `plugin.loaded`, `plugin.disabled`, or
+`plugin.dep_missing` events into `runtime.jsonl`, so you can audit which
+plugins ran in a session and why some were skipped.
+
+---
+
+## Sub-agents
+
+Specialised child agents that own their own context window, toolset, and
+(optionally) provider/model. The main agent dispatches them as tools when
+it needs to delegate context-heavy work — binary analysis, code
+reconstruction, document summarisation — without bloating its own
+working context.
+
+### Why sub-agents exist
+
+A long session where the agent reads a 12 KB Ghidra decompile, then a
+12 KB find-constants report, then iterates on the analysis, can quickly
+hit 100k+ tokens of context. Every subsequent LLM call sends that full
+history. With sub-agents, the heavy reading + reasoning happens inside
+a scoped child whose response back to the parent is a few hundred tokens
+of structured JSON. The parent's context stays lean across turns.
+
+This is the same idea behind Claude Code's `Task` tool: don't put
+everything in the main loop's window; delegate to scoped sub-calls
+that return small things.
+
+### What ships in the box
+
+- **`ghidra_analyst`** — reverse-engineering specialist. Has the
+  Ghidra toolset + `bash_exec` for dynamic verification. Returns
+  structured JSON: algorithm, mode, IV, key derivation, round function,
+  constants, summary. Used by the `deep-disassembly` skill.
+
+Run `arc subagent list` to see what's registered.
+
+### How sub-agents are dispatched
+
+From a tool / skill / plan step:
+
+```yaml
+# In a skill's expand():
+Step(
+    step=2,
+    description="Delegate analysis of proc to ghidra_analyst.",
+    action_type=ActionType.SUBAGENT,
+    tool="subagent_ghidra_analyst",
+)
+```
+
+The agent's tool call surface gets a `subagent_<name>` tool for every
+registered spec. The tool takes a `task` string and returns the child's
+response (text, or JSON serialised if the spec uses `response_format=json`).
+
+### Provider specialisation per role
+
+You can pin a sub-agent to a specific provider/model via `config.yml`:
+
+```yaml
+subagents:
+  ghidra_analyst:
+    provider: anthropic
+    model: claude-opus-4-7
+    timeout_seconds: 1200
+    max_iterations: 30
+```
+
+Sub-agent uses Opus for deep analysis while the main agent stays on a
+cheaper/faster model. Cost shows up separately in telemetry — the
+`subagent.completed` event carries `tokens_in`, `tokens_out`, `cost_usd`
+per child so you can split main-agent cost from delegated cost in pandas.
+
+### Sub-agent isolation guarantees
+
+- **No recursion.** A sub-agent cannot spawn its own sub-agent. Two-layer
+  enforcement: the child's tool registry filters out all `SubAgentTool`
+  instances, and a contextvar tripwire raises `SubAgentRecursionError`
+  if any code path tries.
+- **No shared conversation history.** The child starts with an empty
+  messenger. Same `session_id` (so it can read the same RAG / artifact
+  store) but its own `turn_id` for telemetry.
+- **Parent owns lifecycle.** Synchronous dispatch — the parent blocks
+  until the child returns. Timeouts and pause/cancel propagate from
+  parent → child. The runtime-as-god tenet stays intact: child is a
+  passive executor that returns data, never drives parent's flow.
+- **Escalations route through parent's user gate.** If a child's tool
+  hits `ESCALATE`, the user sees the prompt prefixed with
+  `[subagent:<name>]` so they know where it came from.
+
+### Context discipline (the budget side of 0090)
+
+Sub-agent dispatch is one half of the 0090 work; the other half is
+context discipline. Three improvements:
+
+1. **Scope-aware AFM budget.** Runtime-classifier LLM calls
+   (routing, skill_hint, monitor, importance scorer) now pack to a
+   smaller budget (`runtime_message_budget_tokens: 12000`, vs the main
+   `message_budget_tokens: 65536`) so they don't blow per-minute rate
+   limits on the runtime provider as conversation history grows.
+2. **System-prompt-aware packing.** AFM's `pack(messages, query,
+   system_prompt_size=…)` now subtracts the system-prompt size from its
+   budget so total LLM call stays under one cap.
+3. **Analysis manifest cap.** `build_analysis_manifest()` enforces a
+   4000-char hard cap so the manifest can't silently grow the system
+   prompt across long sessions.
+
+### Scope tagging (in logs and telemetry)
+
+Every log line gets a scope prefix when not in main scope:
+
+```
+2026-05-17 12:00:00,000 [INFO] runtime.stages.routing: [runtime] mode=plan ...
+2026-05-17 12:00:01,000 [INFO] runtime.stages.execution: step 3/12 ...
+2026-05-17 12:00:02,000 [INFO] runtime.tool_loop: [subagent:ghidra_analyst] → ghidra_decompile ...
+```
+
+Every `runtime.jsonl` event gets an `agent_scope` top-level field
+(`"main"`, `"runtime"`, `"subagent:<name>"`) so pandas can group by
+scope directly:
+
+```python
+df = pd.read_json("~/.arc/sessions/<id>/events/runtime.jsonl", lines=True)
+df.groupby("agent_scope")[["duration_ms", "cost_usd"]].sum()
+```
+
+### Building a new sub-agent
+
+1. Write a `SubAgentSpec` in `src/tools/implementations/subagents/<name>.py`:
+   ```python
+   MY_SPEC = SubAgentSpec(
+       name="code_writer",
+       description="…",
+       toolset_names=("file_io", "shell"),
+       system_prompt=_MY_SYSTEM_PROMPT,
+       response_format="json",
+       response_schema={…},
+       timeout_seconds=600.0,
+   )
+   register_spec(MY_SPEC)
+   ```
+2. Register a `SubAgentTool(MY_SPEC)` into the `subagent` toolset (see
+   `tools/toolsets.py:_build_subagent_toolset()`).
+3. Now any skill or planner step can dispatch via `tool="subagent_code_writer"`.
+4. (Optional) Pin provider/model in `config.yml` under `subagents:`.
+
+---
+
 ## Observability
 
-Every session emits three sidecar streams under `~/.arc/sessions/<id>/`:
+Every session emits sidecar streams under `~/.arc/sessions/<id>/`:
 
 - `logs/session.log` — human-readable timestamps + INFO/WARN/ERROR
 - `metrics/council.jsonl` — one JSON per council run (model votes, final decision)
-- `events/runtime.jsonl` — every structured event (stage transitions, tool calls, etc.)
+- `events/runtime.jsonl` — every structured event (stage transitions, LLM calls, tool calls, plan revisions, council votes, RAG hits, etc.)
+- `events/blobs/<event_id>.json` — full content (prompts, tool I/O, plans) paged out when bigger than 4 KB
+- `session.summary.json` — one-shot aggregate (n_turns, total cost, p95 latency, models seen, skills used) written at session end
 
-The events stream is the source of truth for the TUI's event consumer; it's
-also useful for offline analysis.
+### Event schema (v2)
+
+Every event in `runtime.jsonl` carries flat top-level fields suitable for
+direct pandas analysis — no `json_normalize` required:
+
+```python
+import pandas as pd
+df = pd.read_json("~/.arc/sessions/<id>/events/runtime.jsonl", lines=True)
+df.groupby("model")["duration_ms"].agg(["mean", "p95"])
+df[df.event_family == "llm"]["cost_usd"].sum()
+```
+
+Top-level fields include: `event_type`, `event_family`, `ts`, `session_id`,
+`turn_id`, `model`, `provider`, `temperature`, `duration_ms`, `input_tokens`,
+`output_tokens`, `cache_input_tokens`, `cost_usd`, `stop_reason`,
+`finish_reason_normalized`, `model_run_id`, `severity`. Large content
+(prompts, tool I/O, full plan JSON, councillor raw responses) lives in
+sibling blob files referenced by `raw_payload_ref`.
+
+Cost is computed from a central pricing table at `src/runtime/cost.py`. Unknown
+models leave `cost_usd` null rather than fabricating a figure.
+
+### Replay and export
+
+```bash
+# Re-run a session's user inputs against a different model
+python scripts/replay_session.py --source <session_id> --model gpt-4o --provider openai
+
+# Bundle a session for sharing (applies stage-2 redaction: IPs, hostnames, paths)
+python scripts/export_session.py <session_id>            # → ./session_<id>.tar.gz
+python scripts/export_session.py <session_id> --out my.tar.gz
+```
+
+Replay sets a fresh `model_run_id` on every new event so analysts can join
+the source and replay JSONLs:
+
+```python
+df = pd.concat([
+    pd.read_json("~/.arc/sessions/<source_id>/events/runtime.jsonl", lines=True),
+    pd.read_json("~/.arc/sessions/<replay_id>/events/runtime.jsonl", lines=True),
+])
+df.groupby(["model_run_id", "model"])["cost_usd"].sum()
+```
+
+Events whose payloads might carry secrets are redacted at emit time (API keys,
+bearer tokens, JWTs, emails, home paths). The export script applies a stricter
+second pass for sharing.
 
 ---
 

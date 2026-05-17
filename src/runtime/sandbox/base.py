@@ -47,7 +47,16 @@ class SandboxCommandResult:
         if self.stderr:
             output += f"\nSTDERR: {self.stderr}"
         if not output:
-            output = "(no output)"
+            # Distinguish "ran cleanly, produced nothing" from "exited non-zero
+            # with no output" (the latter is a real failure that needs to flow
+            # through the monitor as an error, not silently as success — see
+            # SES01KRV1XJ7WK4177X1KHDYEWQ4B where bash returned "(no output)"
+            # for everything in the sub-agent context and the model treated
+            # each empty result as success and looped).
+            if self.exit_code not in (0, None):
+                output = f"Error: command exited with code {self.exit_code} and produced no output"
+            else:
+                output = "(command produced no output; exit code 0)"
         if self.timed_out:
             output += "\nError: command timed out"
         return output

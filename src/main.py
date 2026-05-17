@@ -275,6 +275,16 @@ def dispatch() -> None:
         cmd_bootstrap(argv[1:])
         return
 
+    if argv and argv[0] == "plugin":
+        from plugins.cli import cmd_plugin
+        cmd_plugin(argv[1:])
+        return
+
+    if argv and argv[0] == "subagent":
+        from cli.subagent import cmd_subagent
+        cmd_subagent(argv[1:])
+        return
+
     # Explicit legacy CLI flag — strip it from argv, then call legacy main().
     if "--cli" in argv or "-t" in argv:
         cleaned = [a for a in argv if a not in ("--cli", "-t")]

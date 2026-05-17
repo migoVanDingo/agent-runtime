@@ -4,6 +4,7 @@ from planning.schema import Plan, Step, StepStatus
 from runtime.schema import StepDecision, StepAssessment
 from runtime.prompts import MONITOR_SYSTEM_PROMPT, MONITOR_USER_TEMPLATE
 from providers.base import BaseProvider, TextBlock
+from runtime.scope import RUNTIME, scoped
 from app_config import config
 from logger import get_logger
 
@@ -36,6 +37,29 @@ _TOOL_ERROR_RE = re.compile(
 # Tool-unavailable errors are structurally non-recoverable — retrying the same
 # tool call will always fail. Skip the LLM and go straight to REPLAN.
 _TOOL_UNAVAILABLE_RE = re.compile(r"command not found", re.I)
+
+# Sub-agent failures (timeout, crash, recursion error, etc.) come back as a
+# string starting with "Error: sub-agent '<name>' failed: <details>". Without
+# detection here, the next pipeline step happily receives the error string,
+# treats it as "info", and proceeds to fabricate downstream work
+# (verified in session SES01KRTZG0R4BN105HB2M8J17XTE — the parent agent
+# wrote a "// Dummy implementation" XOR-with-index clone after its analyst
+# crashed with KeyError). Treat this pattern as a hard step failure that
+# triggers REPLAN with the failure quoted in the reason so the planner
+# knows to avoid the same sub-agent on retry.
+_SUBAGENT_FAILURE_RE = re.compile(
+    r"^Error: sub-agent '([^']+)' failed: (.+)",
+    re.DOTALL,
+)
+
+# Artifact-store-unavailable errors are non-recoverable — retrying the same
+# tool call will always fail. In SES01KRV1XJ7WK4177X1KHDYEWQ4B the planner
+# kept re-emitting `store_artifact` across 6 replans because the LLM monitor
+# kept giving softly-worded reasons. Short-circuit with a hard message so
+# the planner restructures without artifact tools.
+_ARTIFACT_STORE_DEAD_RE = re.compile(
+    r"^Error: artifact store is not initialized",
+)
 
 
 class ExecutionMonitor:
@@ -81,6 +105,52 @@ class ExecutionMonitor:
             return StepAssessment(
                 decision=StepDecision.REPLAN,
                 reason=f"tool '{step.tool}' is not installed on this system — cannot retry",
+                confidence=1.0,
+            )
+
+        # Short-circuit: sub-agent failures (timeout, crash, recursion error)
+        # are structurally non-recoverable from the parent's POV — RETRY would
+        # almost certainly hit the same failure, and CONTINUE would let the
+        # next step fabricate downstream work on top of an error string.
+        # Force REPLAN with the analyst's failure quoted so the planner knows
+        # WHY the sub-agent broke and can plan around it.
+        sa_match = _SUBAGENT_FAILURE_RE.match(result.strip())
+        if sa_match:
+            sa_name, sa_reason = sa_match.group(1), sa_match.group(2)[:300]
+            logger.info(
+                f"  monitor: sub-agent {sa_name!r} failed — REPLAN immediately "
+                f"(reason: {sa_reason[:80]}…)"
+            )
+            return StepAssessment(
+                decision=StepDecision.REPLAN,
+                reason=(
+                    f"sub-agent '{sa_name}' failed and cannot be retried as-is. "
+                    f"Failure: {sa_reason}. "
+                    f"Replan WITHOUT this sub-agent — use the underlying tools "
+                    f"directly, or fall back to a non-sub-agent approach. Do NOT "
+                    f"proceed to subsequent steps that depend on this sub-agent's "
+                    f"output; they will only produce fabricated placeholders."
+                ),
+                confidence=1.0,
+            )
+
+        # Short-circuit: artifact store not initialized means store_artifact /
+        # get_artifact / list_artifacts will never succeed in this session.
+        # Without this, the planner re-emits them across replans (see
+        # SES01KRV1XJ7WK4177X1KHDYEWQ4B which wasted 6 replans on store_artifact).
+        if _ARTIFACT_STORE_DEAD_RE.match(result.strip()):
+            logger.info("  monitor: artifact store unavailable → REPLAN without artifact tools")
+            return StepAssessment(
+                decision=StepDecision.REPLAN,
+                reason=(
+                    "The artifact store is not initialized in this session. "
+                    "All artifact tools (store_artifact, get_artifact, list_artifacts, "
+                    "expel_artifact, artifact_info, recall_sessions) will fail. "
+                    "Restructure the plan WITHOUT using any artifact tools — pass "
+                    "values directly between steps via the conversation context, "
+                    "or write/read intermediate results to filesystem paths with "
+                    "write_file/read_file instead."
+                ),
                 confidence=1.0,
             )
 
@@ -152,12 +222,13 @@ class ExecutionMonitor:
         messenger = Messenger()
         messenger.add_user_message(user_turn)
 
-        response = self._provider.chat(
-            messages=messenger.get_messages(),
-            tools=[],
-            system=MONITOR_SYSTEM_PROMPT,
-            label="ExecutionMonitor",
-        )
+        with scoped(RUNTIME):
+            response = self._provider.chat(
+                messages=messenger.get_messages(),
+                tools=[],
+                system=MONITOR_SYSTEM_PROMPT,
+                label="ExecutionMonitor",
+            )
 
         raw = next(
             (b.text for b in response.content if isinstance(b, TextBlock)), ""
@@ -223,18 +294,26 @@ class ExecutionMonitor:
         return StepAssessment(decision=final.decision, confidence=final.confidence, reason=final.reason)
 
     def _parse(self, raw: str) -> StepAssessment:
-        """Parse monitor LLM response. Defaults to CONTINUE on failure."""
+        """Parse monitor LLM response.
+
+        Defaults to REPLAN (not CONTINUE) on parse failure or invalid decision.
+        CONTINUE was the historical default but it caused the runtime to barrel
+        past genuine failures — see SES01KRV1XJ7WK4177X1KHDYEWQ4B where the LLM
+        said 'stop' (invalid), got coerced to CONTINUE, and the synthesis step
+        fabricated a dummy clone instead of recognizing the analyst's result was
+        unreadable. When in doubt, REPLAN is the safer fallback.
+        """
         data = extract_json(raw)
         if not isinstance(data, dict):
-            logger.info("  monitor: parse failed — defaulting to continue")
-            return StepAssessment(decision=StepDecision.CONTINUE, reason="parse error")
+            logger.info("  monitor: parse failed — defaulting to REPLAN")
+            return StepAssessment(decision=StepDecision.REPLAN, reason="monitor parse error — replan to recover")
 
         decision_str = data.get("decision", "continue")
         try:
             decision = StepDecision(decision_str)
         except ValueError:
-            logger.info(f"  monitor: invalid decision '{decision_str}' — defaulting to continue")
-            decision = StepDecision.CONTINUE
+            logger.info(f"  monitor: invalid decision '{decision_str}' — defaulting to REPLAN")
+            decision = StepDecision.REPLAN
 
         confidence = data.get("confidence", 1.0)
         try:

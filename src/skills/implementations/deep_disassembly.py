@@ -80,83 +80,63 @@ class DeepDisassembly(Skill):
         synthesis_desc = self._infer_synthesis(message, basename, output)
         n = ctx.starting_step_number
 
-        recon_steps = [
-            Step(step=n,
-                 description=(
-                     f"Identify the file type, architecture, and format of {target} "
-                     f"using file_info. Confirm it is an executable before proceeding."
-                 ),
-                 action_type=ActionType.ANALYSIS, tool="file_info"),
-            Step(step=n + 1,
-                 description=f"Check security hardening features of {target} (NX, stack canaries, PIE, ASLR) using checksec.",
-                 action_type=ActionType.ANALYSIS, tool="checksec"),
-            Step(step=n + 2,
-                 description=(
-                     f"Extract all printable strings from {target}. Look for: usage/error messages, "
-                     f"numeric constants (0x9e3779b9=TEA, 0x6a09e667=SHA-256, 0x67452301=MD5), "
-                     f"IV values, magic bytes."
-                 ),
-                 action_type=ActionType.ANALYSIS, tool="strings"),
-            Step(step=n + 3,
-                 description=(
-                     f"Extract the symbol table of {target} using nm. "
-                     f"Identify: custom function names, global constants (DELTA, BLOCK, ROUNDS, IV), "
-                     f"crypto-related symbols."
-                 ),
-                 action_type=ActionType.ANALYSIS, tool="nm"),
-        ]
-
-        ghidra_steps = [
-            Step(step=n + 4,
-                 description=(
-                     f"Run Ghidra analysis on {target} using ghidra_analyze to build the project cache."
-                 ),
-                 action_type=ActionType.REVERSING, tool="ghidra_analyze"),
-            Step(step=n + 5,
-                 description=(
-                     f"List all functions in {target} using ghidra_functions. "
-                     f"Identify user-defined functions and any crypto-named symbols."
-                 ),
-                 action_type=ActionType.REVERSING, tool="ghidra_functions"),
-            Step(step=n + 6,
-                 description=(
-                     f"Decompile all functions of {target} to C pseudocode using ghidra_decompile. "
-                     f"Focus on: main(), encrypt/decrypt functions, key derivation, padding logic, "
-                     f"mode of operation (ECB, CBC, CTR), IV handling, and round count."
-                 ),
-                 action_type=ActionType.REVERSING, tool="ghidra_decompile"),
-            Step(step=n + 7,
-                 description=(
-                     f"Find magic constants and data references in {target} using ghidra_find_constants. "
-                     f"Confirm any crypto constants identified in strings/nm."
-                 ),
-                 action_type=ActionType.REVERSING, tool="ghidra_find_constants"),
-        ]
-
-        read_num = n + 8
-        synthesis_num = n + 9
-        from session_paths import virtual_analysis_path
-        decompile_path = virtual_analysis_path(target, "ghidra_decompile.txt")
-        read_step = Step(
-            step=read_num,
+        # 0090d — Delegate the heavy reverse-engineering work to the
+        # GhidraAnalyst sub-agent. The sub-agent has its own context
+        # window so the decompile + intermediate analysis don't bloat
+        # the main agent's tokens-per-turn. It returns structured JSON
+        # ({algorithm, mode, iv, key_derivation, round_function, …})
+        # the synthesizer step can use directly.
+        recon_step = Step(
+            step=n,
             description=(
-                f"Read {decompile_path} using read_file. "
-                f"The decompile output must be in context for synthesis — do not skip."
+                f"Identify the file type, architecture, and format of {target} "
+                f"using file_info. Confirm it is an executable before proceeding."
             ),
-            action_type=ActionType.ANALYSIS,
-            tool="read_file",
+            action_type=ActionType.ANALYSIS, tool="file_info",
         )
+        analyst_step = Step(
+            step=n + 1,
+            description=(
+                f"Delegate full reverse-engineering analysis of {target} to the "
+                f"ghidra_analyst sub-agent. Pass this task description: "
+                f"\"Analyse {target}. Identify the cryptographic algorithm, mode "
+                f"of operation, IV, key derivation, round function. Run dynamic "
+                f"verification (compare candidate implementations against the "
+                f"binary's output with crafted inputs) to confirm before returning. "
+                f"Pay special attention to constants — decompilers render high-bit "
+                f"values as negated forms, so try two's complement before declaring "
+                f"a constant unknown.\""
+            ),
+            action_type=ActionType.SUBAGENT,
+            tool="subagent_ghidra_analyst",
+        )
+        synthesis_num = n + 2
         synthesis_steps = [
-            read_step,
-            Step(step=synthesis_num,
-                 description=(
-                     f"{synthesis_desc}\n\n"
-                     f"ALGORITHM IDENTIFICATION REQUIRED — {self._CRYPTO_HINT}"
-                 ),
-                 action_type=ActionType.CONVERSATION, tool=None),
+            Step(
+                step=synthesis_num,
+                description=(
+                    f"{synthesis_desc}\n\n"
+                    f"CRITICAL — check the ghidra_analyst result FIRST before doing anything else:\n"
+                    f"  - If step {n + 1}'s output starts with 'Error:' (e.g., 'Error: sub-agent ghidra_analyst failed: ...'), "
+                    f"the analysis did NOT complete. You MUST NOT proceed with code generation. "
+                    f"Instead, STOP and explain the failure to the user — give them the exact error "
+                    f"text from the analyst. Do not write a placeholder, dummy, or 'partial' clone. "
+                    f"A non-functional clone is worse than no clone because the user may waste time "
+                    f"debugging it. Returning the error honestly is the correct action.\n"
+                    f"  - If the analyst returned valid JSON with algorithm/mode/key_derivation/etc., "
+                    f"use it as the SOURCE OF TRUTH for those fields. Do not invent values not present "
+                    f"in the response.\n"
+                    f"  - If the analyst's JSON is partial (e.g., algorithm identified but key_derivation "
+                    f"is missing), re-invoke subagent_ghidra_analyst with a narrower follow-up question "
+                    f"rather than guessing. Never fabricate.\n\n"
+                    f"{synthesis_desc}\n\n"
+                    f"{self._CRYPTO_HINT}"
+                ),
+                action_type=ActionType.CONVERSATION, tool=None,
+            ),
         ]
 
-        steps = recon_steps + ghidra_steps + synthesis_steps
+        steps = [recon_step, analyst_step] + synthesis_steps
 
         if output:
             steps.append(Step(

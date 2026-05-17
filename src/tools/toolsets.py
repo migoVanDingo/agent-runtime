@@ -524,4 +524,36 @@ CONTAINER = Toolset(
     ],
 )
 
-ALL_TOOLSETS = [FILE_IO, SHELL, ANALYSIS, CRYPTO, WEB, DATA, ARTIFACTS, SEARCH, GIT, DOCUMENT, BRIEFBOT, REVERSING, SYMBOLIC, CONTAINER]
+# 0090d — Sub-agent toolset. Wraps each registered SubAgentSpec as a
+# SubAgentTool so the planner can include `subagent_<name>` steps in plans.
+# Built by ``_build_subagent_toolset`` at module import time so the
+# child-registry filter has stable identity to filter against.
+def _build_subagent_toolset() -> Toolset:
+    # Trigger registration of all built-in sub-agent specs.
+    from tools.implementations.subagents import ghidra_analyst as _ga  # noqa: F401
+    from runtime.subagents.registry import all_specs
+    from tools.implementations.subagents.tool import SubAgentTool
+    tools = [SubAgentTool(spec) for spec in all_specs()]
+    return Toolset(
+        name="subagent",
+        description=(
+            "Sub-agent dispatch tools. Each tool spawns a scoped child agent "
+            "with its own toolset, context window, and (optionally) provider. "
+            "Use these to delegate context-heavy work like binary analysis or "
+            "code generation without polluting the main agent's context."
+        ),
+        tools=tools,
+        rules=[],
+        planning_note=(
+            "Prefer ``subagent_*`` tools for context-heavy specialist work "
+            "(e.g., ``subagent_ghidra_analyst`` for reverse engineering) "
+            "instead of running the underlying tools directly. The sub-agent "
+            "returns a concise structured summary that fits in your context "
+            "easily."
+        ),
+    )
+
+
+SUBAGENT = _build_subagent_toolset()
+
+ALL_TOOLSETS = [FILE_IO, SHELL, ANALYSIS, CRYPTO, WEB, DATA, ARTIFACTS, SEARCH, GIT, DOCUMENT, BRIEFBOT, REVERSING, SYMBOLIC, CONTAINER, SUBAGENT]

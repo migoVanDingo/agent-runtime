@@ -1,8 +1,9 @@
 """Key binding factory for the arc-tui Application.
 
 Provides build_key_bindings() which creates the KeyBindings object for:
-- Enter (submit), Escape+Enter / Ctrl+N (newline), Ctrl+D (exit), ESC (pause/resume)
-- Visual-line-aware Up/Down/PageUp/PageDown navigation
+- Enter (submit), Escape+Enter / Ctrl+N (newline)
+- Ctrl+D (graceful exit), Ctrl+C (graceful exit; second Ctrl+C within 1s = hard exit)
+- ESC (pause/resume), visual-line-aware Up/Down/PageUp/PageDown
 """
 from __future__ import annotations
 
@@ -103,9 +104,20 @@ def build_key_bindings(
         event.app.exit()
 
     @kb.add("c-c")
-    def _ignore(event):
-        # Ctrl+C is intercepted to prevent abrupt quit; user should use Ctrl+D or /exit
-        pass
+    def _exit_hard(event):
+        # First Ctrl+C: graceful exit. Second Ctrl+C within 1s: hard exit.
+        # The hard-exit path bypasses the executor/JVM cleanup that can hang
+        # indefinitely when a long-running tool (Ghidra analyse, Java native
+        # threads) is mid-flight.
+        import time as _t
+        last = app_state.get("_last_ctrl_c", 0.0)
+        now = _t.monotonic()
+        if now - last < 1.0:
+            import os as _os
+            _os._exit(130)  # 128 + SIGINT
+        app_state["_last_ctrl_c"] = now
+        app_state["exit"] = True
+        event.app.exit()
 
     @kb.add("escape")
     def _pause_resume(event):

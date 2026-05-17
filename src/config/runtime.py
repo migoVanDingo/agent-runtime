@@ -31,12 +31,29 @@ class ExecutionMonitorConfig:
 
 @dataclass
 class ContextManagerConfig:
+    """Legacy single-strategy config — preserved for back-compat.
+
+    New configs should use ``ContextConfig`` (``runtime.context.strategy`` +
+    ``runtime.context.params``). The loader synthesises a ``ContextConfig``
+    from this block when only the legacy key is present.
+    """
     enabled: bool
     message_budget_tokens: int
     half_life_turns: int
     threshold_high: float
     threshold_mid: float
     compressed_max_chars: int
+
+
+@dataclass
+class ContextConfig:
+    """Pluggable context-strategy configuration.
+
+    Each registered strategy receives ``params[strategy_name]`` as a plain
+    dict, so adding new strategies doesn't require editing this dataclass.
+    """
+    strategy: str = "afm"
+    params: dict = field(default_factory=dict)
 
 
 @dataclass

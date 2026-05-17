@@ -140,11 +140,15 @@ def ensure_data_layout() -> Path:
     return home
 
 
-def build_analysis_manifest() -> str:
+def build_analysis_manifest(max_entries: int = 20, max_chars: int = 4000) -> str:
     """Scan analysis output and return a short artifact manifest for system prompts.
 
     Returns paths in the agent-facing form (`_analysis/<binary>/<file>`) regardless
-    of where the files actually live on disk. Capped at 20 entries.
+    of where the files actually live on disk. Bounded by BOTH a count cap
+    (``max_entries``, default 20) AND a total-char cap (``max_chars``, default
+    4000). The char cap is what prevents the system prompt from silently
+    growing without bound across long sessions — see
+    ``_plans/0090-context-discipline-and-subagents.md`` §6 0090b.
     """
     analysis_root = arc_home() / "analysis"
     if not analysis_root.exists():
@@ -161,11 +165,26 @@ def build_analysis_manifest() -> str:
     if not entries:
         return ""
 
-    lines = entries[:20]
-    truncation = f"\n  ... ({len(entries) - 20} more)" if len(entries) > 20 else ""
-    return (
-        "\n--- Prior analysis artifacts ---\n"
-        + "\n".join(lines)
-        + truncation
-        + "\nUse file-read tools to access them. Do not re-run the heavy tools.\n---"
+    header = "\n--- Prior analysis artifacts ---\n"
+    footer_template = (
+        "\nUse file-read tools to access them. Do not re-run the heavy tools.\n---"
     )
+
+    # Apply count cap first.
+    kept = entries[:max_entries]
+    extras = max(0, len(entries) - len(kept))
+
+    # Then char-budget: walk kept entries, stop when adding the next would exceed
+    # the budget (after accounting for header, footer, and truncation note).
+    budget = max(200, max_chars - len(header) - len(footer_template) - 30)  # 30 = truncation note slack
+    accumulated: list[str] = []
+    chars_used = 0
+    for line in kept:
+        if chars_used + len(line) + 1 > budget:
+            extras += len(kept) - len(accumulated)
+            break
+        accumulated.append(line)
+        chars_used += len(line) + 1  # +1 for newline join
+
+    truncation = f"\n  ... ({extras} more)" if extras > 0 else ""
+    return header + "\n".join(accumulated) + truncation + footer_template

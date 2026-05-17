@@ -69,13 +69,15 @@ def build_session_summary(agent: "Agent") -> str:  # type: ignore[name-defined]
 
 
 def _shutdown_jvm_if_running() -> None:
-    """Shut down the JPype/PyGhidra JVM cleanly to suppress semaphore leak warnings."""
-    try:
-        import jpype
-        if jpype.isJVMStarted():
-            jpype.shutdownJVM()
-    except Exception:
-        pass
+    """No-op kept for back-compat — pyghidra now runs in subprocesses.
+
+    Historically the JVM lived in the agent process and needed an explicit
+    shutdown on exit. Since the subprocess refactor every Ghidra call lives
+    in a short-lived child process (see ``tools/implementations/reversing/
+    ghidra_subprocess.py``), so there's nothing to shut down here. Left as
+    a stub in case external callers reference it.
+    """
+    return
 
 
 def finalize_session(session_id: str, agent: "Agent | None", store_enabled: bool) -> None:  # type: ignore[name-defined]

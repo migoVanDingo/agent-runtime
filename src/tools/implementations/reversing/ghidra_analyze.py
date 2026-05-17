@@ -1,9 +1,5 @@
 from tools.base import BaseTool, InputSchema, ToolProperty, ToolWeight
-from tools.implementations.reversing.ghidra_cache import ghidra_home, run_ghidra_function
-
-
-def _probe(api, path):
-    return f"Ghidra ready for '{path}' — {api.currentProgram.getName()}"
+from tools.implementations.reversing.ghidra_cache import ghidra_home, run_ghidra_op
 
 
 class GhidraAnalyzeTool(BaseTool):
@@ -27,4 +23,4 @@ class GhidraAnalyzeTool(BaseTool):
     def execute(self, tool_input: dict) -> str:
         if not ghidra_home():
             return "Error: GHIDRA_HOME not set. Add GHIDRA_HOME=/path/to/ghidra to .env"
-        return run_ghidra_function(tool_input["path"], _probe, tool_input["path"])
+        return run_ghidra_op(tool_input["path"], "probe", {"path": tool_input["path"]})

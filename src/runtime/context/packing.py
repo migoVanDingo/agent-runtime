@@ -2,6 +2,10 @@
 
 pack_chronological() packs messages under the token budget while preserving
 tool_use/tool_result pair atomicity.
+
+Also exports ``detect_tool_pairs`` so alternative strategies can honour the
+same Anthropic API constraint (every ``tool_use`` block in an assistant
+message must have a matching ``tool_result`` in the next user message).
 """
 from __future__ import annotations
 
@@ -10,6 +14,37 @@ from runtime.context.scoring import message_text, estimate_tokens
 from logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def detect_tool_pairs(messages: list[dict]) -> dict[int, int]:
+    """Map each paired index to its partner index.
+
+    A pair is an assistant message containing a ``tool_use`` block followed
+    immediately by a user message containing a matching ``tool_result``.
+    Both indices appear as keys pointing to each other so callers can do
+    ``if i in pairs: partner = pairs[i]``.
+    """
+    pairs: dict[int, int] = {}
+    for idx, msg in enumerate(messages):
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        if not any(b.get("type") == "tool_use" for b in content):
+            continue
+        if idx + 1 >= len(messages):
+            continue
+        partner = messages[idx + 1]
+        if partner.get("role") != "user":
+            continue
+        p_content = partner.get("content")
+        if not isinstance(p_content, list):
+            continue
+        if any(b.get("type") == "tool_result" for b in p_content):
+            pairs[idx] = idx + 1
+            pairs[idx + 1] = idx
+    return pairs
 
 
 def _try_fit(

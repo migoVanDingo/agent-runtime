@@ -80,6 +80,12 @@ class RuntimeEvent:
     # ── Replay correlation ────────────────────────────────────────────
     model_run_id: str | None = None
 
+    # ── 0090c scope tag ───────────────────────────────────────────────
+    # "main" / "runtime" / "subagent:<name>" — auto-populated from the
+    # process-level scope contextvar on emit. Lets pandas analyses group
+    # cost/latency by which agent tier the event came from.
+    agent_scope: str | None = None
+
     # ── Blob paging ───────────────────────────────────────────────────
     raw_payload_ref: str | None = None
     redacted: bool = False
@@ -124,6 +130,7 @@ class RuntimeEvent:
             "stop_reason",
             "finish_reason_normalized",
             "model_run_id",
+            "agent_scope",
         ):
             value = getattr(self, key)
             if value is not None:

@@ -13,6 +13,7 @@ from config.runtime import (
     PlanValidatorConfig,
     PlanCriticConfig,
     ExecutionMonitorConfig,
+    ContextConfig,
     ContextManagerConfig,
     MonitorCouncilConfig,
     SynthesisQualityConfig,
@@ -23,6 +24,7 @@ from config.runtime import (
 )
 from config.council import CouncilConfig
 from config.container import ContainerConfig
+from config.subagents import SubAgentsConfig
 
 
 @dataclass
@@ -41,6 +43,9 @@ class RuntimeConfig:
     plan_critic: PlanCriticConfig
     execution_monitor: ExecutionMonitorConfig
     context_manager: ContextManagerConfig
+    # Pluggable context strategy — populated by the loader from either the
+    # new ``runtime.context`` block or the legacy ``runtime.context_manager``.
+    context: ContextConfig = field(default_factory=ContextConfig)
     council: CouncilConfig = field(default_factory=CouncilConfig)
     # Optional councils for specific decision points
     monitor_council: MonitorCouncilConfig = field(default_factory=MonitorCouncilConfig)
@@ -63,3 +68,7 @@ class AppConfig:
     storage: StorageConfig = field(default_factory=StorageConfig)
     rag: RagConfig = field(default_factory=RagConfig)
     container: ContainerConfig = field(default_factory=ContainerConfig)
+    # 0090e — per-sub-agent provider/model/timeout overrides loaded from
+    # the top-level ``subagents:`` block in config.yml. Empty mapping
+    # means every sub-agent uses its spec defaults.
+    subagents: SubAgentsConfig = field(default_factory=SubAgentsConfig)

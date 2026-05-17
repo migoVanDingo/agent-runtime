@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Protocol
 
 from providers.base import BaseProvider, TextBlock, ToolUseBlock
-from runtime.context_manager import ContextManager
+from runtime.context import ContextStrategy
 from runtime.injection_gate import handle_injection_warning
 from runtime.tool_executor import ToolCallExecutor
 from runtime.utils import banner, fmt_input, fmt_result, has_error_indicator
@@ -46,6 +46,11 @@ class ToolLoopResult:
     # Raw output of the last successful tool call (not the model's prose summary).
     # Criteria evaluators use this to inspect structured tool results.
     last_tool_output: str = ""
+    # Raw output of the most recent tool call regardless of success/error.
+    # The monitor needs this to detect non-recoverable tool errors (e.g. a
+    # sub-agent failure string) that the model would otherwise wrap with
+    # prose, defeating the regex-based short-circuit.
+    last_tool_output_raw: str = ""
 
 
 # ── Hooks protocol ────────────────────────────────────────────────────────────
@@ -87,7 +92,7 @@ class ToolLoop:
         self,
         provider: BaseProvider,
         messenger,
-        context_mgr: ContextManager,
+        context_mgr: ContextStrategy,
         tool_executor: ToolCallExecutor,
         user_gate,
         config: ToolLoopConfig,
@@ -129,6 +134,7 @@ class ToolLoop:
         hit_iteration_cap = False
         hit_tool_call_cap = False
         last_tool_output: str = ""
+        last_tool_output_raw: str = ""
 
         while True:
             iteration += 1
@@ -158,6 +164,7 @@ class ToolLoop:
                     tool_errors=tool_errors,
                     hit_iteration_cap=True,
                     last_tool_output=last_tool_output,
+                    last_tool_output_raw=last_tool_output_raw,
                 )
 
             packed = self._context_mgr.pack(
@@ -212,6 +219,7 @@ class ToolLoop:
                     hit_iteration_cap=hit_iteration_cap,
                     hit_tool_call_cap=hit_tool_call_cap,
                     last_tool_output=last_tool_output,
+                    last_tool_output_raw=last_tool_output_raw,
                 )
 
             # ── Tool use ─────────────────────────────────────────────────────
@@ -290,6 +298,11 @@ class ToolLoop:
                     logger.info(f"  ← {fmt_result(result)}")
                     total_tool_calls += 1
                     hooks.on_tool_complete(block.name, result)
+
+                    # Track every tool output (success or error) for the monitor's
+                    # non-recoverable-error detection. Separate from last_tool_output
+                    # which only tracks successes (for criteria evaluation).
+                    last_tool_output_raw = result
 
                     # Track last successful tool output for criteria evaluation.
                     if not has_error_indicator(result):

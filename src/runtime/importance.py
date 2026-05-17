@@ -11,6 +11,7 @@ ambiguous middle tier where a second opinion has the most value).
 from runtime.json_extract import extract_json
 from runtime.schema import Importance
 from providers.base import BaseProvider, TextBlock
+from runtime.scope import RUNTIME, scoped
 from logger import get_logger
 
 logger = get_logger(__name__)
@@ -61,12 +62,13 @@ class ImportanceScorer:
         messenger.add_user_message(user_turn)
 
         try:
-            response = self._provider.chat(
-                messages=messenger.get_messages(),
-                tools=[],
-                system=_IMPORTANCE_PROMPT,
-                label="ImportanceScorer",
-            )
+            with scoped(RUNTIME):
+                response = self._provider.chat(
+                    messages=messenger.get_messages(),
+                    tools=[],
+                    system=_IMPORTANCE_PROMPT,
+                    label="ImportanceScorer",
+                )
             raw = next((b.text for b in response.content if isinstance(b, TextBlock)), "")
             importance = self._parse(raw)
         except Exception as e:

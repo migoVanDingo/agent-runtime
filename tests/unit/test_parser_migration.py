@@ -40,16 +40,24 @@ def test_monitor_fenced_json():
     assert result.decision == StepDecision.CONTINUE
 
 
-def test_monitor_malformed_returns_continue():
+def test_monitor_malformed_returns_replan():
+    """Default on parse failure is REPLAN, not CONTINUE.
+
+    CONTINUE was the historical default but it caused the runtime to barrel
+    past genuine failures — see SES01KRV1XJ7WK4177X1KHDYEWQ4B where the LLM
+    said 'stop' (invalid), got coerced to CONTINUE, and the synthesis step
+    fabricated a dummy clone. REPLAN is the safer fallback.
+    """
     from runtime.schema import StepDecision
     result = _monitor_parse("not json at all")
-    assert result.decision == StepDecision.CONTINUE
+    assert result.decision == StepDecision.REPLAN
 
 
-def test_monitor_invalid_decision_defaults():
+def test_monitor_invalid_decision_defaults_to_replan():
+    """Same reasoning as above — unknown decision string should not silently CONTINUE."""
     from runtime.schema import StepDecision
     result = _monitor_parse('{"decision": "banana", "reason": "?"}')
-    assert result.decision == StepDecision.CONTINUE
+    assert result.decision == StepDecision.REPLAN
 
 
 # ── ImportanceScorer ──────────────────────────────────────────────────────────

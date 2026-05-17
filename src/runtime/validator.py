@@ -36,35 +36,71 @@ class PlanValidator:
         self._registered_tools = registered_tools
         self._registered_skills = registered_skills or set()
 
+    # ── Public API ──────────────────────────────────────────────────────────
+
     def validate(self, plan: Plan) -> ValidationResult:
-        """Structural validation of a plan. No LLM call."""
+        """Pre-expansion structural validation. No LLM call.
+
+        Runs every rule. Rules that depend on concrete tools are deferred
+        when the plan contains ``skill:*`` steps — those steps are opaque
+        until SkillExpansionStage runs. Use ``validate_post_expansion`` to
+        re-check the deferred rules against the expanded plan.
+        """
         if not config.runtime.plan_validator.enabled:
             return ValidationResult(status=ValidationStatus.VALID)
 
-        errors = []
-
-        # 1. Step count
-        max_steps = config.planning.max_steps
-        if len(plan.steps) > max_steps:
-            errors.append(f"Plan has {len(plan.steps)} steps but max is {max_steps}.")
-
-        if len(plan.steps) == 0:
-            errors.append("Plan has no steps.")
+        errors: list[str] = []
+        self._check_step_count(plan, errors)
+        if errors and plan.steps == []:
             return ValidationResult(
                 status=ValidationStatus.INVALID,
                 feedback="\n".join(errors),
             )
+        self._check_numbering(plan, errors)
+        self._check_action_types(plan, errors)
+        self._check_descriptions(plan, errors)
+        self._check_duplicate_consecutive(plan, errors)
+        self._check_tools_registered(plan, errors)
+        self._check_write_step(plan, errors, defer_when_skill_present=True)
+        return self._finalize(errors)
 
-        # 2. Sequential numbering
+    def validate_post_expansion(self, plan: Plan) -> ValidationResult:
+        """Re-check ONLY the rules deferred pre-expansion against the expanded plan.
+
+        Rules already validated pre-expansion are not re-run here — most
+        notably, ``max_steps`` is intentionally not enforced post-expansion
+        because skills naturally expand into many concrete steps (composing
+        deep-disassembly + analyze-and-write produces 14+ steps, well above
+        the planner-output cap). The pre-expansion check guards planner
+        sprawl; post-expansion sprawl is intentional.
+
+        Currently the only deferred rule is rule 7 (write_file presence when
+        the query asks for written output).
+        """
+        if not config.runtime.plan_validator.enabled:
+            return ValidationResult(status=ValidationStatus.VALID)
+        errors: list[str] = []
+        self._check_write_step(plan, errors, defer_when_skill_present=False)
+        return self._finalize(errors)
+
+    # ── Individual rules ────────────────────────────────────────────────────
+
+    def _check_step_count(self, plan: Plan, errors: list[str]) -> None:
+        max_steps = config.planning.max_steps
+        if len(plan.steps) > max_steps:
+            errors.append(f"Plan has {len(plan.steps)} steps but max is {max_steps}.")
+        if len(plan.steps) == 0:
+            errors.append("Plan has no steps.")
+
+    def _check_numbering(self, plan: Plan, errors: list[str]) -> None:
         expected = list(range(1, len(plan.steps) + 1))
         actual = [s.step for s in plan.steps]
         if actual != expected:
             errors.append(
-                f"Steps are not sequentially numbered 1..{len(plan.steps)}. "
-                f"Got: {actual}"
+                f"Steps are not sequentially numbered 1..{len(plan.steps)}. Got: {actual}"
             )
 
-        # 3. Action types exist as registered toolsets
+    def _check_action_types(self, plan: Plan, errors: list[str]) -> None:
         for step in plan.steps:
             if step.action_type in _TOOLSET_ACTION_TYPES:
                 if step.action_type.value not in self._registered_toolsets:
@@ -73,12 +109,12 @@ class PlanValidator:
                         f"is not a registered toolset. Available: {sorted(self._registered_toolsets)}"
                     )
 
-        # 4. Non-empty descriptions
+    def _check_descriptions(self, plan: Plan, errors: list[str]) -> None:
         for step in plan.steps:
             if not step.description or not step.description.strip():
                 errors.append(f"Step {step.step}: empty description.")
 
-        # 5. Duplicate consecutive steps (same description)
+    def _check_duplicate_consecutive(self, plan: Plan, errors: list[str]) -> None:
         for i in range(1, len(plan.steps)):
             prev_desc = plan.steps[i - 1].description.strip().lower()
             curr_desc = plan.steps[i].description.strip().lower()
@@ -88,7 +124,7 @@ class PlanValidator:
                     f"have identical descriptions."
                 )
 
-        # 6. Tool field validation — must be a real registered tool, skill reference, or null
+    def _check_tools_registered(self, plan: Plan, errors: list[str]) -> None:
         for step in plan.steps:
             if step.action_type == ActionType.CONVERSATION:
                 continue
@@ -109,23 +145,41 @@ class PlanValidator:
                     f"Available: {sorted(self._registered_tools)}"
                 )
 
-        # 7. Write-step completeness: if the query signals written output, the plan
-        #    must include at least one write_file step.
-        if plan.original_query and _WRITE_OUTPUT_RE.search(plan.original_query):
-            has_write = any(s.tool == "write_file" for s in plan.steps)
-            if not has_write:
-                errors.append(
-                    "Query expects written output (file path or 'write/save/generate' phrasing) "
-                    "but the plan contains no write_file step. Add a step to write the output."
-                )
+    def _check_write_step(
+        self,
+        plan: Plan,
+        errors: list[str],
+        *,
+        defer_when_skill_present: bool,
+    ) -> None:
+        """Rule 7: query expects written output → plan must include write_file.
 
+        Pre-expansion, this defers when a ``skill:*`` step exists (skill's
+        ``expand()`` may produce the write_file step). Post-expansion, it
+        always runs.
+        """
+        if not plan.original_query or not _WRITE_OUTPUT_RE.search(plan.original_query):
+            return
+        has_write = any(s.tool == "write_file" for s in plan.steps)
+        if has_write:
+            return
+        if defer_when_skill_present:
+            has_skill_step = any(
+                (s.tool or "").startswith(_SKILL_PREFIX) for s in plan.steps
+            )
+            if has_skill_step:
+                return
+        errors.append(
+            "Query expects written output (file path or 'write/save/generate' phrasing) "
+            "but the plan contains no write_file step. Add a step to write the output."
+        )
+
+    # ── Helpers ─────────────────────────────────────────────────────────────
+
+    def _finalize(self, errors: list[str]) -> ValidationResult:
         if errors:
             feedback = "\n".join(errors)
             logger.info(f"  validation FAILED:\n    " + "\n    ".join(errors))
-            return ValidationResult(
-                status=ValidationStatus.INVALID,
-                feedback=feedback,
-            )
-
+            return ValidationResult(status=ValidationStatus.INVALID, feedback=feedback)
         logger.info("  validation: VALID")
         return ValidationResult(status=ValidationStatus.VALID)

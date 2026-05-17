@@ -68,6 +68,23 @@ def build_service(opts: ServiceOptions) -> ServiceBundle:
     except Exception:
         pass
 
+    # Initialize the artifact store so store_artifact/get_artifact/etc. work.
+    # The legacy CLI path in main.py calls init_store before resolving the
+    # session; the TUI service builder must do the same or the planner will
+    # emit artifact tools that always fail and trigger replan loops (see
+    # SES01KRV1XJ7WK4177X1KHDYEWQ4B — 6 replans wasted on store_artifact).
+    try:
+        if config.artifact_store.enabled:
+            from runtime.artifact_store import init_store
+            from session_paths import store_db_path, store_data_dir
+            init_store(
+                db_path=store_db_path(),
+                data_dir=store_data_dir(),
+                inline_threshold=config.artifact_store.inline_threshold_bytes,
+            )
+    except Exception:
+        pass  # best-effort; monitor short-circuit catches the fallout
+
     # Build provider info string for the banner.
     try:
         provider = config.llm.provider
@@ -90,10 +107,19 @@ def build_service(opts: ServiceOptions) -> ServiceBundle:
     # instead of calling input() directly (which deadlocks inside patch_stdout).
     tui_gate = TUIUserGate()
 
+    # Inject NoopSpinner up front so the legacy `ui.spinner.Spinner` never
+    # constructs at all under the TUI. Previously InProcessAgentService
+    # swapped agent.spinner = NoopSpinner() after Agent.__init__ ran — the
+    # swap worked for the parent, but any time a sub-agent or other Agent
+    # got constructed afterwards it would build a fresh real Spinner and
+    # write to stdout. Inject-at-construction prevents the real Spinner
+    # from ever existing in this process.
+    from service.inprocess import NoopSpinner
     agent = Agent(
         verbose=opts.verbose,
         initial_messages=opts.resumed_messages or [],
         user_gate=tui_gate,
+        spinner=NoopSpinner(),
     )
 
     service = InProcessAgentService(agent, session_id=opts.session_id)
@@ -135,3 +161,9 @@ def finalize_session(session_id: str) -> None:
         write_session_summary(session_id, outcome="completed")
     except Exception:
         pass
+    # Note: the agent process never starts a JVM anymore — every Ghidra call
+    # runs in a short-lived subprocess (see tools/implementations/reversing/
+    # ghidra_subprocess.py). So there's no in-process JVM to shut down here
+    # and Python's normal exit handlers can run unimpeded. The Ctrl+C
+    # double-tap hard-exit in ui/app_keybindings remains as defense-in-depth
+    # against any future tool that might bring back the same problem.

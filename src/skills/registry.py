@@ -13,6 +13,11 @@ class SkillRegistry:
         _skills = skills if skills is not None else ALL_SKILLS
         self._by_name = {s.name: s for s in _skills}
 
+    def register(self, skill: Skill) -> None:
+        """Register a skill (used by the plugin loader)."""
+        self._by_name[skill.name] = skill
+        logger.info(f"Registered skill: {skill.name}")
+
     def get(self, name: str) -> Skill | None:
         return self._by_name.get(name)
 

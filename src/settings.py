@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 from typing import Optional
 from functools import lru_cache
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,18 +17,11 @@ def env_alias(*names: str) -> AliasChoices:
     return AliasChoices(*names)
 
 
-def _default_arc_home() -> str:
-    """Resolve the arc data home from ARC_HOME or ~/.arc/.
-
-    Used by multiple field defaults below. Resolved at instance creation, not
-    at module import, so .env values for ARC_HOME are picked up correctly.
-    """
-    return os.environ.get("ARC_HOME") or str(Path.home() / ".arc")
-
-
-def _default_agent_db_url() -> str:
-    """Default agent DB lives at <ARC_HOME>/agent.db so the project dir stays clean."""
-    return f"sqlite+aiosqlite:///{_default_arc_home()}/agent.db"
+def _resolve_arc_home(raw: str | None) -> Path:
+    """Expand ``~`` and return an absolute Path. None falls back to ``~/.arc``."""
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return Path.home() / ".arc"
 
 
 class Settings(BaseSettings):
@@ -69,9 +62,11 @@ class Settings(BaseSettings):
     # Defaults to sqlite+aiosqlite:///<ARC_HOME>/agent.db so all runtime data
     # lives under one directory. Override with AGENT_DB_URL in .env to point
     # at Postgres (e.g. postgresql+asyncpg://user:pass@host/dbname).
-    agent_db_url: str = Field(
-        default_factory=_default_agent_db_url,
-        validation_alias=env_alias("AGENT_DB_URL"),
+    # Resolved post-load (see ``_finalize_paths``) so it can use the .env
+    # value of ARC_HOME — pydantic's ``default_factory`` runs before .env
+    # parsing so it would otherwise miss ARC_HOME and fall back to ~/.arc/.
+    agent_db_url: Optional[str] = Field(
+        default=None, validation_alias=env_alias("AGENT_DB_URL"),
     )
     briefbot_db_path: Optional[str] = Field(
         default=None, validation_alias=env_alias("BRIEFBOT_DB_PATH"),
@@ -123,6 +118,18 @@ class Settings(BaseSettings):
     runtime_model: Optional[str] = Field(
         default=None, validation_alias=env_alias("RUNTIME_MODEL"),
     )
+
+    @model_validator(mode="after")
+    def _finalize_paths(self) -> "Settings":
+        """Compute path defaults that depend on .env values of other fields.
+
+        Runs after pydantic-settings has parsed .env, so ``self.arc_home``
+        is populated correctly. ``default_factory`` runs too early for that.
+        """
+        if self.agent_db_url is None:
+            home = _resolve_arc_home(self.arc_home)
+            object.__setattr__(self, "agent_db_url", f"sqlite+aiosqlite:///{home}/agent.db")
+        return self
 
 
 @lru_cache

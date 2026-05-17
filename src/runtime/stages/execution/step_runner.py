@@ -4,12 +4,22 @@ Extracted from ExecutionStage._run_step to keep execution.py under 600 lines.
 """
 from __future__ import annotations
 
+import re
+
 from planning.schema import Step
 from runtime.tool_loop import ToolLoop, ToolLoopConfig
 from app_config import config
 from logger import get_logger
 
 logger = get_logger(__name__)
+
+# Raw tool errors that the model tends to wrap with explanatory prose,
+# defeating the monitor's regex-based short-circuit. When the loop ends
+# after one of these without recovery, surface the raw error directly
+# as the step result so the monitor can detect it and force REPLAN.
+_NON_RECOVERABLE_TOOL_ERROR_RE = re.compile(
+    r"^Error: (?:sub-agent '[^']+' failed:|artifact store is not initialized)"
+)
 
 
 def run_step(
@@ -94,6 +104,15 @@ def run_step(
     if result.tool_errors and step.error is not None:
         existing = step.error or ""
         step.error = (existing + "; tool errors: " + "; ".join(result.tool_errors)).lstrip("; ")
+
+    # If the model wrapped a non-recoverable tool error (e.g. "Error: sub-agent
+    # X failed:" or "Error: artifact store is not initialized") with prose, the
+    # response_text won't match the monitor's short-circuit patterns and the
+    # pipeline will fabricate downstream work. Surface the raw tool output
+    # directly so the monitor sees the actual error and forces REPLAN.
+    raw = result.last_tool_output_raw or ""
+    if raw and _NON_RECOVERABLE_TOOL_ERROR_RE.match(raw.strip()):
+        return raw
 
     # Return the raw tool output when available so StructuralCriteria can
     # inspect structured results (e.g. diff_behavior JSON with all_match).

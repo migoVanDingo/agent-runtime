@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from providers.base import BaseProvider
 from routing.static_router import StaticRouter
-from runtime.context_manager import ContextManager
+from runtime.context import ContextStrategy
 from runtime.escalation import Escalation
 from runtime.guard import ActionGuard
 from runtime.pipeline_context import PipelineContext
@@ -42,7 +42,7 @@ class DirectExecutionStage(Stage):
         provider: BaseProvider,
         registry,
         router: StaticRouter,
-        context_mgr: ContextManager,
+        context_mgr: ContextStrategy,
         messenger,
         guard: ActionGuard,
         user_gate,

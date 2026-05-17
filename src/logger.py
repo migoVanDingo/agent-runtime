@@ -57,6 +57,31 @@ class _StripANSIFilter(logging.Filter):
         return True
 
 
+class _ScopeTagFilter(logging.Filter):
+    """Prefix each log record's message with the active ``runtime.scope`` tag.
+
+    Result in ``session.log``:
+
+        2026-05-17 12:00:00,000 [INFO] runtime.stages.routing: [runtime] mode=plan ...
+        2026-05-17 12:00:01,000 [INFO] runtime.stages.execution: [main] step 3/12 ...
+        2026-05-17 12:00:02,000 [INFO] runtime.tool_loop:     [subagent:ghidra_analyst] → ghidra_decompile ...
+
+    The ``[main]`` tag is omitted so the default scope doesn't add visual
+    noise to routine logs — the absence of a tag IS the main-agent indicator.
+    Only ``[runtime]`` and ``[subagent:*]`` are emitted explicitly.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            from runtime.scope import current_scope, MAIN
+        except Exception:
+            return True
+        scope = current_scope()
+        if scope and scope != MAIN:
+            record.msg = f"[{scope}] {record.msg}"
+        return True
+
+
 class ColoredFormatter(logging.Formatter):
     """ANSI-colored formatter for TTY output.
 
@@ -106,6 +131,9 @@ def configure_logging(session_id: str, verbose: bool = False) -> None:
     file_handler = logging.StreamHandler(log_stream)
     file_handler.setFormatter(plain_formatter)
     file_handler.addFilter(_StripANSIFilter())
+    # 0090c — prefix log records with the active scope tag so main/runtime/
+    # subagent work is visually distinguishable in session.log.
+    file_handler.addFilter(_ScopeTagFilter())
     root.addHandler(file_handler)
 
     if verbose:
@@ -116,6 +144,7 @@ def configure_logging(session_id: str, verbose: bool = False) -> None:
             ))
         else:
             stream_handler.setFormatter(plain_formatter)
+        stream_handler.addFilter(_ScopeTagFilter())
         root.addHandler(stream_handler)
 
     for name in _NOISY_LOGGERS:

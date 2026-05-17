@@ -223,20 +223,6 @@ class LocalRagService(RagService):
             return []
 
 
-def _emit_rag_event(event_type: str, *, payload: dict, content: dict | None = None) -> None:
-    """Best-effort RAG telemetry — never raise."""
-    try:
-        from runtime.events import RuntimeEvent, get_event_bus, get_runtime_identity
-        get_event_bus().emit(RuntimeEvent(
-            event_type,
-            get_runtime_identity(),
-            payload=payload,
-            content=content or {},
-            stage="RAG",
-        ))
-    except Exception:
-        pass
-
     def build_context_block(
         self, query: str, current_session_id: str, budget_chars: int
     ) -> str:
@@ -289,3 +275,18 @@ def _emit_rag_event(event_type: str, *, payload: dict, content: dict | None = No
 
         lines.append("---")
         return "\n".join(lines)
+
+
+def _emit_rag_event(event_type: str, *, payload: dict, content: dict | None = None) -> None:
+    """Best-effort RAG telemetry — never raise."""
+    try:
+        from runtime.events import RuntimeEvent, get_event_bus, get_runtime_identity
+        get_event_bus().emit(RuntimeEvent(
+            event_type,
+            get_runtime_identity(),
+            payload=payload,
+            content=content or {},
+            stage="RAG",
+        ))
+    except Exception:
+        pass

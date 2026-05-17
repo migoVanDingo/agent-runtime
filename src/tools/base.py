@@ -25,6 +25,10 @@ class BaseTool(ABC):
     name: str
     description: str
     weight: ToolWeight = ToolWeight.MODERATE  # default; tools override as needed
+    # Plugin convenience: a single tool may declare which existing built-in
+    # toolset it joins. None means the loader creates a `plugin:<name>` toolset
+    # or attaches via an explicit `Toolset(...)` export instead.
+    extends_toolset: str | None = None
 
     @property
     @abstractmethod

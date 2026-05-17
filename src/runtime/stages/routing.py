@@ -9,8 +9,10 @@ of the pipeline. Otherwise it returns OK and the pipeline continues.
 """
 from __future__ import annotations
 from providers.base import BaseProvider, TextBlock
-from runtime.context_manager import ContextManager
+from runtime.context import ContextStrategy
+from runtime.context.scoring import estimate_tokens
 from runtime.pipeline_context import PipelineContext
+from runtime.scope import RUNTIME, scoped
 from runtime.stage_base import Stage
 from runtime.stage_result import StageResult, StageStatus
 from runtime.utils import (
@@ -42,14 +44,18 @@ class RoutingStage(Stage):
     def __init__(
         self,
         provider: BaseProvider,
-        context_mgr: ContextManager,
+        context_mgr: ContextStrategy,
         skill_registry: SkillRegistry,
         messenger,
+        agent_system: str | None = None,
     ) -> None:
         self._provider = provider
         self._context_mgr = context_mgr
         self._skill_registry = skill_registry
         self._messenger = messenger
+        # 0090c/d — sub-agents pass their own system prompt; main agent uses
+        # config default when None.
+        self._agent_system = agent_system
 
     def run(self, context: PipelineContext) -> StageResult:
         logger.info(banner("Intent routing"))
@@ -57,19 +63,26 @@ class RoutingStage(Stage):
         skill_descriptions = self._skill_registry.descriptions()
         valid_skill_names = {name for name, _ in skill_descriptions}
 
-        packed = self._context_mgr.pack(
-            self._messenger.get_messages(),
-            context.user_message,
-        )
+        # Routing is a classifier-style call against the runtime provider.
+        # Entering the "runtime" scope makes AFM pick its smaller budget and
+        # tags telemetry/logging so it's distinguishable from main-agent work.
+        # See _plans/0090-context-discipline-and-subagents.md §6 0090a.
+        with scoped(RUNTIME):
+            base_system = self._agent_system or config.agent.system_prompt
+            routing_system = build_routing_system(base_system, skill_descriptions)
+            sys_size = estimate_tokens(routing_system)
+            packed = self._context_mgr.pack(
+                self._messenger.get_messages(),
+                context.user_message,
+                system_prompt_size=sys_size,
+            )
 
-        routing_system = build_routing_system(config.agent.system_prompt, skill_descriptions)
-
-        routing_response = self._provider.chat(
-            messages=packed,
-            tools=[],
-            system=routing_system,
-            label="RoutingStage",
-        )
+            routing_response = self._provider.chat(
+                messages=packed,
+                tools=[],
+                system=routing_system,
+                label="RoutingStage",
+            )
 
         full_text = next(
             (b.text for b in routing_response.content if isinstance(b, TextBlock)), ""

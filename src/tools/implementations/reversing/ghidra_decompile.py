@@ -1,46 +1,5 @@
 from tools.base import BaseTool, InputSchema, ToolProperty, ToolWeight
-from tools.implementations.reversing.ghidra_cache import ghidra_home, run_ghidra_function
-
-
-def _decompile(api, target: str | None):
-    from ghidra.app.decompiler import DecompInterface, DecompileOptions
-
-    program = api.currentProgram
-    fm = program.getFunctionManager()
-    decomp = DecompInterface()
-    options = DecompileOptions()
-    decomp.setOptions(options)
-    decomp.openProgram(program)
-
-    try:
-        if target:
-            fns = [f for f in fm.getFunctions(True) if f.getName() == target]
-            if not fns:
-                try:
-                    addr = program.getAddressFactory().getAddress(target)
-                    fn = fm.getFunctionAt(addr)
-                    if fn:
-                        fns = [fn]
-                except Exception:
-                    pass
-            if not fns:
-                fns = [f for f in fm.getFunctions(True) if target in f.getName()]
-        else:
-            fns = [f for f in fm.getFunctions(True) if not f.isExternal() and not f.isThunk()]
-
-        sections = []
-        for fn in fns:
-            result = decomp.decompileFunction(fn, 60, api.monitor)
-            if result.decompileCompleted():
-                code = result.getDecompiledFunction().getC()
-            else:
-                code = f"/* decompilation failed: {result.getErrorMessage()} */"
-            header = f"// {fn.getName()} @ {fn.getEntryPoint()}"
-            sections.append(f"{header}\n{code}")
-
-        return "\n\n".join(sections) if sections else f"(no functions found matching '{target}')"
-    finally:
-        decomp.dispose()
+from tools.implementations.reversing.ghidra_cache import ghidra_home, run_ghidra_op
 
 
 class GhidraDecompileTool(BaseTool):
@@ -69,5 +28,8 @@ class GhidraDecompileTool(BaseTool):
     def execute(self, tool_input: dict) -> str:
         if not ghidra_home():
             return "Error: GHIDRA_HOME not set. Add GHIDRA_HOME=/path/to/ghidra to .env"
-        fn = tool_input.get("function") or None
-        return run_ghidra_function(tool_input["path"], _decompile, fn)
+        return run_ghidra_op(
+            tool_input["path"],
+            "decompile",
+            {"function": tool_input.get("function") or None},
+        )

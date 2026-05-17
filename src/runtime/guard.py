@@ -174,8 +174,15 @@ class ActionGuard:
     repeatedly for the same operation.
     """
 
-    def __init__(self):
+    def __init__(self, registry=None):
+        # Optional registry reference — used to consult plugin manifests for
+        # ``permissions`` blocks on plugin-provided tools.
+        self._registry = registry
         self._approved: set[str] = set()
+
+    def set_registry(self, registry) -> None:
+        """Late-bind the registry. Plugins may not be loaded at guard init time."""
+        self._registry = registry
 
     def record_approval(self, tool_name: str, tool_input: dict) -> None:
         """Record that the user approved this tool call. Suppresses future escalations."""
@@ -276,7 +283,32 @@ class ActionGuard:
             binary = tool_input.get("path", "?")
             return GuardDecision.ESCALATE, f"host execution: {tool_name} on '{binary}'"
 
+        # ── Plugin tools: consult the manifest's permissions block ──
+        plugin_decision = self._check_plugin_permissions(tool_name, tool_input)
+        if plugin_decision is not None:
+            return plugin_decision
+
         return GuardDecision.ALLOW, ""
+
+    def _check_plugin_permissions(self, tool_name: str, tool_input: dict):
+        """Escalate when a plugin-provided tool requests sensitive permissions."""
+        if self._registry is None:
+            return None
+        manifest = self._registry.get_plugin_manifest(tool_name)
+        if manifest is None:
+            return None
+        permissions = getattr(manifest, "permissions", None)
+        if permissions is None:
+            return None
+        if getattr(permissions, "network", False):
+            return GuardDecision.ESCALATE, (
+                f"plugin tool {tool_name!r} requests network access"
+            )
+        if getattr(permissions, "filesystem_write", False):
+            return GuardDecision.ESCALATE, (
+                f"plugin tool {tool_name!r} requests filesystem-write access"
+            )
+        return None
 
     def _check_shell_command(self, command: str) -> tuple[GuardDecision, str]:
         """Inspect a shell command string for dangerous patterns.

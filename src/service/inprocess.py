@@ -29,6 +29,35 @@ from service.queue import BoundedDropQueue
 from service.translator import translate
 
 
+def _emit_runtime_turn_event(
+    event_type: str,
+    *,
+    session_id: str,
+    turn_id: str,
+    payload: dict,
+    duration_ms: int | None = None,
+    severity: str = "info",
+) -> None:
+    """Mirror service-level turn lifecycle to the runtime event bus.
+
+    The CLI path (main.py) emits these directly; the service path needs the
+    same events so JSONL telemetry + session.summary.json see ``n_turns`` etc.
+    """
+    try:
+        from runtime.events import get_event_bus, get_runtime_identity
+        identity = get_runtime_identity().for_turn(turn_id=turn_id)
+        get_event_bus().emit(RuntimeEvent(
+            event_type,
+            identity,
+            payload=payload,
+            stage="Service",
+            severity=severity,
+            duration_ms=duration_ms,
+        ))
+    except Exception:
+        pass
+
+
 # ── NoopSpinner ───────────────────────────────────────────────────────────────
 
 class NoopSpinner:
@@ -266,6 +295,15 @@ class InProcessAgentService:
             turn_id=turn_id,
             message_preview=message[:300],
         ))
+        # Mirror to the runtime event bus so the JSONL log + session.summary.json
+        # see the turn lifecycle. Without this, sessions running through the
+        # service path (TUI) report n_turns=0 in the summary.
+        _emit_runtime_turn_event(
+            "turn.started",
+            session_id=self._session_id,
+            turn_id=turn_id,
+            payload={"message_preview": message[:300]},
+        )
 
         asyncio.ensure_future(self._run_turn(message, turn_id, handle))
         return handle
@@ -332,6 +370,17 @@ class InProcessAgentService:
                 tokens_in=tokens_in,
                 tokens_out=tokens_out,
             ))
+            _emit_runtime_turn_event(
+                "turn.completed",
+                session_id=self._session_id,
+                turn_id=turn_id,
+                payload={
+                    "response_preview": response[:300],
+                    "tokens_in": tokens_in,
+                    "tokens_out": tokens_out,
+                },
+                duration_ms=elapsed_ms,
+            )
             handle._resolve(response)
 
         except TurnCancelledError as exc:
@@ -340,6 +389,13 @@ class InProcessAgentService:
                 turn_id=turn_id,
                 at_stage=exc.at_stage,
             ))
+            _emit_runtime_turn_event(
+                "turn.cancelled",
+                session_id=self._session_id,
+                turn_id=turn_id,
+                payload={"at_stage": exc.at_stage},
+                severity="warn",
+            )
             handle._reject(exc)
 
         except Exception as exc:
@@ -348,6 +404,13 @@ class InProcessAgentService:
                 turn_id=turn_id,
                 error=str(exc)[:500],
             ))
+            _emit_runtime_turn_event(
+                "turn.failed",
+                session_id=self._session_id,
+                turn_id=turn_id,
+                payload={"error": str(exc)[:500], "error_type": type(exc).__name__},
+                severity="error",
+            )
             handle._reject(TurnFailedError(str(exc)))
 
         finally:

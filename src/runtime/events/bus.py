@@ -174,6 +174,17 @@ class EventBus:
         if mrid and event.model_run_id is None:
             event = replace(event, model_run_id=mrid)
 
+        # 0090c — stamp the active scope tag so downstream analyses can group
+        # by agent tier (main / runtime / subagent:<name>) without traversing
+        # parent linkage. Call sites that need a different scope set it
+        # explicitly; auto-population only fills in unset values.
+        if event.agent_scope is None:
+            try:
+                from runtime.scope import current_scope
+                event = replace(event, agent_scope=current_scope())
+            except Exception:
+                pass
+
         if self._redact_on_emit:
             from runtime.events.redactor import get_redactor
             event = get_redactor().redact_event(event)

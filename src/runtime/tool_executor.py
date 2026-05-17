@@ -187,8 +187,19 @@ class ToolCallExecutor:
             )
 
         if guard_decision == GuardDecision.ESCALATE:
+            # 0090c — prefix escalation reason with the active scope tag so
+            # the user knows whether the prompt comes from the main agent or
+            # a delegated sub-agent. Skip for main-scope (no prefix = main).
+            display_reason = guard_reason
+            try:
+                from runtime.scope import current_scope, MAIN
+                scope = current_scope()
+                if scope and scope != MAIN:
+                    display_reason = f"[{scope}] {guard_reason}"
+            except Exception:
+                pass
             escalation = Escalation(
-                reason=guard_reason,
+                reason=display_reason,
                 source="guard",
                 tool_name=tool_name,
                 tool_input=tool_input,

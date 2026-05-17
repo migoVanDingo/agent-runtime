@@ -20,6 +20,7 @@ from config.runtime import (
     PlanValidatorConfig,
     PlanCriticConfig,
     ExecutionMonitorConfig,
+    ContextConfig,
     ContextManagerConfig,
     PipelineConfig,
     MonitorCouncilConfig,
@@ -35,6 +36,31 @@ from config.app import AppConfig, TimeoutsConfig, RuntimeConfig
 
 
 _CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "config.yml"
+
+
+def _load_context_config_with_compat(rt: dict) -> ContextConfig:
+    """Build ContextConfig from either runtime.context or legacy runtime.context_manager.
+
+    Priority order:
+        1. ``runtime.context`` — new pluggable shape.
+        2. ``runtime.context_manager`` — synthesises a params block for the
+           ``afm`` strategy and emits a one-line deprecation hint.
+        3. Defaults — strategy=``afm`` with no overrides.
+    """
+    new_block = rt.get("context")
+    if isinstance(new_block, dict):
+        return ContextConfig(
+            strategy=str(new_block.get("strategy", "afm")),
+            params=dict(new_block.get("params", {}) or {}),
+        )
+
+    legacy = rt.get("context_manager")
+    if isinstance(legacy, dict):
+        # Synthesize the afm params block from the legacy keys.
+        # Note: deprecation hint surfaces in the logger on first build_strategy().
+        return ContextConfig(strategy="afm", params={"afm": dict(legacy)})
+
+    return ContextConfig()
 
 
 def _load_tools_config(raw: dict) -> ToolsConfig:
@@ -161,6 +187,7 @@ def load_config() -> AppConfig:
         plan_critic=PlanCriticConfig(**rt["plan_critic"]),
         execution_monitor=ExecutionMonitorConfig(**rt["execution_monitor"]),
         context_manager=ContextManagerConfig(**rt["context_manager"]),
+        context=_load_context_config_with_compat(rt),
         council=council,
         monitor_council=MonitorCouncilConfig(**rt.get("monitor_council", {})),
         synthesis_quality=SynthesisQualityConfig(**rt.get("synthesis_quality", {})),
@@ -190,6 +217,23 @@ def load_config() -> AppConfig:
         ),
     )
 
+    # 0090e — load per-spec sub-agent overrides from the optional
+    # ``subagents:`` block. Empty when the block is absent → all sub-agents
+    # use their registered spec defaults.
+    from config.subagents import SubAgentOverride, SubAgentsConfig
+    sa_raw = raw.get("subagents", {}) or {}
+    sa_overrides: dict[str, SubAgentOverride] = {}
+    for spec_name, block in sa_raw.items():
+        if not isinstance(block, dict):
+            continue
+        sa_overrides[spec_name] = SubAgentOverride(
+            provider=block.get("provider"),
+            model=block.get("model"),
+            timeout_seconds=(float(block["timeout_seconds"]) if "timeout_seconds" in block else None),
+            max_iterations=(int(block["max_iterations"]) if "max_iterations" in block else None),
+        )
+    subagents = SubAgentsConfig(overrides=sa_overrides)
+
     return AppConfig(
         llm=LLMConfig(**raw["llm"]),
         timeouts=TimeoutsConfig(**raw["timeouts"]),
@@ -202,4 +246,5 @@ def load_config() -> AppConfig:
         storage=storage,
         rag=rag,
         container=container,
+        subagents=subagents,
     )

@@ -174,14 +174,14 @@ install-system: install-radare2 install-r2ghidra
 	@echo "                       https://github.com/NationalSecurityAgency/ghidra/releases"
 	@echo "                       then set GHIDRA_HOME in .env"
 
-install: install-python install-system
+install: install-python install-system install-reversing
 	@echo ""
 	@echo "✓ Full install complete. Run: source $(VENV)/bin/activate"
 	@echo ""
 	@echo "Run \`make install-angr\` later if you need symbolic execution tools."
 
 # Optional: install EVERYTHING including angr. Will fail if angr can't build.
-install-all: install-python install-system install-angr
+install-all: install-python install-system install-reversing install-angr
 	@echo ""
 	@echo "✓ Complete install (including angr) finished."
 
@@ -202,6 +202,11 @@ check-system:
 	  echo "  ✓ Ghidra        $$GHIDRA_HOME"; \
 	else \
 	  echo "  ⚠ Ghidra        GHIDRA_HOME not set (download from github.com/NationalSecurityAgency/ghidra)"; \
+	fi
+	@if [ -d "$(VENV)" ] && $(PYTHON) -c "import pyghidra" 2>/dev/null; then \
+	  echo "  ✓ pyghidra      installed in $(VENV)"; \
+	else \
+	  echo "  ✗ pyghidra      NOT FOUND  (make install-reversing)"; \
 	fi
 	@if [ -d "$(VENV)" ] && $(PYTHON) -c "import angr" 2>/dev/null; then \
 	  echo "  ✓ angr          installed"; \

@@ -1,6 +1,7 @@
 """arc bootstrap subcommand — create/migrate the centralized ARC_HOME data layout."""
 import argparse
 import shutil
+import sys
 from pathlib import Path
 
 
@@ -10,6 +11,28 @@ _LEGACY_DIRS = {
     "_store":    "store",
     "_analysis": "analysis",
 }
+
+
+def _run_db_migrations() -> bool:
+    """Apply alembic migrations against the configured agent DB. Returns True on success.
+
+    Idempotent — alembic skips revisions that have already been applied. The
+    DB file is created on first run if it doesn't exist (SQLite open-on-write).
+    """
+    project_root = Path(__file__).resolve().parent.parent.parent
+    ini = project_root / "src" / "alembic.ini"
+    if not ini.exists():
+        print(f"  ⚠ alembic.ini not found at {ini} — skipping migrations")
+        return False
+    try:
+        from alembic.config import Config
+        from alembic import command
+        cfg = Config(str(ini))
+        command.upgrade(cfg, "head")
+        return True
+    except Exception as exc:
+        print(f"  ✗ alembic upgrade failed: {exc}")
+        return False
 
 
 def cmd_bootstrap(argv: list[str]) -> None:
@@ -37,6 +60,14 @@ def cmd_bootstrap(argv: list[str]) -> None:
     for sub in ("sessions", "rag/global", "rag/sessions", "store/data",
                 "ghidra/projects", "analysis"):
         print(f"    {sub}")
+
+    print()
+    print("Applying database migrations…")
+    if _run_db_migrations():
+        from app_config import settings
+        print(f"  ✓ schema up to date  ({settings.agent_db_url})")
+    else:
+        print("  (DB migrations skipped — run `alembic -c src/alembic.ini upgrade head` manually)")
 
     if args.migrate:
         print()

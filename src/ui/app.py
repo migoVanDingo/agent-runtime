@@ -125,13 +125,17 @@ async def _interactive(
         pass
 
     await service.close()
-    from service.builder import finalize_session
-    finalize_session(info.session_id)
 
+    # Print the exit banner BEFORE finalize_session — when a JVM was started
+    # during this session, finalize_session calls os._exit(0) to force-kill
+    # the process, and anything printed after that won't appear.
     w = 52
     print(f"\n{'─' * w}")
     print(f"  Session ended  |  ID: {info.session_id}")
     print(f"{'─' * w}\n")
+
+    from service.builder import finalize_session
+    finalize_session(info.session_id)
 
 
 # The pre-alt-screen banner was removed — ConversationModel.add_welcome now

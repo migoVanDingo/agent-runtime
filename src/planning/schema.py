@@ -68,6 +68,7 @@ class ActionType(str, Enum):
     BRIEFBOT = "briefbot"
     REVERSING = "reversing"
     SYMBOLIC = "symbolic"
+    SUBAGENT = "subagent"  # 0090d — dispatched via SubAgentTool wrappers
     CONVERSATION = "conversation"
 
 

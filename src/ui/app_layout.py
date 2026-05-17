@@ -17,7 +17,6 @@ from prompt_toolkit.layout import Layout, HSplit, Window, ConditionalContainer
 from prompt_toolkit.layout.controls import FormattedTextControl, BufferControl
 from prompt_toolkit.layout.dimension import Dimension as D
 from prompt_toolkit.layout.processors import BeforeInput
-from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.output import ColorDepth
 from prompt_toolkit.styles import Style
 
@@ -61,19 +60,6 @@ def build_app(
     kb = build_key_bindings(input_model, conv, service, app_state)
 
     # ── Layout ────────────────────────────────────────────────────────────────
-    # Mouse handler: scroll wheel events on the conversation window scroll the
-    # ConversationModel (not the focused buffer). With mouse_support=True the
-    # app captures mouse events; click-drag for text selection requires
-    # Shift+drag in iTerm2/Terminal.app/Kitty/WezTerm.
-    def _conv_mouse_handler(mouse_event: MouseEvent):
-        if mouse_event.event_type == MouseEventType.SCROLL_UP:
-            conv.scroll_up(3)
-        elif mouse_event.event_type == MouseEventType.SCROLL_DOWN:
-            conv.scroll_down(3)
-        # Click/drag are ignored — text selection is handled by Shift+drag
-        # at the terminal level (iTerm2/Terminal.app/Kitty/WezTerm bypass the
-        # application's mouse capture when Shift is held).
-
     # focusable=False: the conversation window never takes keyboard focus.
     # This ensures event.current_buffer always refers to the input buffer when
     # up/down/auto_up/auto_down are called. PageUp/PageDown scroll the conversation
@@ -93,9 +79,6 @@ def build_app(
         get_line_prefix=lambda lineno, wrap_count: [("", "  ")],
         right_margins=[],  # placeholder for future scrollbar; keeps signature future-proof
     )
-    # Attach the mouse handler on the Window. prompt_toolkit dispatches mouse
-    # events to the Window the cursor is currently over, regardless of focus.
-    conv_window.content.mouse_handler = _conv_mouse_handler
 
     spinner_window = ConditionalContainer(
         content=Window(
@@ -163,11 +146,16 @@ def build_app(
         layout=layout,
         key_bindings=merged_kb,
         full_screen=True,
-        # mouse_support=True enables scroll wheel on the conversation window.
-        # Trade-off: terminal-native click-drag text selection is captured by
-        # the application. Users select text with Shift+drag (works in iTerm2 /
-        # Terminal.app / Kitty / WezTerm — modifier bypasses app mouse capture).
-        mouse_support=True,
+        # mouse_support=False so the terminal handles mouse events natively:
+        # - Click-drag selects text (so users can copy session IDs, code, etc.)
+        # - Triple-click selects a line
+        # - Cmd/Ctrl+click works as usual
+        # - Mouse scroll-wheel uses the terminal's scrollback buffer
+        # Trade-off: scroll wheel can't drive the conversation model's scroll
+        # state (would require capturing mouse events). Conversation scroll is
+        # handled by keyboard instead — PageUp/PageDown and ↑/↓ (with empty
+        # input) are bound in app_keybindings.py.
+        mouse_support=False,
         color_depth=ColorDepth.TRUE_COLOR,
         style=style,
     )

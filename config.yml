@@ -202,6 +202,44 @@ runtime:
     threshold_mid: 0.20
     compressed_max_chars: 800
 
+  # Pluggable context-management strategy (0089).
+  # `strategy` selects which packer runs before every provider.chat() call.
+  # `params.<name>` is the per-strategy config block — strategies parse what
+  # they need and ignore the rest.
+  #
+  # When `context` is omitted, the loader synthesises params for the `afm`
+  # strategy from the legacy `context_manager` block above (back-compat shim).
+  context:
+    strategy: afm          # afm | truncate | sliding | rag | default (= afm)
+    params:
+      afm:
+        enabled: true
+        message_budget_tokens: 65536
+        # 0090a — smaller budget applied when runtime.scope.current_scope()
+        # == "runtime" (RoutingStage, SkillHintStage, ExecutionMonitor,
+        # ImportanceScorer). Stops haiku-class classifier calls from
+        # exceeding per-minute rate limits when conversation history is
+        # large. See _plans/0090-context-discipline-and-subagents.md.
+        runtime_message_budget_tokens: 12000
+        half_life_turns: 15
+        threshold_high: 0.35
+        threshold_mid: 0.20
+        compressed_max_chars: 800
+      truncate:
+        budget_tokens: 65536
+        keep_first_user: true
+      sliding:
+        budget_tokens: 65536
+        keep_last_n: 20
+        summarize_older: true
+        summary_max_chars: 1500
+      rag:
+        budget_tokens: 65536
+        top_k: 12
+        score_threshold: 0.45
+        keep_last_n: 8
+        keep_first_user: true
+
   # Council: multi-agent deliberation primitive.
   # same-provider N times  → variance/noise reduction (self-consistency)
   # different providers    → epistemic independence (different training, priors)
@@ -284,3 +322,16 @@ container:
     jvm: "openjdk:17-slim"
     python: "python:3.11-slim"
     base: "ubuntu:22.04"
+
+# 0090e — Per-sub-agent provider/model/limit overrides. Each key is a
+# registered SubAgentSpec name (see `arc subagent list` for what's available).
+# Empty/missing keys mean the spec's default applies. Useful for routing
+# specialised work to a model that's particularly good at it — e.g., Opus
+# for reverse engineering, a coding-tuned model for code generation.
+subagents:
+  # Example: pin ghidra_analyst to a high-reasoning model.
+  ghidra_analyst:
+    provider: anthropic
+    model: claude-sonnet-4-5
+    timeout_seconds: 1200
+    max_iterations: 30

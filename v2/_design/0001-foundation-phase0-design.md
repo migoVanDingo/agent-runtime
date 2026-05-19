@@ -230,11 +230,11 @@ Every observable moment in the runtime is an event. Events are immutable, ordere
 
 ```jsonc
 {
-  "event_id": "evt_01HXYZ...",            // ULID
-  "session_id": "ses_01HXYZ...",
-  "turn_id": "trn_01HXYZ...",             // null if pre-turn
+  "event_id": "EVT01HXYZ...",             // ULID, uppercase prefix
+  "session_id": "SES01HXYZ...",
+  "turn_id": "TRN01HXYZ...",              // null if pre-turn
   "scope": "main",                         // "main" | "subagent:<name>" | other
-  "parent_event_id": "evt_01HXYZ...",     // for nesting (e.g. tool inside turn)
+  "parent_event_id": "EVT01HXYZ...",      // for nesting (e.g. tool inside turn)
   "ts": "2026-05-17T09:30:15.123456Z",    // ISO8601 UTC, microsecond precision
   "ts_monotonic_ns": 1234567890123,        // monotonic clock for ordering
   "type": "llm.call.completed",            // dotted type
@@ -309,7 +309,7 @@ For the human view, we generate a pretty rendering at view-time from the canonic
 {
   "payload": {
     "tool_name": "ls",
-    "tool_call_id": "toolcall_01HXYZ..."
+    "tool_call_id": "TCL01HXYZ..."
   },
   "content": {
     "input": {/* exact bytes the model produced */}
@@ -322,7 +322,7 @@ For the human view, we generate a pretty rendering at view-time from the canonic
 {
   "payload": {
     "tool_name": "ls",
-    "tool_call_id": "toolcall_01HXYZ...",
+    "tool_call_id": "TCL01HXYZ...",
     "ok": true,
     "output_bytes": 412
   },
@@ -384,7 +384,7 @@ One file per session (no rotation in v2.0–v2.2; deferred). Append-only writes 
 Single `~/.arc-v2/sessions/index.jsonl` (one line per session) for cheap "list all sessions, find by tag, etc." Each line:
 
 ```jsonc
-{"session_id": "ses_...", "started_at": "...", "ended_at": "...", "n_turns": 5, "tags": []}
+{"session_id": "SES...", "started_at": "...", "ended_at": "...", "n_turns": 5, "tags": []}
 ```
 
 Built/updated by the recorder plugin on `session.ended`. Not a queryable database — just a flat list for human/CLI consumption.
@@ -393,19 +393,23 @@ If we later want richer queries (find session with tool X, etc.), we add a SQLit
 
 ### 7.4 Configurable home directory
 
-Three layers of override, last one wins:
+One env var, the full path. Tilde + `$VARS` are expanded.
 
 | Layer | Mechanism | Default |
 |-------|-----------|---------|
-| 1. Environment — parent dir | `ARC_V2_HOME` | `$HOME` |
-| 2. Environment — folder name | `ARC_V2_DIRNAME` | `.arc-v2` |
-| 3. CLI flag — full override | `arc --home <path>` | (none) |
+| 1. CLI flag (highest precedence) | `arc --home <path>` | (none) |
+| 2. Environment | `ARC_HOME` | `~/.arc-v2` |
 
-Resolution: `final_home = $ARC_V2_HOME / $ARC_V2_DIRNAME`, unless `--home <path>` is passed in which case `final_home = <path>` directly.
+Examples:
+- `ARC_HOME=~/.arc-v2` → `$HOME/.arc-v2`
+- `ARC_HOME=~/Projects/p1/.arc` → `$HOME/Projects/p1/.arc`
+- `ARC_HOME=/abs/path/anywhere` → `/abs/path/anywhere`
 
-A `runtime.home` key in `config.yml` is NOT supported for this — `config.yml` lives *inside* the home dir, so the home dir can't depend on it. This is a chicken-and-egg avoidance.
+The split "parent dir + folder name" knob was tried during phase 1 and removed — it was confusing and made misconfigurations easy (you could end up with literal `~` segments embedded in the path). One full path is unambiguous.
 
-`arc bootstrap` resolves the final home dir and creates the layout if missing. `arc` (no subcommand) auto-bootstraps if it sees an empty/missing home dir.
+A `runtime.home` key in `config.yml` is NOT supported — `config.yml` lives *inside* the home dir, so the home dir can't depend on it. Chicken-and-egg avoidance.
+
+`arc bootstrap` resolves `ARC_HOME` and creates the layout if missing. `arc` (no subcommand) auto-bootstraps if it sees an empty/missing home dir.
 
 ## 8. Config schema
 
@@ -425,7 +429,7 @@ runtime:
 # ── Provider ────────────────────────────────────────────────────────────────
 provider:
   name: gemini                      # only "gemini" is exercised in v2.0–v2.2
-  model: gemini-3.1-flash-live-preview
+  model: gemini-3.1-flash-lite-preview
   api_key_env: GEMINI_API_KEY       # env var name to read the key from
   base_url: null                    # null = SDK/library default
   timeout_seconds: 60
@@ -526,7 +530,7 @@ Single entry point: `arc`. Subcommands are explicit verbs; bare `arc` opens the 
 | `arc` | Start an interactive session in the TUI. Auto-bootstraps home dir if missing. |
 | `arc bootstrap` | Create the home dir layout if it doesn't exist, write a default `config.yml`, exit. Idempotent. |
 | `arc bootstrap --force` | Overwrite existing `config.yml` with defaults. Sessions untouched. |
-| `arc --home <path>` | Override `ARC_V2_HOME / ARC_V2_DIRNAME` resolution. Works with all subcommands. |
+| `arc --home <path>` | Override `ARC_HOME` resolution. Works with all subcommands. |
 | `arc run "<prompt>"` | One-shot, non-interactive. Prints final response to stdout, full event log to ARC_HOME. For scripts and pipes. |
 | `arc replay <session_id>` | Deterministic replay of a recorded session. Asserts byte-identical output. Exit code reflects pass/fail. |
 | `arc sessions` | List sessions from `sessions/index.jsonl` with summary info. |
@@ -627,7 +631,7 @@ v2/
 The test that proves the foundation is real.
 
 ### 10.1 Setup
-- Config: `provider.name=gemini`, `provider.model=gemini-3.1-flash-live-preview`, `tools.enabled=[ls]`, `plugins.enabled=[jsonl-recorder]`
+- Config: `provider.name=gemini`, `provider.model=gemini-3.1-flash-lite-preview`, `tools.enabled=[ls]`, `plugins.enabled=[jsonl-recorder]`
 - API key: `GEMINI_API_KEY` set via `.env` or environment
 - Workspace: a directory with three files (`a.txt`, `b.txt`, `c.txt`)
 - User input: `"What files are in this directory?"`

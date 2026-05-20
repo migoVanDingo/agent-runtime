@@ -40,10 +40,12 @@ def test_active_plugins_filters_disabled(bootstrapped):
     cfg = load(bootstrapped / "config.yml")
     active = cfg.plugins.active()
     names = [p.name for p in active]
-    # All three plugins are enabled by default as of phase 2.1.5
+    # All five built-in plugins are enabled by default
     assert "jsonl-recorder" in names
     assert "guard" in names
     assert "pause-resume" in names
+    assert "log-writer" in names
+    assert "sliding-window-context" in names
 
 
 def test_filtering_works_when_a_plugin_is_explicitly_disabled(tmp_path):
@@ -168,6 +170,7 @@ def test_config_is_frozen(bootstrapped):
 
 
 def test_provider_params_passthrough(bootstrapped):
-    """Params should be a raw dict — providers consume them verbatim."""
+    """Params should be a raw dict — providers consume them verbatim.
+    Default omits top_p since Anthropic rejects it alongside temperature."""
     cfg = load(bootstrapped / "config.yml")
-    assert cfg.provider.params == {"temperature": 0, "max_tokens": 4096, "top_p": 1.0}
+    assert cfg.provider.params == {"temperature": 0, "max_tokens": 4096}

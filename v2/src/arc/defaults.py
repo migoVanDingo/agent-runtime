@@ -48,8 +48,14 @@ runtime:
     clearly what you cannot complete.
 
 # ── Provider ────────────────────────────────────────────────────────────────
+# To switch to Anthropic, change the three lines below:
+#   name: anthropic
+#   model: claude-haiku-4-5    (or claude-sonnet-4-5, claude-opus-4-7, etc.)
+#   api_key_env: ANTHROPIC_API_KEY
+# Everything else (retry, params) works the same. The Anthropic SDK requires
+# max_tokens — leave the default below or override in params.
 provider:
-  name: gemini                      # only "gemini" is exercised in v2.0–v2.2
+  name: gemini                      # 'gemini' | 'anthropic'
   model: gemini-3.1-flash-lite-preview
   api_key_env: GEMINI_API_KEY       # env var name to read the key from
   base_url: null                    # null = SDK/library default
@@ -61,7 +67,9 @@ provider:
   params:
     temperature: 0
     max_tokens: 4096
-    top_p: 1.0
+    # Don't set top_p here — Anthropic rejects `temperature` + `top_p` both
+    # being specified ("temperature and top_p cannot both be specified").
+    # If you want nucleus sampling, set ONE of them, not both.
 
 # ── Tools ───────────────────────────────────────────────────────────────────
 tools:
@@ -119,6 +127,26 @@ plugins:
       config: {}                    # signal file is <session_dir>/pause
       hooks_order:
         pause_check: 50
+    - name: log-writer
+      config:
+        level: info                 # debug | info | warn | error
+        preview_chars: 200          # truncate long messages/outputs
+        include_events: []          # if non-empty, ONLY log these event types
+        exclude_events: []          # event types to skip
+      hooks_order:
+        # session_start FIRST so the file exists before the recorder
+        # starts firing on_event. Same trick we use for jsonl-recorder.
+        on_session_start: 5
+        on_event: 50
+        on_session_end: 5
+    - name: sliding-window-context
+      config:
+        keep_first_turns: 2         # always preserve original goals/setup
+        keep_last_turns: 20         # always preserve recent reasoning
+        max_tokens: null            # null = no token budget, only turn count
+        token_estimate_chars_per: 4 # chars/N ≈ tokens, ~10-20% accurate
+      hooks_order:
+        pack_context: 100
 
 # ── TUI ─────────────────────────────────────────────────────────────────────
 tui:

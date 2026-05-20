@@ -65,6 +65,9 @@ class EventType:
     # Cycle: N identical tool calls in a row → loop forces wrap-up
     RUNTIME_CYCLE_DETECTED = "runtime.cycle_detected"
 
+    # Context manager packed the message list (dropped fragments to fit budget)
+    RUNTIME_CONTEXT_PACKED = "runtime.context_packed"
+
     # Catch-all for non-categorized observations
     EVENT_EMITTED = "event.emitted"
 

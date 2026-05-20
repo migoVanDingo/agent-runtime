@@ -17,9 +17,12 @@ def build(cfg: ProviderConfig) -> LLMProvider:
     if cfg.name == "gemini":
         from arc.providers.gemini import GeminiProvider
         return GeminiProvider(cfg)
+    if cfg.name == "anthropic":
+        from arc.providers.anthropic import AnthropicProvider
+        return AnthropicProvider(cfg)
 
     raise ValueError(
         f"unknown provider {cfg.name!r}\n"
-        f"  known: 'gemini'\n"
+        f"  known: 'gemini', 'anthropic'\n"
         f"  (add a case in arc/providers/__init__.py to support more)"
     )

@@ -8,3 +8,6 @@ build/
 dist/
 .venv/
 venv/
+.arc
+v2/.arc/
+.arc/

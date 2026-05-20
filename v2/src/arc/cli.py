@@ -57,6 +57,12 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_sessions(home_override)
     if args.command == "show":
         return _cmd_show(home_override, session_id=args.session_id)
+    if args.command == "log":
+        return _cmd_log(
+            home_override,
+            session_id=args.session_id,
+            tail=args.tail,
+        )
     if args.command == "replay":
         return _cmd_replay(
             home_override,
@@ -118,6 +124,15 @@ def _build_parser() -> argparse.ArgumentParser:
 
     show = sub.add_parser("show", help="pretty-print a recorded session")
     show.add_argument("session_id", help="session id (e.g., SES01HXYZ...)")
+
+    log = sub.add_parser(
+        "log", help="print the human-readable session.log for a session",
+    )
+    log.add_argument("session_id", help="session id whose log to print")
+    log.add_argument(
+        "--tail", type=int, default=None, metavar="N",
+        help="show only the last N lines",
+    )
 
     replay = sub.add_parser("replay", help="replay a recorded session")
     replay.add_argument("session_id", help="session id to replay")
@@ -234,6 +249,23 @@ def _cmd_sessions(home_override: str | None) -> int:
     return 0
 
 
+def _cmd_log(home_override: str | None, *, session_id: str, tail: int | None) -> int:
+    """Print the v1-style session.log written by the log-writer plugin."""
+    from arc.bootstrap import paths_for, resolve_home
+    p = paths_for(resolve_home(home_override))
+    log_path = p.sessions_dir / session_id / "session.log"
+    if not log_path.is_file():
+        print(f"no session.log for session {session_id!r} at {log_path}",
+              file=sys.stderr)
+        return 1
+    lines = log_path.read_text(encoding="utf-8").splitlines()
+    if tail is not None:
+        lines = lines[-tail:]
+    for line in lines:
+        print(line)
+    return 0
+
+
 def _cmd_show(home_override: str | None, *, session_id: str) -> int:
     """Render a recorded session as human-readable text (from canonical events)."""
     from arc.bootstrap import paths_for, resolve_home
@@ -302,6 +334,7 @@ def _cmd_run(home_override: str | None, *, prompt: str) -> int:
         session_id=session_id,
         config_snapshot_yaml=config_snapshot_yaml,
         user_gate=gate,
+        bus=bus,
     ))
     for built in plugins:
         registry.register(built.instance, hooks_order=built.hooks_order)
@@ -387,6 +420,7 @@ def _cmd_replay(
         sessions_dir=paths.sessions_dir,
         session_id=new_session_id_,
         config_snapshot_yaml=paths.config_file.read_text(),
+        bus=bus,
     ))
     for built in plugins:
         registry.register(built.instance, hooks_order=built.hooks_order)
@@ -526,6 +560,7 @@ def _cmd_resume(
         session_id=new_sid,
         config_snapshot_yaml=paths.config_file.read_text(),
         user_gate=gate,
+        bus=bus,
     ))
     for built in plugins:
         registry.register(built.instance, hooks_order=built.hooks_order)
@@ -654,6 +689,7 @@ def _cmd_rerun(
         session_id=new_sid,
         config_snapshot_yaml=paths.config_file.read_text(),
         user_gate=NoOpGate(),
+        bus=bus,
     ))
     for built in plugins:
         registry.register(built.instance, hooks_order=built.hooks_order)

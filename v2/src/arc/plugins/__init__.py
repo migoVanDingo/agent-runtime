@@ -16,7 +16,9 @@ from typing import Any
 from arc.config import PluginsConfig
 from arc.plugins.guard import GuardPlugin
 from arc.plugins.jsonl_recorder import JSONLRecorder
+from arc.plugins.log_writer import LogWriterPlugin
 from arc.plugins.pause_resume import PauseResumePlugin
+from arc.plugins.sliding_window_context import SlidingWindowContextPlugin
 from arc.user_gate import NoOpGate, UserGate
 
 
@@ -37,11 +39,17 @@ class PluginBuildContext:
       arc (interactive) → TUIGate
       arc run           → NoOpGate (auto-denies escalations)
       tests             → fakes
+
+    `bus` is consumed by plugins that EMIT events back into the stream
+    (e.g., the context manager emits runtime.context_packed when it
+    filters). Typed as Any to avoid importing EventBus here (would
+    create a possible circular if EventBus ever needs plugin-side types).
     """
     sessions_dir: Path
     session_id: str
     config_snapshot_yaml: str | None = None
     user_gate: UserGate | None = None
+    bus: Any = None
 
 
 def _build_jsonl_recorder(cfg: dict, build_ctx: PluginBuildContext) -> Any:
@@ -71,10 +79,36 @@ def _build_pause_resume(cfg: dict, build_ctx: PluginBuildContext) -> Any:
     )
 
 
+def _build_log_writer(cfg: dict, build_ctx: PluginBuildContext) -> Any:
+    return LogWriterPlugin(
+        sessions_dir=build_ctx.sessions_dir,
+        session_id=build_ctx.session_id,
+        level=str(cfg.get("level", "info")),
+        preview_chars=int(cfg.get("preview_chars", 200)),
+        include_events=list(cfg.get("include_events", []) or []),
+        exclude_events=list(cfg.get("exclude_events", []) or []),
+    )
+
+
+def _build_sliding_window_context(cfg: dict, build_ctx: PluginBuildContext) -> Any:
+    max_tokens = cfg.get("max_tokens")
+    p = SlidingWindowContextPlugin(
+        keep_first_turns=int(cfg.get("keep_first_turns", 2)),
+        keep_last_turns=int(cfg.get("keep_last_turns", 20)),
+        max_tokens=int(max_tokens) if max_tokens is not None else None,
+        token_estimate_chars_per=int(cfg.get("token_estimate_chars_per", 4)),
+    )
+    if build_ctx.bus is not None:
+        p.bind_bus(build_ctx.bus)
+    return p
+
+
 _BUILDERS = {
     "jsonl-recorder": _build_jsonl_recorder,
     "guard": _build_guard,
     "pause-resume": _build_pause_resume,
+    "log-writer": _build_log_writer,
+    "sliding-window-context": _build_sliding_window_context,
 }
 
 

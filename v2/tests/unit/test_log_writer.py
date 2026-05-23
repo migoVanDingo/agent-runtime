@@ -54,8 +54,29 @@ def _evt(type_, payload=None, content=None, session_id="SES_x", turn_id="TRN_y")
     )
 
 
-def test_format_unknown_event_returns_empty():
-    assert format_event(_evt("totally.made.up")) == []
+def test_format_unknown_event_falls_through_to_generic_formatter():
+    """Unknown event types render via the generic fallback so plugin-emitted
+    events show up in session.log without per-event-type formatters.
+    """
+    records = format_event(_evt("totally.made.up", payload={"foo": "bar", "n": 3}))
+    assert len(records) == 1
+    logger, _level, msg = records[0]
+    assert logger == "arc.runtime"
+    assert "totally.made.up" in msg
+    assert "foo=bar" in msg
+    assert "n=3" in msg
+
+
+def test_generic_formatter_routes_by_stage():
+    """Plugin/tool stage events route to arc.plugin / arc.tool loggers."""
+    plugin_evt = RuntimeEvent(type="briefbot.ready", stage="plugin",
+                              payload={"items": 12000}, session_id="S", turn_id="T")
+    tool_evt = RuntimeEvent(type="example_shout.invoked", stage="tool",
+                            payload={"name": "Alice"}, session_id="S", turn_id="T")
+    plugin_records = format_event(plugin_evt)
+    tool_records = format_event(tool_evt)
+    assert plugin_records[0][0] == "arc.plugin"
+    assert tool_records[0][0] == "arc.tool"
 
 
 def test_format_session_started_includes_banner_and_provider():

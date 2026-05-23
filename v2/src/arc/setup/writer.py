@@ -99,6 +99,131 @@ def write_provider_choice(
     return changes
 
 
+def write_plugin_enablement(
+    config_path: Path,
+    *,
+    name: str,
+    enabled: bool,
+    config: dict | None = None,
+    hooks_order: dict[str, int] | None = None,
+) -> list[WriteChange]:
+    """Append or update a plugin entry under `plugins.enabled` in config.yml.
+
+    Used by:
+      - the first-run enablement prompt (after `pip install arc-plugin-*`)
+      - `arc plugins enable|disable` toggles
+
+    Rules:
+      - If an entry with `name` already exists, only `enabled` is updated.
+        Existing `config` and `hooks_order` are preserved (the user may have
+        customized them).
+      - If no entry exists, a new one is appended with the provided defaults.
+      - Comments and ordering elsewhere in the file are preserved (ruamel
+        round-trip).
+
+    Returns one WriteChange per mutation (or skip).
+    """
+    from ruamel.yaml import YAML
+    from ruamel.yaml.comments import CommentedMap, CommentedSeq
+
+    yaml = YAML(typ="rt")
+    yaml.preserve_quotes = True
+    yaml.width = 4096
+
+    with config_path.open("r", encoding="utf-8") as f:
+        data = yaml.load(f)
+
+    if data is None or "plugins" not in data:
+        raise ValueError(
+            f"config at {config_path} has no `plugins:` block; can't safely "
+            f"update plugin enablement. Run `arc bootstrap --force` to recreate it."
+        )
+
+    plugins_block = data["plugins"]
+    if "enabled" not in plugins_block or plugins_block["enabled"] is None:
+        plugins_block["enabled"] = CommentedSeq()
+    enabled_list = plugins_block["enabled"]
+
+    changes: list[WriteChange] = []
+    found_idx = None
+    for i, entry in enumerate(enabled_list):
+        if isinstance(entry, dict) and entry.get("name") == name:
+            found_idx = i
+            break
+
+    if found_idx is not None:
+        entry = enabled_list[found_idx]
+        old_enabled = bool(entry.get("enabled", True))
+        if old_enabled != enabled:
+            entry["enabled"] = enabled
+            changes.append(WriteChange(
+                key=f"plugins.enabled[{name}].enabled",
+                old=str(old_enabled),
+                new=str(enabled),
+            ))
+        else:
+            changes.append(WriteChange(
+                key=f"plugins.enabled[{name}].enabled",
+                old=str(old_enabled),
+                new=str(enabled),
+            ))
+    else:
+        new_entry = CommentedMap()
+        new_entry["name"] = name
+        new_entry["enabled"] = enabled
+        new_entry["config"] = CommentedMap(config or {})
+        new_entry["hooks_order"] = CommentedMap(hooks_order or {})
+        enabled_list.append(new_entry)
+        changes.append(WriteChange(
+            key=f"plugins.enabled[{name}]",
+            old=None,
+            new=f"{{enabled: {enabled}}}",
+        ))
+
+    buf = StringIO()
+    yaml.dump(data, buf)
+    config_path.write_text(buf.getvalue(), encoding="utf-8")
+
+    return changes
+
+
+def remove_plugin_entry(config_path: Path, *, name: str) -> list[WriteChange]:
+    """Remove a plugin entry by name. Used by `arc plugins` when cleaning up
+    dangling entries (plugin uninstalled but still listed in config.yml).
+
+    Returns [WriteChange(...)] if removed, [] if no entry by that name.
+    """
+    from ruamel.yaml import YAML
+
+    yaml = YAML(typ="rt")
+    yaml.preserve_quotes = True
+    yaml.width = 4096
+
+    with config_path.open("r", encoding="utf-8") as f:
+        data = yaml.load(f)
+
+    if (
+        data is None
+        or "plugins" not in data
+        or "enabled" not in data["plugins"]
+        or data["plugins"]["enabled"] is None
+    ):
+        return []
+
+    enabled_list = data["plugins"]["enabled"]
+    for i, entry in enumerate(enabled_list):
+        if isinstance(entry, dict) and entry.get("name") == name:
+            del enabled_list[i]
+            buf = StringIO()
+            yaml.dump(data, buf)
+            config_path.write_text(buf.getvalue(), encoding="utf-8")
+            return [WriteChange(
+                key=f"plugins.enabled[{name}]",
+                old="present", new=None,
+            )]
+    return []
+
+
 def render_changes(changes: list[WriteChange]) -> str:
     """Human-readable diff string for the picker's success screen."""
     lines: list[str] = []

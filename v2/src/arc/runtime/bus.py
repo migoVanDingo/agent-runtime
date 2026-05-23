@@ -52,6 +52,9 @@ class HookRegistry:
         self._failures: dict[str, int] = defaultdict(int)
         # plugin_name -> set of hook names the plugin was disabled FROM
         self._disabled: set[str] = set()
+        # plugin_name -> instance, for `iter_plugins()` lookups. Lets the
+        # runtime ask "what plugins are registered?" without walking chains.
+        self._plugins: dict[str, Any] = {}
         self._threshold = failure_threshold
         self._exc_msg_max = exception_message_max_chars
         # Set by the runtime so failed-hook events can be emitted onto the bus
@@ -61,14 +64,29 @@ class HookRegistry:
         """Wire the registry to the bus so it can emit plugin.* events."""
         self._bus = bus
 
+    def iter_plugins(self) -> list[Any]:
+        """Return the set of unique plugin instances currently registered.
+
+        Used by the runtime to ask plugins for tools (provides_tools) without
+        coupling to the chains structure. Returns instances, not names —
+        callers commonly want to dispatch methods on the plugin object.
+        """
+        return list(self._plugins.values())
+
     def register(self, plugin: Any, *, hooks_order: dict[str, int]) -> None:
         """Register a plugin against named hooks with priorities.
 
         The plugin must implement methods matching the hook names in
         `hooks_order` — registering for a hook the plugin doesn't implement
         is a programmer error and raises at registration time.
+
+        A plugin may be registered with `hooks_order={}` — useful for plugins
+        that contribute tools via `provides_tools()` but implement no hooks.
+        In that case the instance is still tracked in `_plugins` so
+        `iter_plugins()` finds it.
         """
         plugin_name = getattr(plugin, "name", plugin.__class__.__name__)
+        self._plugins[plugin_name] = plugin
         for hook_name, priority in hooks_order.items():
             if hook_name not in ALL_HOOK_NAMES:
                 raise ValueError(

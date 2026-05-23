@@ -112,6 +112,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.config_action == "path":
             return _cmd_config_path(home_override)
         parser.error(f"unknown config action: {args.config_action}")
+    if args.command == "plugins":
+        return _cmd_plugins(home_override, action=getattr(args, "plugins_action", None))
     if args.command is None:
         return _cmd_interactive(home_override)
 
@@ -300,6 +302,14 @@ def _build_parser() -> argparse.ArgumentParser:
     cfg_sub = cfg.add_subparsers(dest="config_action", required=True)
     cfg_sub.add_parser("show", help="print resolved config")
     cfg_sub.add_parser("path", help="print resolved config file path")
+
+    plugins = sub.add_parser(
+        "plugins",
+        help="manage installed plugins (enable, disable, clean up)",
+    )
+    plugins_sub = plugins.add_subparsers(dest="plugins_action")
+    plugins_sub.add_parser("list", help="print plugin status (non-interactive)")
+    # No subcommand → interactive menu
 
     return p
 
@@ -570,6 +580,13 @@ def _cmd_run(home_override: str | None, *, prompt: str) -> int:
 
     cfg = load(paths.config_file)
 
+    # First-run enablement: headless mode never prompts (interactive=False).
+    # Discovered-but-not-in-config plugins stay dormant. Outcomes are still
+    # emitted so observers see "we noticed but skipped".
+    cfg, enablement_outcomes = _apply_first_run_enablement(
+        paths, cfg, interactive=False,
+    )
+
     # Wire everything together
     provider = build_provider(cfg.provider)
     tools = build_tools(cfg.tools)
@@ -604,6 +621,8 @@ def _cmd_run(home_override: str | None, *, prompt: str) -> int:
 
     try:
         sess.start()
+        _emit_discovery_report(bus)
+        _emit_enablement_outcomes(bus, enablement_outcomes)
         outcome = sess.run_turn(prompt)
         print(outcome.final_response)
         return 0 if outcome.success else 1
@@ -1191,6 +1210,13 @@ def _cmd_interactive(home_override: str | None) -> int:
     paths = paths_for(home)
     cfg = load(paths.config_file)
 
+    # First-run plugin enablement: interactive prompt for any plugin that
+    # was pip-installed since the last session and isn't in config.yml.
+    # MUST happen before build_plugins() so newly-enabled plugins are loaded.
+    cfg, enablement_outcomes = _apply_first_run_enablement(
+        paths, cfg, interactive=True,
+    )
+
     provider = build_provider(cfg.provider)
     tools = build_tools(cfg.tools)
     registry = HookRegistry(
@@ -1214,6 +1240,7 @@ def _cmd_interactive(home_override: str | None) -> int:
         session_id=session_id,
         config_snapshot_yaml=paths.config_file.read_text(),
         user_gate=gate,
+        bus=bus,
     ))
     for built in plugins:
         registry.register(built.instance, hooks_order=built.hooks_order)
@@ -1222,8 +1249,157 @@ def _cmd_interactive(home_override: str | None) -> int:
         config=cfg, provider=provider, tools=tools,
         registry=registry, bus=bus, session_id=session_id,
     )
+    # Emit discovery + enablement events onto the session bus so they
+    # land in events.jsonl alongside session.started. Done before app.run()
+    # so the bus is wired but after AgentSession is built.
+    _emit_discovery_report(bus)
+    _emit_enablement_outcomes(bus, enablement_outcomes)
+
     app = TUIApp(cfg, sess, home_display=str(home), console=console)
     return app.run()
+
+
+# ── arc plugins ────────────────────────────────────────────────────────────
+
+
+def _cmd_plugins(home_override: str | None, *, action: str | None) -> int:
+    """`arc plugins` — manage installed plugins.
+
+    No action  → interactive checkbox menu (the always-available toggle UI).
+    list       → non-interactive plain-text status table.
+    """
+    from arc.bootstrap import bootstrap, paths_for, resolve_home
+    from arc.setup.plugin_menu import list_plugins, run_menu
+
+    home = resolve_home(home_override)
+    bootstrap(home)
+    paths = paths_for(home)
+
+    if action == "list":
+        return list_plugins(paths.config_file)
+    return run_menu(paths.config_file)
+
+
+# ── First-run plugin enablement helper ─────────────────────────────────────
+
+
+def _apply_first_run_enablement(
+    paths, cfg, *, interactive: bool
+):
+    """Run the first-run enablement flow for newly-discovered plugins.
+
+    Returns (cfg_possibly_reloaded, outcomes). If any plugin was persisted
+    to config.yml, the config is reloaded so the freshly-enabled plugin is
+    visible to the rest of startup.
+
+    `interactive` controls whether the user is actually prompted. Headless
+    callers (`arc run`, batch replay) pass False — discovered plugins stay
+    dormant until the user runs `arc` (interactive) or `arc plugins`.
+
+    Outcomes are returned (not yet emitted) so the caller can emit them
+    onto the AgentSession's bus once it exists, ensuring the events land
+    in the session's recorded event log.
+    """
+    from arc.config import load
+    from arc.plugins import last_discovery
+    from arc.plugins.enablement import find_new_plugins, run_first_run_flow
+
+    report = last_discovery()
+    if report is None or not report.discovered:
+        return cfg, []
+
+    new_plugins = find_new_plugins(report, cfg.plugins)
+    if not new_plugins:
+        return cfg, []
+
+    outcomes = run_first_run_flow(
+        paths.config_file,
+        new_plugins=new_plugins,
+        interactive=interactive,
+    )
+    persisted = [o for o in outcomes if o.persisted]
+    if persisted:
+        cfg = load(paths.config_file)
+    return cfg, outcomes
+
+
+def _emit_enablement_outcomes(bus, outcomes) -> None:
+    """Emit RuntimeEvents for the outcomes onto the session bus. Called
+    AFTER session.started so the events land in the recorded event log.
+    """
+    if not outcomes:
+        return
+    from arc.runtime.events import EventType, RuntimeEvent
+
+    for o in outcomes:
+        if o.skipped_reason is not None:
+            bus.emit(RuntimeEvent(
+                type=EventType.PLUGIN_FIRST_RUN_PROMPTED,
+                stage="cli",
+                payload={
+                    "name": o.name,
+                    "package": o.package,
+                    "package_version": o.package_version,
+                    "skipped_reason": o.skipped_reason,
+                },
+            ))
+            continue
+        bus.emit(RuntimeEvent(
+            type=EventType.PLUGIN_FIRST_RUN_ENABLED if o.enabled
+                 else EventType.PLUGIN_FIRST_RUN_DECLINED,
+            stage="cli",
+            payload={
+                "name": o.name,
+                "package": o.package,
+                "package_version": o.package_version,
+            },
+        ))
+        if o.persisted:
+            bus.emit(RuntimeEvent(
+                type=EventType.PLUGIN_CONFIG_PERSISTED,
+                stage="cli",
+                payload={"name": o.name, "enabled": o.enabled},
+            ))
+
+
+def _emit_discovery_report(bus) -> None:
+    """Emit a one-shot summary of what entry-point discovery found at boot.
+    Idempotent — safe to call multiple times; arc.plugins caches the last
+    report.
+    """
+    from arc.plugins import last_discovery
+    from arc.runtime.events import EventType, RuntimeEvent, Severity
+
+    report = last_discovery()
+    if report is None:
+        return
+
+    bus.emit(RuntimeEvent(
+        type=EventType.PLUGINS_DISCOVERED,
+        stage="cli",
+        payload={
+            "discovered": [
+                {"name": d.name, "package": d.package, "version": d.package_version}
+                for d in report.discovered
+            ],
+            "conflicts": [
+                {"name": c.name, "from": c.discovered_from, "conflicts_with": c.conflicts_with}
+                for c in report.conflicts
+            ],
+        },
+    ))
+    for failure in report.failures:
+        bus.emit(RuntimeEvent(
+            type=EventType.PLUGIN_LOAD_FAILED,
+            stage="cli",
+            severity=Severity.ERROR,
+            payload={
+                "name": failure.name,
+                "package": failure.package,
+                "entry_point": failure.entry_point_value,
+                "error": failure.error,
+            },
+        ))
 
 
 # ── .env loading ───────────────────────────────────────────────────────────

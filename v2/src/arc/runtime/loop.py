@@ -80,9 +80,15 @@ class AgentSession:
     def start(self) -> SessionContext:
         """Initialize the session. Idempotent — safe to call multiple times.
 
-        Ordering: fire on_session_start FIRST so plugins (notably the recorder)
-        can set up before any events fire. THEN emit session.started — that
-        event lands in the now-ready event log.
+        Ordering:
+          1. Fire on_session_start FIRST so plugins (recorder, plus session-
+             scoped plugins like briefbot) can set up before any events fire.
+          2. Merge plugin-contributed tools into the registry (provides_tools).
+             Plugins build these in on_session_start, so the merge MUST happen
+             after step 1.
+          3. Bind the event bus to any tool that declares bind_bus(bus).
+          4. Emit session.started — that event lands in the now-ready event
+             log with the *final* tool list (built-in + plugin-contributed).
         """
         if self._started:
             return self._session_ctx  # type: ignore[return-value]
@@ -98,6 +104,14 @@ class AgentSession:
 
         with session(self.session_id):
             self.registry.fire_observer("on_session_start", ctx=self._session_ctx)
+
+            # Merge plugin-contributed tools (no-op if no plugin defines
+            # provides_tools). Collisions raise — this is loud on purpose.
+            self._merge_plugin_tools()
+
+            # Bind the bus to tools that need it (optional contract).
+            self._bind_bus_to_tools()
+
             self.bus.emit(RuntimeEvent(
                 type=EventType.SESSION_STARTED,
                 stage="AgentSession",
@@ -111,6 +125,61 @@ class AgentSession:
 
         self._started = True
         return self._session_ctx
+
+    # ── Internal: tool merge + bus binding ────────────────────────────────
+
+    def _merge_plugin_tools(self) -> None:
+        """Ask each registered plugin (via the hook registry) for tools to
+        contribute, register them, and emit an observability event.
+
+        We pull plugins from the registry rather than receiving them as a
+        constructor arg so the merge stays close to the lifecycle ordering.
+        """
+        plugins = list(getattr(self.registry, "iter_plugins", lambda: [])())
+        added: list[str] = []
+        for plugin in plugins:
+            provider = getattr(plugin, "provides_tools", None)
+            if not callable(provider):
+                continue
+            try:
+                tools = list(provider() or [])
+            except Exception as exc:  # noqa: BLE001 — surface, don't crash
+                self.bus.emit(RuntimeEvent(
+                    type=EventType.PLUGIN_HOOK_FAILED,
+                    stage="AgentSession",
+                    severity=Severity.ERROR,
+                    payload={
+                        "plugin": getattr(plugin, "name", type(plugin).__name__),
+                        "hook": "provides_tools",
+                        "error": f"{type(exc).__name__}: {exc}",
+                    },
+                ))
+                continue
+            for tool in tools:
+                if tool.name in self.tools:
+                    raise ValueError(
+                        f"plugin {getattr(plugin, 'name', type(plugin).__name__)!r} "
+                        f"provides tool {tool.name!r} but a tool with that name "
+                        f"is already registered"
+                    )
+                self.tools.register(tool)
+                added.append(tool.name)
+        if added:
+            self.bus.emit(RuntimeEvent(
+                type=EventType.PLUGIN_TOOLS_REGISTERED,
+                stage="AgentSession",
+                payload={"tools": added},
+            ))
+
+    def _bind_bus_to_tools(self) -> None:
+        """Call bind_bus(bus) on every tool that defines it. Tools that emit
+        structured events declare this method; tools that don't (the boring
+        majority) silently skip the call.
+        """
+        for tool in self.tools.all():
+            binder = getattr(tool, "bind_bus", None)
+            if callable(binder):
+                binder(self.bus)
 
     def end(self) -> None:
         """Finalize the session.

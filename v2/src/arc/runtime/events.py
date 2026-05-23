@@ -57,6 +57,17 @@ class EventType:
     PLUGIN_HOOK_FAILED = "plugin.hook.failed"
     PLUGIN_DISABLED = "plugin.disabled"
 
+    # Entry-point discovery + first-run enablement (out-of-tree plugins).
+    # Emitted once at session boot so replay and logs always show what arc
+    # found, what loaded, and what got skipped or shadowed.
+    PLUGINS_DISCOVERED = "plugins.discovered"
+    PLUGIN_LOAD_FAILED = "plugin.load_failed"
+    PLUGIN_TOOLS_REGISTERED = "plugin.tools_registered"
+    PLUGIN_FIRST_RUN_PROMPTED = "plugin.first_run.prompted"
+    PLUGIN_FIRST_RUN_ENABLED = "plugin.first_run.enabled"
+    PLUGIN_FIRST_RUN_DECLINED = "plugin.first_run.declined"
+    PLUGIN_CONFIG_PERSISTED = "plugin.config.persisted"
+
     # Control flow
     PAUSE_CHECKPOINT_PASSED = "pause.checkpoint.passed"
     PAUSE_REQUESTED = "pause.requested"

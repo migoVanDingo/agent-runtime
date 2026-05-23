@@ -285,10 +285,18 @@ def test_plugin_factory_skips_disabled(tmp_path):
     assert built == []
 
 
-def test_plugin_factory_unknown_name_raises(tmp_path):
+def test_plugin_factory_unknown_name_skips_with_warning(tmp_path, capsys):
+    """Out-of-tree plugin support: an unknown name in config.yml means the
+    plugin package was likely uninstalled, not a typo. Skip with a stderr
+    warning rather than crash the session. The `arc plugins` menu surfaces
+    these as dangling so the user can clean up.
+    """
     entries = [PluginEntry(name="invented", enabled=True, config={}, hooks_order={})]
     plugins_cfg = PluginsConfig(failure_threshold=3, exception_message_max_chars=500,
                                  enabled=entries)
-    with pytest.raises(ValueError, match="unknown plugin 'invented'"):
-        build_plugins(plugins_cfg, PluginBuildContext(
-            sessions_dir=tmp_path, session_id="Ses_x"))
+    built = build_plugins(plugins_cfg, PluginBuildContext(
+        sessions_dir=tmp_path, session_id="Ses_x"))
+    assert built == []
+    captured = capsys.readouterr()
+    assert "'invented'" in captured.err
+    assert "not installed" in captured.err

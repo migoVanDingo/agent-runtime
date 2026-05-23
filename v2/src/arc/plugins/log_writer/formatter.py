@@ -54,18 +54,55 @@ def format_event(event: RuntimeEvent, *, preview_chars: int = 200) -> list[tuple
     Multi-line output (banners) returns multiple tuples — the plugin emits
     each as its own log record so timestamps stay accurate.
 
-    Unknown event types return [] — silently skipped.
+    Unknown event types fall through to `_fmt_generic` which renders a
+    compact line "<type>: k1=v1, k2=v2 …" so out-of-tree plugin events
+    show up in session.log without requiring a custom formatter per type.
     """
     t = event.type
     fn = _DISPATCH.get(t)
     if fn is None:
-        return []
+        return _fmt_generic(event, preview_chars)
     try:
         return fn(event, preview_chars)
     except Exception as e:
         # Formatting must never crash the agent
         return [("arc.plugin", logging.ERROR,
                  f"log_writer formatter raised on {t}: {e!r}")]
+
+
+def _fmt_generic(e: RuntimeEvent, preview_chars: int) -> list[tuple[str, int, str]]:
+    """Fallback for unknown event types (typically plugin-emitted).
+
+    Renders payload as "k=v" pairs, truncated. Routes by stage:
+      - stage="tool"   → arc.tool logger
+      - stage="plugin" → arc.plugin logger
+      - else           → arc.runtime
+    `severity` maps to log level.
+    """
+    if e.stage == "tool":
+        logger = "arc.tool"
+    elif e.stage == "plugin":
+        logger = "arc.plugin"
+    else:
+        logger = "arc.runtime"
+
+    sev = (e.severity or "info").lower()
+    level = {
+        "debug": logging.DEBUG,
+        "info":  logging.INFO,
+        "warn":  logging.WARNING,
+        "warning": logging.WARNING,
+        "error": logging.ERROR,
+    }.get(sev, logging.INFO)
+
+    pairs: list[str] = []
+    for k, v in (e.payload or {}).items():
+        text = repr(v) if not isinstance(v, (str, int, float, bool)) else str(v)
+        pairs.append(f"{k}={truncate(text, 60)}")
+
+    body = ", ".join(pairs) if pairs else "(no payload)"
+    body = truncate(body, preview_chars)
+    return [(logger, level, f"{e.type}  {body}")]
 
 
 # ── Session lifecycle ──────────────────────────────────────────────────────

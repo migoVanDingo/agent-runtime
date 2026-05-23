@@ -4,8 +4,10 @@ Builds plugin instances from `config.plugins.enabled`. Each plugin has a
 builder function that receives the runtime context it needs (session_id,
 home dir, plugin-specific config dict).
 
-Adding a new plugin = add a builder in `_BUILDERS` below. Unknown plugin
-names raise at startup.
+Adding a built-in plugin = add a builder in `_BUILDERS` below. External
+plugins are discovered automatically via the `arc.plugins` entry-point
+group (see `discovery.py`); they're merged into the builder table at import
+time, with built-ins always winning on name conflict.
 """
 from __future__ import annotations
 
@@ -142,7 +144,7 @@ def _build_max_cost(cfg: dict, build_ctx: PluginBuildContext) -> Any:
     return p
 
 
-_BUILDERS = {
+_BUILTIN_BUILDERS: dict[str, Any] = {
     "jsonl-recorder": _build_jsonl_recorder,
     "guard": _build_guard,
     "safety-gate": _build_safety_gate,
@@ -152,9 +154,65 @@ _BUILDERS = {
     "max-cost": _build_max_cost,
 }
 
+# Backwards-compatible alias — existing code (and tests) reference `_BUILDERS`.
+# This is now populated by `_refresh_builders()` to include both built-ins and
+# discovered external plugins.
+_BUILDERS: dict[str, Any] = {}
+
+# Captured at import time so the runtime can surface it for observability.
+_LAST_DISCOVERY = None  # type: DiscoveryReport | None  # noqa: F821 — forward
+
+
+def _refresh_builders() -> "DiscoveryReport":
+    """Rebuild `_BUILDERS` from built-ins + freshly discovered entry points.
+
+    Called once at module import and re-runnable from tests (after monkey-
+    patching `entry_points`). External builders that collide with built-in
+    names are dropped — built-ins always win — and the conflict is logged
+    in the returned report so the user can see why.
+    """
+    from arc.plugins.discovery import discover
+
+    report = discover(builtin_names=set(_BUILTIN_BUILDERS.keys()))
+    new_builders: dict[str, Any] = dict(_BUILTIN_BUILDERS)
+    for d in report.discovered:
+        new_builders[d.name] = d.builder
+
+    _BUILDERS.clear()
+    _BUILDERS.update(new_builders)
+
+    global _LAST_DISCOVERY
+    _LAST_DISCOVERY = report
+    return report
+
+
+def last_discovery() -> "DiscoveryReport | None":
+    """Return the most recent DiscoveryReport (for observability + the
+    `arc plugins` menu). None only if discovery hasn't run yet, which would
+    indicate a bug — this module's import calls `_refresh_builders()`.
+    """
+    return _LAST_DISCOVERY
+
+
+def builtin_plugin_names() -> set[str]:
+    """Names of plugins that ship with arc. Used by the menu to render the
+    `built-in` tag and prevent users from disabling them via the toggle.
+    """
+    return set(_BUILTIN_BUILDERS.keys())
+
+
+# Run discovery exactly once at import. Tests that need to re-discover after
+# installing a fake entry point can call `_refresh_builders()` directly.
+_refresh_builders()
+
 
 def build(cfg: PluginsConfig, build_ctx: PluginBuildContext) -> list[BuiltPlugin]:
     """Construct active plugins. Skips entries with enabled=False.
+
+    Unknown plugin names (in config.yml but not in `_BUILDERS`) emit a soft
+    warning and are skipped rather than raising — common scenario is "user
+    uninstalled the plugin package but left the entry in config.yml". The
+    `arc plugins` menu surfaces these as dangling so the user can clean up.
 
     Returns BuiltPlugin objects with their hooks_order so the runtime can
     register them in the right order against the hook registry.
@@ -162,11 +220,15 @@ def build(cfg: PluginsConfig, build_ctx: PluginBuildContext) -> list[BuiltPlugin
     out: list[BuiltPlugin] = []
     for entry in cfg.active():
         if entry.name not in _BUILDERS:
-            raise ValueError(
-                f"unknown plugin {entry.name!r} in plugins.enabled\n"
-                f"  known: {sorted(_BUILDERS.keys())}\n"
-                f"  (add a builder in arc/plugins/__init__.py to support more)"
+            # Don't crash the session — the plugin is just missing. The menu
+            # will show it as dangling so the user can remove it. We still
+            # write to stderr so a CI run doesn't silently lose a plugin.
+            import sys
+            sys.stderr.write(
+                f"[arc] plugin {entry.name!r} is enabled in config.yml but "
+                f"not installed; skipping. Run `arc plugins` to clean up.\n"
             )
+            continue
         instance = _BUILDERS[entry.name](entry.config, build_ctx)
         out.append(BuiltPlugin(
             name=entry.name,
@@ -174,3 +236,55 @@ def build(cfg: PluginsConfig, build_ctx: PluginBuildContext) -> list[BuiltPlugin
             hooks_order=dict(entry.hooks_order),
         ))
     return out
+
+
+# ── Plugin-contributed tools ──────────────────────────────────────────────
+
+
+def merge_plugin_tools(plugins: list[BuiltPlugin], tool_registry) -> list[str]:
+    """Call `provides_tools()` on each plugin and merge results into the
+    tool registry. Plugin-contributed tools are NOT listed in config's
+    `tools.enabled` — enabling the plugin is implicit consent.
+
+    Returns the list of newly-registered tool names so callers can log/emit.
+
+    Raises `ValueError` on name collision (built-in tool same-named, or two
+    plugins offering the same tool). Silent override is the worst outcome;
+    we want the user to rename their tool explicitly.
+    """
+    added: list[str] = []
+    for built in plugins:
+        provider = getattr(built.instance, "provides_tools", None)
+        if not callable(provider):
+            continue
+        try:
+            tools = list(provider() or [])
+        except Exception as exc:  # noqa: BLE001 — surface, don't crash
+            raise ValueError(
+                f"plugin {built.name!r} raised from provides_tools(): {exc!r}"
+            ) from exc
+        for tool in tools:
+            if tool.name in tool_registry:
+                raise ValueError(
+                    f"plugin {built.name!r} provides tool {tool.name!r} but a "
+                    f"tool with that name is already registered"
+                )
+            tool_registry.register(tool)
+            added.append(tool.name)
+    return added
+
+
+def bind_bus_to_tools(tool_registry, bus) -> list[str]:
+    """Call `bind_bus(bus)` on every tool that defines it. Optional contract:
+    tools that need to emit structured events implement `bind_bus`; tools
+    that don't (the boring majority) don't need to.
+
+    Returns the names of tools that received the bus, for logging.
+    """
+    bound: list[str] = []
+    for tool in tool_registry.all():
+        binder = getattr(tool, "bind_bus", None)
+        if callable(binder):
+            binder(bus)
+            bound.append(tool.name)
+    return bound

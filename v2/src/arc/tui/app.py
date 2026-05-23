@@ -59,6 +59,12 @@ class TUIApp:
         self._last_tokens_in = 0
         self._last_tokens_out = 0
         self._event_count = 0
+        # Session-level running totals (for the bottom toolbar)
+        self._session_tokens_in = 0
+        self._session_tokens_out = 0
+        self._session_turn_count = 0
+        # Pricing lookup — built lazily on first toolbar evaluation
+        self._pricing = None
 
     # ── Entry point ────────────────────────────────────────────────────────
 
@@ -78,6 +84,9 @@ class TUIApp:
         # and raises KeyboardInterrupt before this handler fires.
         prev_sigint = self._install_pause_on_sigint()
 
+        # Detect resumed_from for the banner so the user knows this isn't fresh
+        resumed_from = self._read_resumed_from_meta()
+
         # Print the session banner once
         self._console.print(render.render_session_banner(
             provider=self._cfg.provider.name,
@@ -85,6 +94,7 @@ class TUIApp:
             session_id=self._session.session_id,
             home=self._home_display,
             tools=self._session.tools.names(),
+            resumed_from=resumed_from,
         ))
 
         prompt = self._resolve_prompt_fn()
@@ -122,6 +132,9 @@ class TUIApp:
                     show_events=self._cfg.tui.show_event_count,
                 ))
 
+                # Visual separator between turns (skip after the very first one)
+                self._console.print(render.render_turn_separator())
+
                 if not outcome.success and outcome.error:
                     self._console.print(f"[red]turn error: {outcome.error}[/red]")
         finally:
@@ -143,10 +156,20 @@ class TUIApp:
         elif t == EventType.LLM_CALL_COMPLETED:
             self._stop_status()
             # Update token counts (may be one of several calls in a turn)
-            self._last_tokens_in += event.payload.get("input_tokens", 0)
-            self._last_tokens_out += event.payload.get("output_tokens", 0)
-            # Render the text portion of the response (tool calls render at TOOL_CALL_*)
+            in_t = event.payload.get("input_tokens", 0)
+            out_t = event.payload.get("output_tokens", 0)
+            self._last_tokens_in += in_t
+            self._last_tokens_out += out_t
+            self._session_tokens_in += in_t
+            self._session_tokens_out += out_t
+            # Render thinking blocks (gated by config) and text portion
             blocks = event.content.get("response_content", [])
+            if self._cfg.tui.show_thinking:
+                thinking_parts = [b.get("text", "") for b in blocks
+                                  if b.get("type") == "thinking"]
+                thinking_text = "".join(thinking_parts).strip()
+                if thinking_text:
+                    self._console.print(render.render_thinking(thinking_text))
             text_parts = [b.get("text", "") for b in blocks if b.get("type") == "text"]
             full_text = "".join(text_parts).strip()
             if full_text:
@@ -174,6 +197,7 @@ class TUIApp:
                 tool_name=event.payload.get("tool_name", "?"),
                 output=event.content.get("output", ""),
                 ok=event.payload.get("ok", True),
+                max_lines=self._cfg.tui.tool_output_max_lines,
             ))
 
         elif t == EventType.TOOL_CALL_FAILED:
@@ -182,6 +206,7 @@ class TUIApp:
                 tool_name=event.payload.get("tool_name", "?"),
                 output=event.payload.get("error_message", "(no message)"),
                 ok=False,
+                max_lines=self._cfg.tui.tool_output_max_lines,
             ))
 
         elif t == EventType.TOOL_CALL_DENIED:
@@ -192,9 +217,24 @@ class TUIApp:
             ))
 
         elif t == EventType.TURN_STARTED:
-            # Reset per-turn counters
+            # Reset per-turn counters; bump session turn counter
             self._last_tokens_in = 0
             self._last_tokens_out = 0
+            self._session_turn_count += 1
+
+        elif t == EventType.RUNTIME_CONTEXT_PACKED:
+            p = event.payload
+            self._console.print(
+                f"[dim]context packed: {p.get('n_messages_before', '?')} → "
+                f"{p.get('n_messages_after', '?')} messages, "
+                f"{p.get('bytes_dropped', 0)} bytes dropped[/dim]"
+            )
+
+        elif t == EventType.RUNTIME_CYCLE_DETECTED:
+            self._stop_status()
+            self._console.print(
+                f"[bold yellow]⚠ cycle detected — forcing wrap-up[/bold yellow]"
+            )
 
     # ── Slash commands ─────────────────────────────────────────────────────
 
@@ -207,13 +247,84 @@ class TUIApp:
             self._console.print(render.render_help())
             return False
         if cmd == "/clear":
-            self._console.print("[dim]/clear: conversation reset is not yet implemented[/dim]")
+            self._handle_clear()
             return False
         if cmd == "/sessions":
-            self._console.print("[dim]/sessions: try `arc sessions` in another shell[/dim]")
+            self._handle_sessions_list()
             return False
         self._console.print(f"[red]unknown command: {cmd}  (try /help)[/red]")
         return False
+
+    def _handle_clear(self) -> None:
+        """Reset the conversation in place. Same session_id, but the in-memory
+        message list is wiped and an event is emitted so the audit trail
+        captures the reset.
+        """
+        n = len(self._session._messages)
+        self._session._messages.clear()
+        # Emit a conversation.cleared event so events.jsonl + session.log
+        # reflect the reset
+        try:
+            from arc.runtime.events import EventType, RuntimeEvent
+            self._session.bus.emit(RuntimeEvent(
+                type=EventType.CONVERSATION_CLEARED,
+                stage="TUIApp",
+                payload={"n_messages_cleared": n},
+            ))
+        except Exception:
+            pass
+        # Reset per-session counters that the toolbar tracks
+        self._session_tokens_in = 0
+        self._session_tokens_out = 0
+        self._session_turn_count = 0
+        self._console.print(
+            f"[dim]conversation cleared ({n} messages removed; session continues)[/dim]"
+        )
+
+    def _handle_sessions_list(self) -> None:
+        """Render the sessions index as a Rich table inline."""
+        # Find ARC_HOME via the recorder plugin's session_dir parent (the
+        # cleanest way to discover it without re-resolving env vars).
+        sessions_dir = self._find_sessions_dir()
+        if sessions_dir is None:
+            self._console.print("[dim]/sessions: could not locate sessions directory[/dim]")
+            return
+        index_path = sessions_dir / "index.jsonl"
+        if not index_path.exists():
+            self._console.print("[dim]no sessions recorded yet[/dim]")
+            return
+        self._console.print(render.render_sessions_table(sessions_dir, index_path))
+
+    def _find_sessions_dir(self):
+        """Walk registered plugins to find the recorder's session_dir parent."""
+        for hook_name, chain in self._session.registry._chains.items():
+            for _priority, name, method in chain:
+                if name == "jsonl-recorder":
+                    plugin = getattr(method, "__self__", None)
+                    if plugin is not None:
+                        # JSONLRecorder._session_dir.parent is sessions/
+                        return getattr(plugin, "_session_dir", None) and \
+                               plugin._session_dir.parent
+        return None
+
+    def _read_resumed_from_meta(self) -> str | None:
+        """If the current session's meta.json has `resumed_from`, return it.
+
+        Used by the banner to flag resumed sessions. Returns None for fresh
+        sessions or if meta isn't readable yet.
+        """
+        sessions_dir = self._find_sessions_dir()
+        if sessions_dir is None:
+            return None
+        meta_path = sessions_dir / self._session.session_id / "meta.json"
+        if not meta_path.exists():
+            return None
+        try:
+            import json
+            meta = json.loads(meta_path.read_text())
+            return meta.get("resumed_from")
+        except Exception:
+            return None
 
     # ── Status spinner ────────────────────────────────────────────────────
 
@@ -285,16 +396,61 @@ class TUIApp:
         Tests pass `prompt_fn=` explicitly. Production uses prompt_toolkit
         in inline mode (no alt-screen) with patch_stdout so Rich output
         lands cleanly above the live prompt region.
+
+        Wires up:
+        - ↑/↓ recall via FileHistory in ARC_HOME (when input_history_enabled)
+        - Tab-completion for slash commands
+        - bottom_toolbar callable for the persistent provider/tokens/$ line
+          (when toolbar_enabled)
         """
         if self._prompt_fn is not None:
             return self._prompt_fn
 
         from prompt_toolkit import PromptSession
+        from prompt_toolkit.completion import WordCompleter
+        from prompt_toolkit.history import FileHistory, InMemoryHistory
         from prompt_toolkit.patch_stdout import patch_stdout
+        from prompt_toolkit.styles import Style
 
-        # PromptSession persists prompt-toolkit state (history, etc.)
-        # across calls so up-arrow recall works naturally.
-        pt_session = PromptSession()
+        # Tab-completion for slash commands
+        slash_completer = WordCompleter(
+            ["/help", "/exit", "/quit", "/clear", "/sessions"],
+            ignore_case=True,
+        )
+
+        # History: persisted to ARC_HOME/history when enabled, in-memory otherwise
+        if self._cfg.tui.input_history_enabled:
+            history_path = self._resolve_history_path()
+            if history_path is not None:
+                history = FileHistory(str(history_path))
+            else:
+                history = InMemoryHistory()
+        else:
+            history = InMemoryHistory()
+
+        # Bottom toolbar callable — evaluated each prompt() call
+        bottom_toolbar = self._build_bottom_toolbar_fn() if self._cfg.tui.toolbar_enabled else None
+
+        # Custom style: prompt_toolkit's default `bottom-toolbar` is reverse
+        # video (white-on-bright), which we found visually loud. Override to
+        # a soft grey on default bg so it sits quietly below the prompt.
+        toolbar_style = Style.from_dict({
+            "bottom-toolbar":          "noreverse fg:#7a7a7a bg:default",
+            "toolbar.provider":        "fg:#8aa0c0 bg:default",
+            "toolbar.sid":             "fg:#7a7a7a bg:default",
+            "toolbar.turn":            "fg:#7a7a7a bg:default",
+            "toolbar.tokens":          "fg:#8a8a6a bg:default",
+            "toolbar.cost":            "fg:#7a9a7a bg:default",
+            "toolbar.sep":             "fg:#4a4a4a bg:default",
+        })
+
+        pt_session = PromptSession(
+            history=history,
+            completer=slash_completer,
+            complete_while_typing=False,  # only on Tab; avoids interrupting input
+            bottom_toolbar=bottom_toolbar,
+            style=toolbar_style,
+        )
         patch_ctx = patch_stdout(raw=True)
         patch_ctx.__enter__()
         # Note: we never exit patch_stdout — it's bound to the lifetime of
@@ -303,16 +459,97 @@ class TUIApp:
         import sys
 
         def _prompt(prefix: str) -> str:
-            # `erase_when_done` on PromptSession.prompt() isn't portable across
-            # prompt_toolkit versions, so we erase manually with ANSI escapes:
-            # after the user hits Enter, prompt_toolkit echoes the line and
-            # moves to the next line. We move back up and clear the prompt
-            # line so render_user_message's purple version takes its place.
-            text = pt_session.prompt(prefix)
-            # \033[F = move cursor up one line + go to column 0
-            # \033[2K = clear entire line
-            sys.stdout.write("\033[F\033[2K")
+            # Blank line above the prompt so the input doesn't sit flush
+            # against the previous turn's footer / toolbar.
+            sys.stdout.write("\n")
             sys.stdout.flush()
+            # erase_when_done removes the entire prompt render area on
+            # submit (handles wrapped multi-line input correctly). Falls
+            # back to a single-line ANSI erase on older prompt_toolkit.
+            try:
+                text = pt_session.prompt(prefix, erase_when_done=True)
+            except TypeError:
+                text = pt_session.prompt(prefix)
+                sys.stdout.write("\033[F\033[2K")
+                sys.stdout.flush()
             return text
 
         return _prompt
+
+    def _resolve_history_path(self):
+        """Locate ARC_HOME/history (parent of sessions_dir)."""
+        sessions_dir = self._find_sessions_dir()
+        if sessions_dir is None:
+            return None
+        return sessions_dir.parent / "history"
+
+    # ── Bottom toolbar ────────────────────────────────────────────────────
+
+    def _build_bottom_toolbar_fn(self):
+        """Returns a callable prompt_toolkit invokes each prompt() to render
+        the bottom toolbar. Re-evaluated per prompt so it reflects the
+        latest stats after each turn.
+        """
+        from prompt_toolkit.formatted_text import FormattedText
+
+        def _toolbar():
+            return FormattedText(list(self._toolbar_segments()))
+
+        return _toolbar
+
+    def _toolbar_segments(self):
+        """Yield (style, text) tuples for the toolbar line.
+
+        Layout: provider/model · SES01...XYZ12 · turn N · in→out (total) · $cost
+        Cost column is dropped entirely if pricing isn't available.
+        """
+        provider = self._cfg.provider.name
+        model = self._cfg.provider.model
+        sid = self._session.session_id
+        # Show head + tail so the user can disambiguate sessions whose ids
+        # share a prefix (e.g. "20260520..." sequences from the same day)
+        if len(sid) > 14:
+            sid_short = f"{sid[:6]}...{sid[-5:]}"
+        else:
+            sid_short = sid
+
+        # provider/model
+        yield ("class:toolbar.provider", f" {provider}/{model} ")
+        yield ("class:toolbar.sep", "· ")
+
+        # session id
+        yield ("class:toolbar.sid", f"{sid_short} ")
+        yield ("class:toolbar.sep", "· ")
+
+        # turn count
+        yield ("class:toolbar.turn", f"turn {self._session_turn_count} ")
+        yield ("class:toolbar.sep", "· ")
+
+        # tokens (last turn / cumulative session)
+        in_t = self._last_tokens_in
+        out_t = self._last_tokens_out
+        total = self._session_tokens_in + self._session_tokens_out
+        yield ("class:toolbar.tokens", f"{in_t}→{out_t} ({total:,} total) ")
+
+        # cost (only if pricing is available)
+        cost = self._compute_session_cost()
+        if cost is not None:
+            yield ("class:toolbar.sep", "· ")
+            from arc.tui.pricing import format_cost
+            yield ("class:toolbar.cost", f" {format_cost(cost)} ")
+
+    def _compute_session_cost(self) -> float | None:
+        """Look up pricing on first call; reuse on subsequent calls."""
+        if self._pricing is None:
+            from arc.tui.pricing import PricingTable
+            sessions_dir = self._find_sessions_dir()
+            if sessions_dir is None:
+                return None
+            cache_path = sessions_dir.parent / "pricing_cache.json"
+            self._pricing = PricingTable(cache_path=cache_path)
+        return self._pricing.estimate_cost_usd(
+            provider=self._cfg.provider.name,
+            model=self._cfg.provider.model,
+            input_tokens=self._session_tokens_in,
+            output_tokens=self._session_tokens_out,
+        )

@@ -18,6 +18,8 @@ from arc.plugins.guard import GuardPlugin
 from arc.plugins.jsonl_recorder import JSONLRecorder
 from arc.plugins.log_writer import LogWriterPlugin
 from arc.plugins.pause_resume import PauseResumePlugin
+from arc.plugins.safety_gate import Pattern as SafetyPattern
+from arc.plugins.safety_gate import SafetyGatePlugin
 from arc.plugins.sliding_window_context import SlidingWindowContextPlugin
 from arc.user_gate import NoOpGate, UserGate
 
@@ -90,6 +92,28 @@ def _build_log_writer(cfg: dict, build_ctx: PluginBuildContext) -> Any:
     )
 
 
+def _build_safety_gate(cfg: dict, build_ctx: PluginBuildContext) -> Any:
+    gate = build_ctx.user_gate or NoOpGate()
+    customs = [
+        SafetyPattern(
+            name=str(p["name"]),
+            description=str(p.get("description", "")),
+            regex=str(p["regex"]),
+        )
+        for p in cfg.get("custom_patterns", []) or []
+    ]
+    p = SafetyGatePlugin(
+        enabled=bool(cfg.get("enabled", True)),
+        bypass_mode=bool(cfg.get("bypass_mode", False)),
+        enabled_pattern_names=list(cfg.get("enabled_patterns", [])),
+        custom_patterns=customs,
+        user_gate=gate,
+    )
+    if build_ctx.bus is not None:
+        p.bind_bus(build_ctx.bus)
+    return p
+
+
 def _build_sliding_window_context(cfg: dict, build_ctx: PluginBuildContext) -> Any:
     max_tokens = cfg.get("max_tokens")
     p = SlidingWindowContextPlugin(
@@ -106,6 +130,7 @@ def _build_sliding_window_context(cfg: dict, build_ctx: PluginBuildContext) -> A
 _BUILDERS = {
     "jsonl-recorder": _build_jsonl_recorder,
     "guard": _build_guard,
+    "safety-gate": _build_safety_gate,
     "pause-resume": _build_pause_resume,
     "log-writer": _build_log_writer,
     "sliding-window-context": _build_sliding_window_context,

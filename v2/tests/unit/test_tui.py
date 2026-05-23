@@ -16,6 +16,7 @@ from arc.config import (
     RuntimeConfig, ToolsConfig, TUIConfig,
 )
 from arc.runtime.bus import EventBus, HookRegistry
+from arc.runtime.events import EventType
 from arc.runtime.hooks import ContentBlock, LLMResponse
 from arc.runtime.loop import AgentSession
 from arc.tools.base import ToolInputSchema, ToolRegistry
@@ -46,6 +47,8 @@ def _cfg() -> Config:
             enabled=True, theme="default", inline_mode=True,
             spinner_style="dots", prompt_prefix="❯ ",
             show_token_counts=True, show_event_count=False,
+            show_thinking=True, tool_output_max_lines=30,
+            toolbar_enabled=True, input_history_enabled=True,
         ),
         bootstrap=BootstrapConfig(create_workspace_dir=False, write_example_session=False),
         source_path=None,  # type: ignore[arg-type]
@@ -184,7 +187,9 @@ def test_help_command():
     app, out = _build_app(["/help"], FakeProvider([]))
     app.run()
     text = out.getvalue()
-    assert "commands:" in text
+    assert "slash commands" in text
+    assert "keybinds" in text
+    assert "env vars" in text
     assert "/exit" in text
 
 
@@ -209,6 +214,108 @@ def test_unknown_slash_command_prints_error():
     text = out.getvalue()
     assert "unknown command" in text
     assert "/banana" in text
+
+
+def test_clear_command_resets_messages_and_emits_event():
+    """/clear wipes conversation in place AND emits conversation.cleared."""
+    provider = FakeProvider([
+        LLMResponse(content=[ContentBlock(type="text", text="reply1")],
+                    stop_reason="end_turn", input_tokens=1, output_tokens=1, raw={}),
+    ])
+    app, out = _build_app(["first turn", "/clear", "/exit"], provider)
+
+    received = []
+    class _Cap:
+        name = "cap"
+        def on_event(self, ctx, event):
+            received.append(event)
+    app._session.registry.register(_Cap(), hooks_order={"on_event": 50})
+
+    app.run()
+
+    assert app._session._messages == []
+    cleared = [e for e in received if e.type == EventType.CONVERSATION_CLEARED]
+    assert len(cleared) == 1
+    assert cleared[0].payload["n_messages_cleared"] >= 1
+    assert "conversation cleared" in out.getvalue()
+
+
+def test_clear_command_resets_session_token_counters():
+    provider = FakeProvider([
+        LLMResponse(content=[ContentBlock(type="text", text="reply")],
+                    stop_reason="end_turn", input_tokens=100, output_tokens=50, raw={}),
+    ])
+    app, out = _build_app(["t1", "/clear", "/exit"], provider)
+    app.run()
+    assert app._session_tokens_in == 0
+    assert app._session_tokens_out == 0
+    assert app._session_turn_count == 0
+
+
+def test_sessions_command_runs_without_recorder():
+    """Test environment has no recorder plugin, so /sessions should
+    print a friendly fallback rather than crashing."""
+    app, out = _build_app(["/sessions", "/exit"], FakeProvider([]))
+    app.run()
+    # Doesn't crash; some message about sessions
+    assert "session" in out.getvalue().lower()
+
+
+def test_thinking_block_renders_when_show_thinking_true():
+    """Anthropic-style thinking block in response should render in TUI
+    when tui.show_thinking is true (default)."""
+    provider = FakeProvider([
+        LLMResponse(
+            content=[
+                ContentBlock(type="thinking", text="let me reason about this"),
+                ContentBlock(type="text", text="the answer is 42"),
+            ],
+            stop_reason="end_turn",
+            input_tokens=1, output_tokens=1, raw={},
+        ),
+    ])
+    app, out = _build_app(["q"], provider)
+    app.run()
+    text = out.getvalue()
+    assert "thinking" in text  # the "◇ thinking" header
+    assert "let me reason" in text
+    assert "the answer is 42" in text
+
+
+def test_long_tool_output_collapses():
+    """Long tool output gets summary + elision marker, not the full dump."""
+    long_output = "\n".join(f"line {i}" for i in range(200))  # 200 lines
+
+    class _BigTool:
+        name = "big"
+        description = "produces big output"
+        @property
+        def input_schema(self):
+            return ToolInputSchema(properties={}, required=[])
+        def execute(self, input):
+            return long_output
+
+    provider = FakeProvider([
+        LLMResponse(
+            content=[ContentBlock(type="tool_use", tool_use_id="x",
+                                  tool_name="big", tool_input={})],
+            stop_reason="tool_use",
+            input_tokens=1, output_tokens=1, raw={},
+        ),
+        LLMResponse(
+            content=[ContentBlock(type="text", text="ok done")],
+            stop_reason="end_turn",
+            input_tokens=1, output_tokens=1, raw={},
+        ),
+    ])
+    app, out = _build_app(["go"], provider, tools=[_BigTool()])
+    app.run()
+    text = out.getvalue()
+    # Summary indicates collapsed
+    assert "collapsed" in text
+    assert "elided" in text
+    # The middle lines should NOT all appear
+    assert "line 100" not in text  # middle line elided
 
 
 # ── Edge cases ────────────────────────────────────────────────────────────

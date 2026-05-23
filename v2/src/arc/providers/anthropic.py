@@ -165,6 +165,13 @@ class AnthropicProvider:
                 continue
             if b.type == "text" and b.text:
                 blocks.append({"type": "text", "text": b.text})
+            elif b.type == "thinking" and b.text:
+                # Echo thinking blocks back — required when extended thinking
+                # is in use across multi-turn tool conversations.
+                td: dict[str, Any] = {"type": "thinking", "thinking": b.text}
+                if b.metadata and "signature" in b.metadata:
+                    td["signature"] = b.metadata["signature"]
+                blocks.append(td)
             elif b.type == "tool_use":
                 tid = b.tool_use_id or b.tool_name or "unknown"
                 blocks.append({
@@ -232,6 +239,19 @@ class AnthropicProvider:
             btype = getattr(b, "type", None)
             if btype == "text":
                 blocks.append(ContentBlock(type="text", text=getattr(b, "text", "")))
+            elif btype == "thinking":
+                # Anthropic 3.7+/4+ extended thinking. Preserve the `signature`
+                # field in metadata — Anthropic requires it echoed back on
+                # subsequent turns when redacted_thinking is enabled.
+                meta: dict[str, Any] = {}
+                sig = getattr(b, "signature", None)
+                if sig:
+                    meta["signature"] = sig
+                blocks.append(ContentBlock(
+                    type="thinking",
+                    text=getattr(b, "thinking", "") or getattr(b, "text", ""),
+                    metadata=meta or None,
+                ))
             elif btype == "tool_use":
                 blocks.append(ContentBlock(
                     type="tool_use",
@@ -239,7 +259,7 @@ class AnthropicProvider:
                     tool_name=getattr(b, "name", None),
                     tool_input=dict(getattr(b, "input", {}) or {}),
                 ))
-            # Skip thinking / other block types — they don't fit our schema yet
+            # Skip any other block types we haven't accounted for
 
         stop_reason = self._translate_stop_reason(getattr(resp, "stop_reason", None))
 

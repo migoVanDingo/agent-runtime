@@ -100,13 +100,20 @@ class LLMRequest:
 
 @dataclass(frozen=True)
 class ContentBlock:
-    """One block inside an LLM response. Either text or a tool call.
+    """One block inside an LLM response.
+
+    Supported `type` values:
+      text      — regular assistant text (most common)
+      tool_use  — the model is calling a tool
+      thinking  — extended-reasoning block (Anthropic 3.7+/4+); rendered
+                  separately in the TUI when tui.show_thinking is true
 
     `metadata` is a free-form dict for provider-specific fields the runtime
     doesn't interpret but must echo back (e.g., Gemini's thought_signature
-    on function_call parts — required by Gemini 3+ for follow-up turns).
+    on function_call parts — required by Gemini 3+ for follow-up turns,
+    or Anthropic's signature on thinking blocks).
     """
-    type: str  # "text" | "tool_use"
+    type: str  # "text" | "tool_use" | "thinking"
     text: str | None = None
     tool_use_id: str | None = None
     tool_name: str | None = None

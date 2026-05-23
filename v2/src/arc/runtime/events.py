@@ -68,6 +68,17 @@ class EventType:
     # Context manager packed the message list (dropped fragments to fit budget)
     RUNTIME_CONTEXT_PACKED = "runtime.context_packed"
 
+    # User typed /clear in the TUI; conversation reset in place mid-session
+    CONVERSATION_CLEARED = "runtime.conversation_cleared"
+
+    # Destructive-action gate (0012). Pattern matched a destructive command;
+    # plugin asked the user via UserGate. Three terminal states:
+    #   requested → allowed (scope=once|session|remembered)
+    #   requested → denied
+    SAFETY_CONFIRMATION_REQUESTED = "safety.confirmation.requested"
+    SAFETY_CONFIRMATION_ALLOWED = "safety.confirmation.allowed"
+    SAFETY_CONFIRMATION_DENIED = "safety.confirmation.denied"
+
     # Catch-all for non-categorized observations
     EVENT_EMITTED = "event.emitted"
 

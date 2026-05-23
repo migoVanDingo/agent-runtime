@@ -98,6 +98,10 @@ class TUIConfig:
     prompt_prefix: str
     show_token_counts: bool
     show_event_count: bool
+    show_thinking: bool
+    tool_output_max_lines: int
+    toolbar_enabled: bool
+    input_history_enabled: bool
 
 
 @dataclass(frozen=True)
@@ -254,6 +258,8 @@ def _parse_plugins(d: dict) -> PluginsConfig:
 
 
 def _parse_tui(d: dict) -> TUIConfig:
+    # Original keys are required; newer keys (added in 0011-tui-polish) fall
+    # back to defaults so older configs keep loading without a re-bootstrap.
     _require(d, "tui", ["enabled", "theme", "inline_mode", "spinner_style",
                         "prompt_prefix", "show_token_counts", "show_event_count"])
     return TUIConfig(
@@ -264,6 +270,10 @@ def _parse_tui(d: dict) -> TUIConfig:
         prompt_prefix=str(d["prompt_prefix"]),
         show_token_counts=bool(d["show_token_counts"]),
         show_event_count=bool(d["show_event_count"]),
+        show_thinking=bool(d.get("show_thinking", True)),
+        tool_output_max_lines=int(d.get("tool_output_max_lines", 30)),
+        toolbar_enabled=bool(d.get("toolbar_enabled", True)),
+        input_history_enabled=bool(d.get("input_history_enabled", True)),
     )
 
 

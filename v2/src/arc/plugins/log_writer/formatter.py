@@ -275,6 +275,42 @@ def _fmt_pause_requested(e: RuntimeEvent, n: int) -> list[tuple[str, int, str]]:
     return [("arc.runtime", logging.INFO, "  pause requested")]
 
 
+def _fmt_conversation_cleared(e: RuntimeEvent, n: int) -> list[tuple[str, int, str]]:
+    p = e.payload
+    return [
+        ("arc.runtime", logging.INFO,
+         f"  /clear — conversation reset "
+         f"({p.get('n_messages_cleared', 0)} messages; session continues)"),
+    ]
+
+
+def _fmt_safety_requested(e: RuntimeEvent, n: int) -> list[tuple[str, int, str]]:
+    p = e.payload
+    return [
+        ("arc.safety", logging.INFO,
+         f"  {WARN_GLYPH} safety: {p.get('pattern_name', '?')} → asking user "
+         f"({truncate(p.get('command', ''), n)})"),
+    ]
+
+
+def _fmt_safety_allowed(e: RuntimeEvent, n: int) -> list[tuple[str, int, str]]:
+    p = e.payload
+    return [
+        ("arc.safety", logging.INFO,
+         f"  ✓ safety: {p.get('pattern_name', '?')} → allowed "
+         f"(scope={p.get('scope', '?')})"),
+    ]
+
+
+def _fmt_safety_denied(e: RuntimeEvent, n: int) -> list[tuple[str, int, str]]:
+    p = e.payload
+    return [
+        ("arc.safety", logging.WARNING,
+         f"  {DENIED} safety: {p.get('pattern_name', '?')} → denied by user "
+         f"({truncate(p.get('command', ''), n)})"),
+    ]
+
+
 # ── Dispatch table ─────────────────────────────────────────────────────────
 
 
@@ -295,4 +331,8 @@ _DISPATCH = {
     EventType.RUNTIME_CYCLE_DETECTED: _fmt_cycle_detected,
     EventType.RUNTIME_CONTEXT_PACKED: _fmt_context_packed,
     EventType.PAUSE_REQUESTED: _fmt_pause_requested,
+    EventType.CONVERSATION_CLEARED: _fmt_conversation_cleared,
+    EventType.SAFETY_CONFIRMATION_REQUESTED: _fmt_safety_requested,
+    EventType.SAFETY_CONFIRMATION_ALLOWED: _fmt_safety_allowed,
+    EventType.SAFETY_CONFIRMATION_DENIED: _fmt_safety_denied,
 }

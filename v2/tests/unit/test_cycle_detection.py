@@ -100,7 +100,9 @@ def _cfg(cycle_threshold: int = 3) -> Config:
         plugins=PluginsConfig(failure_threshold=3, exception_message_max_chars=500, enabled=[]),
         tui=TUIConfig(enabled=False, theme="default", inline_mode=True,
                       spinner_style="dots", prompt_prefix="❯ ",
-                      show_token_counts=True, show_event_count=False),
+                      show_token_counts=True, show_event_count=False,
+                      show_thinking=True, tool_output_max_lines=30,
+                      toolbar_enabled=True, input_history_enabled=True),
         bootstrap=BootstrapConfig(create_workspace_dir=False, write_example_session=False),
         source_path=None,  # type: ignore[arg-type]
     )

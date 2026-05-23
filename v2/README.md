@@ -18,10 +18,10 @@ optional plugin that can be toggled in `config.yml`.
 
 | | |
 |---|---|
-| **Source** | ~2,000 lines Python |
-| **Tests** | 302 passing (unit + real-API integration) |
-| **Provider** | Gemini (`google-genai` SDK) |
-| **TUI** | prompt_toolkit + Rich, inline mode (terminal scrollback works) |
+| **Source** | ~6,900 lines Python |
+| **Tests** | 362 passing (unit + real-API integration) |
+| **Providers** | Gemini (`google-genai`), Anthropic (`anthropic` SDK) |
+| **TUI** | prompt_toolkit + Rich, inline mode, slash commands, bottom toolbar with live cost |
 
 ---
 
@@ -98,8 +98,9 @@ detection, and cooperatively yields to `pause_check` between iterations.
 | `guard` | `before_tool_call` | Allowlist tools bypass; blocklist patterns deny; escalation patterns prompt via UserGate. |
 | `pause-resume` | `pause_check` | Watches signal file + in-process flag. Raises PauseRequested at next checkpoint. |
 | `log-writer` | `on_session_start`, `on_event`, `on_session_end` | Writes human-readable `session.log` per session, v1-style format. |
+| `sliding-window-context` | `pack_context` | Drops oldest user-turn fragments when message budget is exceeded. Keeps the system prompt and recent context intact. |
 
-All four are plugins. All four are optional. Disabling any one is a single
+All five are plugins. All five are optional. Disabling any one is a single
 config-line edit; nothing else breaks.
 
 ### Layer 3 — supporting code
@@ -114,6 +115,7 @@ src/arc/
   providers/
     base.py             LLMProvider Protocol
     gemini.py           GeminiProvider (google-genai SDK)
+    anthropic.py        AnthropicProvider (anthropic SDK, thinking-block support)
   tools/
     base.py             Tool Protocol + ToolRegistry
     ls.py               list directory contents
@@ -121,6 +123,7 @@ src/arc/
   tui/
     app.py              prompt_toolkit Application (inline mode)
     render.py           Rich rendering for chat + logo + banner
+    pricing.py          LiteLLM-backed token cost lookup (cached weekly)
   replay/               replay engine (modes 2 + 3)
   resume/               message reconstruction for resume + branch
   rerun/                user-input extraction for mode 5
@@ -129,6 +132,7 @@ src/arc/
     guard/
     pause_resume/
     log_writer/
+    sliding_window_context/
 ```
 
 ---
@@ -261,12 +265,10 @@ The following are deliberate omissions, each a future capability plugin:
 - **No monitor** beyond cycle detection
 - **No council/critic** (the model decides)
 - **No skills** (no fixed step expansions)
-- **No context manager** (full conversation goes to the model)
 - **No RAG** (no semantic retrieval)
 - **No artifact store** (just files in the workspace)
 - **No sub-agents** (single-agent)
-- **No multi-provider abstraction** (Gemini only)
-- **No sandbox isolation** (host backend; guard is the only safety layer)
+- **No sandbox isolation** (host backend; `guard` and `safety_gate` are the only safety layers)
 - **No async runtime** (sync; concurrency added deliberately when needed)
 - **No workspace snapshotting** for branch/replay (filesystem is forward-only)
 
@@ -285,7 +287,12 @@ Each of these is a capability plugin waiting to be built when there's a real nee
 | 2.1.5 — Pause + resume | ✅ | Mode 1 (time-travel) |
 | 2.2 — Branch + rerun | ✅ | Modes 4 + 5 |
 | 2.3 — Logging polish | ✅ | log-writer plugin, `session.log`, `arc log` |
-| 3.x — Capability plugins | next | context manager, multi-provider, sub-agents, sandbox |
+| 3.0 — Context manager | ✅ | `sliding_window_context` plugin (`pack_context` hook), per-fragment eviction |
+| 3.1 — Anthropic provider | ✅ | `AnthropicProvider`, thinking-block translation + signature echo |
+| 3.2 — TUI polish | ✅ | `/clear` `/sessions` slash commands, tab complete, history, bottom toolbar with cost |
+| 3.3 — Doc pass | ✅ | `_architecture/` guides for plugins/providers/tools/config/CLI |
+| 3.4 — Destructive-action gate | next | `safety_gate` plugin: user confirmation for `rm`, force pushes, etc. |
+| 4.x — Capability plugins | future | sub-agents, sandbox isolation, planner, RAG |
 
 Per-phase design docs live in [`_design/`](_design/) — start with
 [`0001-foundation-phase0-design.md`](_design/0001-foundation-phase0-design.md)
@@ -299,16 +306,25 @@ list for what each phase added.
 ```
 v2/
   _design/                      design docs, one per phase
-  _architecture/                architecture overviews (TBD)
+  _architecture/                authoring guides + reference docs
+    plugin-authoring.md
+    provider-authoring.md
+    tool-authoring.md
+    config-reference.md
+    cli-reference.md
   _tests/                       integration scenarios + ad-hoc experiments
   src/arc/                      the package
   tests/
     unit/                       fast, no network
-    integration/                real Gemini API; auto-skipped without key
+    integration/                real Gemini / Anthropic API; auto-skipped without key
   Makefile                      install / test / lint / format / clean / bootstrap / run
   pyproject.toml                package metadata, entry point `arc = "arc.cli:main"`
-  .env.example                  template; copy to .env and add GEMINI_API_KEY
+  .env.example                  template; copy to .env and add GEMINI_API_KEY / ANTHROPIC_API_KEY
 ```
+
+Start with the [`_architecture/`](_architecture/) guides if you're extending
+arc. Start with [`_design/`](_design/) if you want the history of *why* each
+subsystem looks the way it does.
 
 ---
 

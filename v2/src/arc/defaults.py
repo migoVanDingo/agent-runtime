@@ -123,6 +123,34 @@ plugins:
           - '\\bchmod\\b\\s+(?:\\+s|[0-7]*7[0-7][0-7])'  # setuid or world-write
       hooks_order:
         before_tool_call: 10
+    - name: safety-gate
+      # Destructive-action confirmation. Pattern-matches commands like
+      # `rm <file>`, `git reset --hard`, `git push --force`, etc., and
+      # prompts the user via UserGate before they execute. See
+      # _design/0012-destructive-action-gate.md.
+      #
+      # Headless mode (`arc run`) uses NoOpGate which auto-denies — by
+      # design. If you want headless to run destructive ops, set
+      # bypass_mode: true here for that invocation.
+      config:
+        enabled: true
+        bypass_mode: false
+        enabled_patterns:
+          - rm-file
+          - rm-recursive
+          - git-reset-hard
+          - git-clean-force
+          - git-push-force
+          - truncate
+          - chown-recursive
+          - chmod-recursive
+          - redirect-overwrite
+          - drop-table
+          - drop-database
+          - truncate-sql
+        custom_patterns: []         # [{name, description, regex}, ...]
+      hooks_order:
+        before_tool_call: 20        # AFTER guard (10); guard's hard denies win first
     - name: pause-resume
       config: {}                    # signal file is <session_dir>/pause
       hooks_order:
@@ -157,6 +185,16 @@ tui:
   prompt_prefix: "❯ "
   show_token_counts: true
   show_event_count: false           # debug aid; off by default
+  # Render <thinking> blocks (Claude 3.7+ / 4+ extended thinking) in the TUI.
+  # Always preserved in events.jsonl + session.log regardless of this flag.
+  show_thinking: true
+  # Collapse tool outputs longer than N lines into a one-line summary.
+  # Full output is in events.jsonl + session.log.
+  tool_output_max_lines: 30
+  # Persistent bottom toolbar with provider/model/session/turn/tokens/$cost.
+  toolbar_enabled: true
+  # Up/down recalls past inputs (FileHistory in ARC_HOME/history).
+  input_history_enabled: true
 
 # ── Bootstrap defaults (used by `arc bootstrap`) ────────────────────────────
 bootstrap:

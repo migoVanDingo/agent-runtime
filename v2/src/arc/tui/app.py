@@ -252,8 +252,27 @@ class TUIApp:
         if cmd == "/sessions":
             self._handle_sessions_list()
             return False
+        if cmd == "/replay":
+            self._handle_replay_menu()
+            return False
         self._console.print(f"[red]unknown command: {cmd}  (try /help)[/red]")
         return False
+
+    def _handle_replay_menu(self) -> None:
+        """Drop into the 0019 replay menu mid-session.
+
+        Spawns `arc replay` as a subprocess so the menu's prompt_toolkit
+        screen doesn't conflict with the live TUI.  Returns the user to
+        the running session when done.
+        """
+        import os
+        import subprocess
+        import sys
+        from arc.bootstrap import resolve_home
+        home = resolve_home()
+        argv = [sys.executable, "-m", "arc.cli", "--home", str(home), "replay"]
+        self._console.print("[dim]launching replay menu (this session continues after)…[/dim]")
+        subprocess.run(argv, env=os.environ.copy())
 
     def _handle_clear(self) -> None:
         """Reset the conversation in place. Same session_id, but the in-memory
@@ -414,7 +433,7 @@ class TUIApp:
 
         # Tab-completion for slash commands
         slash_completer = WordCompleter(
-            ["/help", "/exit", "/quit", "/clear", "/sessions"],
+            ["/help", "/exit", "/quit", "/clear", "/sessions", "/replay"],
             ignore_case=True,
         )
 

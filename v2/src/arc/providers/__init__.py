@@ -20,9 +20,15 @@ def build(cfg: ProviderConfig) -> LLMProvider:
     if cfg.name == "anthropic":
         from arc.providers.anthropic import AnthropicProvider
         return AnthropicProvider(cfg)
+    if cfg.name == "ollama":
+        from arc.providers.ollama import OllamaProvider
+        return OllamaProvider(cfg)
+    if cfg.name == "llama_cpp":
+        from arc.providers.llama_cpp import LlamaCppProvider
+        return LlamaCppProvider(cfg)
 
     raise ValueError(
         f"unknown provider {cfg.name!r}\n"
-        f"  known: 'gemini', 'anthropic'\n"
+        f"  known: 'gemini', 'anthropic', 'ollama', 'llama_cpp'\n"
         f"  (add a case in arc/providers/__init__.py to support more)"
     )

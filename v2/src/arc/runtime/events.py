@@ -79,6 +79,14 @@ class EventType:
     SAFETY_CONFIRMATION_ALLOWED = "safety.confirmation.allowed"
     SAFETY_CONFIRMATION_DENIED = "safety.confirmation.denied"
 
+    # Cross-provider replay (0019)
+    #   SESSION_ABORTED — session ended abnormally (cost cap, user cancel, fatal provider error).
+    #                     Emitted BEFORE SESSION_ENDED so the final event still closes the session.
+    #   REPLAY_TARGET_COMPLETED — batch driver per-target outcome summary
+    #                             (source session id, target session id, provider/model, cost, wallclock).
+    SESSION_ABORTED = "session.aborted"
+    REPLAY_TARGET_COMPLETED = "replay.target_completed"
+
     # Catch-all for non-categorized observations
     EVENT_EMITTED = "event.emitted"
 

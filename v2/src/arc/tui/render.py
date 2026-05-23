@@ -193,6 +193,8 @@ def render_help() -> Group:
         Text("  /clear                reset the conversation in place "
              "(same session_id, audit trail captures the clear)"),
         Text("  /sessions             list past sessions in a table"),
+        Text("  /replay               cross-provider replay menu — pick a session "
+             "and re-run it against any provider/model (0019)"),
         Text(),
         Text("keybinds", style="bold"),
         Text("  Tab                   autocomplete slash commands"),
@@ -204,20 +206,37 @@ def render_help() -> Group:
         Text("  ARC_HOME              full path to arc dir (default: ~/.arc)"),
         Text("  GEMINI_API_KEY        Gemini API key"),
         Text("  ANTHROPIC_API_KEY     Anthropic API key"),
+        Text("  OLLAMA_API_KEY        Ollama key (placeholder; stock Ollama ignores it)"),
+        Text("  LLAMA_CPP_API_KEY     llama-server key (honored when --api-key is set)"),
         Text(),
         Text("config (see ", style="bold", end="") + Text("$ARC_HOME/config.yml", style="bold cyan") + Text(")", style="bold"),
-        Text("  provider.name         'gemini' | 'anthropic'"),
-        Text("  provider.model        e.g. claude-haiku-4-5 / gemini-3.1-flash-lite-preview"),
+        Text("  provider.name         'gemini' | 'anthropic' | 'ollama' | 'llama_cpp'"),
+        Text("  provider.model        e.g. claude-haiku-4-5, gemini-2.5-flash, llama3.1:8b"),
         Text("  runtime.system_prompt the base prompt the agent operates under"),
         Text("  tools.enabled         which tools are available this session"),
         Text("  tui.show_thinking     render extended-thinking blocks in TUI"),
         Text("  tui.toolbar_enabled   bottom toolbar with provider/tokens/$ cost"),
         Text(),
-        Text("more", style="bold"),
+        Text("arc home (see ", style="bold", end="") + Text("$ARC_HOME/", style="bold cyan") + Text(")", style="bold"),
+        Text("  config.yml            main config (above)"),
+        Text("  catalog.yml           model menu shown by `arc setup` (0017)"),
+        Text("  llm_servers.yml       llama-server registry for `arc llm` (0018)"),
+        Text("  sessions/             per-session events.jsonl + session.log"),
+        Text("  llm/                  current.pid + current.log for the local inference server"),
+        Text(),
+        Text("more CLI commands", style="bold"),
+        Text("  arc setup             interactive provider/model picker — "
+             "drops into a session after writing config (0017)"),
+        Text("  arc llm <action>      manage local llama-server: list, status, "
+             "start <id>, stop, restart <id>, logs (0018)"),
         Text("  arc log <id>          print a session's session.log"),
-        Text("  arc replay <id>       byte-identical replay of a recorded session"),
+        Text("  arc replay <id>       byte-identical replay (mode 2) / --live-llm (mode 3) / "
+             "--override-provider/--override-model / --against / --max-cost-usd (0019)"),
+        Text("  arc compare <id …>    side-by-side summary of 2+ recorded sessions (0019)"),
         Text("  arc resume <id>       continue a recorded session"),
         Text("  arc rerun <id>        replay user inputs against fresh agent"),
+        Text("  arc wipe              clean sessions (default) / --all / --llm / "
+             "--history / --dry-run"),
         Text(),
     )
 

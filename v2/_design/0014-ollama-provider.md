@@ -307,6 +307,10 @@ now.
 
 ## Test plan
 
+> Smoke and integration testing for this provider requires the host
+> running arc to also be running an Ollama server.  Unit tests run
+> anywhere (stubbed SDK, no network).
+
 Unit (`test_openai_compat.py`, stubbed SDK):
 1. System prompt placement (first message)
 2. User → assistant → tool → assistant translation round-trip

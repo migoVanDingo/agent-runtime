@@ -54,8 +54,24 @@ runtime:
 #   api_key_env: ANTHROPIC_API_KEY
 # Everything else (retry, params) works the same. The Anthropic SDK requires
 # max_tokens — leave the default below or override in params.
+#
+# Local providers (no API costs, but require a running inference server):
+#   Ollama:
+#     name: ollama
+#     model: llama3.1:8b              # any locally-pulled, tool-capable tag
+#     api_key_env: OLLAMA_API_KEY     # ignored by stock Ollama; placeholder used
+#     base_url: http://localhost:11434/v1
+#     timeout_seconds: 120            # local inference is slower than cloud
+#   llama.cpp (llama-server):
+#     name: llama_cpp
+#     model: ""                       # informational; llama-server has 1 model loaded
+#     api_key_env: LLAMA_CPP_API_KEY  # honor --api-key on llama-server if set
+#     base_url: http://localhost:8080/v1
+#     timeout_seconds: 120
+#     params:
+#       mode: compat                  # 'compat' (OpenAI-compatible) | 'grammar' (GBNF)
 provider:
-  name: gemini                      # 'gemini' | 'anthropic'
+  name: gemini                      # 'gemini' | 'anthropic' | 'ollama' | 'llama_cpp'
   model: gemini-3.1-flash-lite-preview
   api_key_env: GEMINI_API_KEY       # env var name to read the key from
   base_url: null                    # null = SDK/library default
@@ -200,4 +216,93 @@ tui:
 bootstrap:
   create_workspace_dir: false       # whether to create runtime.workspace if missing
   write_example_session: false      # whether to seed an example for replay testing
+"""
+
+
+# ── catalog.yml — drives the `arc setup` picker (see 0017) ─────────────────
+
+DEFAULT_CATALOG_YAML = """\
+# arc model catalog — drives the `arc setup` picker.
+# Add, remove, reorder entries freely.  The picker shows them top-to-bottom.
+#
+# Fields:
+#   id     (required) — the model id written into config.yml on selection
+#   label  (required) — display text in the picker
+#   note   (optional) — trailing hint, shown dim-colored in the picker
+
+anthropic:
+  - id: claude-opus-4-7
+    label: "Opus 4.7"
+    note: "most capable, slowest"
+  - id: claude-sonnet-4-6
+    label: "Sonnet 4.6"
+    note: "balanced; default recommendation"
+  - id: claude-haiku-4-5
+    label: "Haiku 4.5"
+    note: "fastest, cheapest"
+
+gemini:
+  - id: gemini-2.5-pro
+    label: "Pro"
+    note: "most capable"
+  - id: gemini-2.5-flash
+    label: "Flash"
+    note: "balanced default"
+  - id: gemini-3.1-flash-lite-preview
+    label: "Flash-Lite"
+    note: "cheapest"
+
+# Local providers — leave empty to use live discovery
+# (Ollama /api/tags, llama.cpp /v1/models).  Pin defaults here only if
+# you want them to appear in the picker even before the server is reachable.
+ollama: []
+llama_cpp: []
+"""
+
+
+# ── llm_servers.yml — drives `arc llm` lifecycle (see 0018) ────────────────
+
+DEFAULT_LLM_SERVERS_YAML = """\
+# arc llm-server registry — drives `arc llm` commands and the 0017 picker.
+#
+# Edit this file to point arc at your llama-server binary (or the
+# llama-cpp-python bundled server, installable via `pip install
+# llama-cpp-python[server]`) and to register the .gguf models you've
+# downloaded.
+
+binary:
+  # Two options:
+  #
+  # A) User-compiled llama.cpp (faster, more knobs):
+  #   path: ~/llama.cpp/build/bin/llama-server
+  #   kind: llama_cpp
+  #
+  # B) llama-cpp-python's bundled server (no sudo required):
+  path: python
+  kind: llama_cpp_python              # uses `python -m llama_cpp.server`
+
+# Args appended to every invocation.  Override per-model in `extra_args` below.
+default_args:
+  - "--host"
+  - "127.0.0.1"
+  - "--port"
+  - "8080"
+
+# How long to wait for /health to flip to "ok" after starting.
+# Cold model load can take 60-180s on first call.
+startup_timeout_seconds: 180
+
+# Models you have downloaded.  Each entry becomes a pickable choice
+# in `arc llm list` and the 0017 picker.
+models: []
+# Example:
+# models:
+#   - id: llama-3.1-8b
+#     label: "Llama 3.1 8B Instruct (Q4)"
+#     gguf: ~/models/llama-3.1-8b-instruct.Q4_K_M.gguf
+#     extra_args: ["-c", "8192", "-ngl", "99"]
+#   - id: qwen-2.5-coder-32b
+#     label: "Qwen 2.5 Coder 32B (Q4)"
+#     gguf: ~/models/qwen2.5-coder-32b-instruct.Q4_K_M.gguf
+#     extra_args: ["-c", "16384", "-ngl", "99"]
 """

@@ -337,6 +337,10 @@ compiler is pure Python; no library needed.
 
 ## Test plan
 
+> Smoke and integration testing for this provider requires the host
+> running arc to also be running `llama-server`.  Unit tests run
+> anywhere (stubbed httpx, no network).
+
 Unit (`test_grammar_compiler.py`):
 1. Empty tool list → grammar with only `text-answer` branch
 2. Single tool with string-only input

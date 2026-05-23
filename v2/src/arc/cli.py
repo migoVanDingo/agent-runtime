@@ -51,6 +51,18 @@ def main(argv: list[str] | None = None) -> int:
     # Dispatch
     if args.command == "bootstrap":
         return _cmd_bootstrap(home_override, force=args.force)
+    if args.command == "setup":
+        return _cmd_setup(
+            home_override,
+            provider=args.provider,
+            model=args.model,
+            print_only=args.print_only,
+            no_launch=args.no_launch,
+        )
+    if args.command == "llm":
+        return _cmd_llm(home_override, args)
+    if args.command == "wipe":
+        return _cmd_wipe(home_override, args)
     if args.command == "run":
         return _cmd_run(home_override, prompt=args.prompt)
     if args.command == "sessions":
@@ -69,6 +81,16 @@ def main(argv: list[str] | None = None) -> int:
             session_id=args.session_id,
             live_llm=args.live_llm,
             do_diff=not args.no_diff,
+            override_provider=args.override_provider,
+            override_model=args.override_model,
+            max_cost_usd=args.max_cost_usd,
+            against_spec=args.against,
+        )
+    if args.command == "compare":
+        return _cmd_compare(
+            home_override,
+            session_ids=args.session_ids,
+            full=args.full,
         )
     if args.command == "resume":
         return _cmd_resume(
@@ -117,6 +139,75 @@ def _build_parser() -> argparse.ArgumentParser:
         help="overwrite an existing config.yml (sessions are untouched)",
     )
 
+    wipe = sub.add_parser(
+        "wipe",
+        help="delete state under ARC_HOME (sessions, logs, etc.).  Default: sessions only.",
+    )
+    wipe.add_argument(
+        "--all", dest="wipe_all", action="store_true",
+        help="un-bootstrap: remove the entire ARC_HOME tree",
+    )
+    wipe.add_argument(
+        "--sessions", action="store_true",
+        help="remove sessions/ (default if no targets given)",
+    )
+    wipe.add_argument(
+        "--llm", action="store_true",
+        help="remove llm/ (server PID file + log)",
+    )
+    wipe.add_argument(
+        "--history", action="store_true",
+        help="remove the TUI input-history file",
+    )
+    wipe.add_argument(
+        "--pricing-cache", dest="pricing_cache", action="store_true",
+        help="remove pricing_cache.json (will refetch from LiteLLM on next run)",
+    )
+    wipe.add_argument(
+        "--yes", "-y", dest="assume_yes", action="store_true",
+        help="skip the confirmation prompt",
+    )
+    wipe.add_argument(
+        "--dry-run", dest="dry_run", action="store_true",
+        help="print what would be removed, don't actually delete",
+    )
+
+    llm = sub.add_parser(
+        "llm",
+        help="manage the local inference server (llama-server / llama-cpp-python)",
+    )
+    llm_sub = llm.add_subparsers(dest="llm_action", required=True)
+    llm_sub.add_parser("list", help="list registered models + which is running")
+    llm_sub.add_parser("status", help="show details about the running server")
+    llm_start = llm_sub.add_parser("start", help="start the server for a given model id")
+    llm_start.add_argument("model_id", help="id from llm_servers.yml")
+    llm_sub.add_parser("stop", help="stop the running server (SIGTERM → SIGKILL after 10s)")
+    llm_restart = llm_sub.add_parser("restart", help="stop current + start the named model")
+    llm_restart.add_argument("model_id", help="id from llm_servers.yml")
+    llm_logs = llm_sub.add_parser("logs", help="print recent lines from the server log")
+    llm_logs.add_argument("--tail", type=int, default=50, help="show only the last N lines")
+
+    setup = sub.add_parser(
+        "setup",
+        help="interactive provider/model picker — writes config.yml",
+    )
+    setup.add_argument(
+        "--provider", default=None,
+        help="skip the provider menu; use this provider name (anthropic|gemini|ollama|llama_cpp)",
+    )
+    setup.add_argument(
+        "--model", default=None,
+        help="skip the model menu; use this model id (requires --provider)",
+    )
+    setup.add_argument(
+        "--print", dest="print_only", action="store_true",
+        help="run the picker but dump the resulting YAML to stdout instead of writing",
+    )
+    setup.add_argument(
+        "--no-launch", dest="no_launch", action="store_true",
+        help="don't drop into a TUI session after writing config (default is to launch)",
+    )
+
     run = sub.add_parser("run", help="one-shot, non-interactive turn")
     run.add_argument("prompt", help="the user message to send (in quotes)")
 
@@ -135,7 +226,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     replay = sub.add_parser("replay", help="replay a recorded session")
-    replay.add_argument("session_id", help="session id to replay")
+    replay.add_argument(
+        "session_id", nargs="?", default=None,
+        help="session id to replay (omit to launch the interactive replay menu)",
+    )
     replay.add_argument(
         "--live-llm", action="store_true",
         help="mode 3: call the LLM live, stub only the tools "
@@ -144,6 +238,31 @@ def _build_parser() -> argparse.ArgumentParser:
     replay.add_argument(
         "--no-diff", action="store_true",
         help="don't compare against the original; just run the replay",
+    )
+    replay.add_argument(
+        "--override-provider", default=None, metavar="NAME",
+        help="cross-provider replay (0019): use a different provider than the original",
+    )
+    replay.add_argument(
+        "--override-model", default=None, metavar="ID",
+        help="cross-provider replay (0019): use this model id with the override provider",
+    )
+    replay.add_argument(
+        "--max-cost-usd", type=float, default=None, metavar="N",
+        help="abort the replay if cost exceeds N USD (0019)",
+    )
+    replay.add_argument(
+        "--against", default=None, metavar="P:M,P:M,…",
+        help="batch replay against multiple targets (e.g. 'ollama:llama3.1:8b,anthropic:claude-haiku-4-5')",
+    )
+
+    compare = sub.add_parser(
+        "compare", help="side-by-side comparison of two or more recorded sessions (0019)",
+    )
+    compare.add_argument("session_ids", nargs="+", help="2+ session ids to compare")
+    compare.add_argument(
+        "--full", action="store_true",
+        help="dump events.jsonl files side-by-side (verbose; for debugging)",
     )
 
     resume = sub.add_parser(
@@ -194,6 +313,145 @@ def _cmd_bootstrap(home_override: str | None, *, force: bool) -> int:
     result = bootstrap(home, force_config=force)
     print(format_bootstrap_summary(result))
     return 0
+
+
+def _cmd_wipe(home_override: str | None, args) -> int:
+    """`arc wipe` — delete state under ARC_HOME.  See `arc/wipe.py`."""
+    from arc.bootstrap import resolve_home
+    from arc.wipe import WipeTargets, build_plan, execute_plan, format_plan
+
+    home = resolve_home(home_override)
+    targets = WipeTargets(
+        all_=args.wipe_all,
+        sessions=args.sessions,
+        llm=args.llm,
+        history=args.history,
+        pricing_cache=args.pricing_cache,
+    ).with_default_if_empty()
+
+    plan = build_plan(home, targets)
+    if plan.is_noop:
+        print(f"nothing to wipe under {home} (no matching files exist)")
+        return 0
+
+    print(format_plan(plan))
+
+    if args.dry_run:
+        print("(dry-run: no changes made)")
+        return 0
+
+    if not args.assume_yes:
+        # No TTY → refuse silently rather than accidentally wiping in CI
+        if not sys.stdin.isatty():
+            print("aborted: not a TTY; pass --yes to confirm in non-interactive runs",
+                  file=sys.stderr)
+            return 1
+        try:
+            answer = input("proceed? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("aborted")
+            return 1
+        if answer not in ("y", "yes"):
+            print("aborted")
+            return 1
+
+    removed = execute_plan(plan)
+    print(f"wiped {len(removed)} path(s).")
+    return 0
+
+
+def _cmd_llm(home_override: str | None, args) -> int:
+    """`arc llm` dispatcher.  See 0018."""
+    from arc.bootstrap import bootstrap, paths_for, resolve_home
+    from arc import llm as _llm
+    from arc.llm.registry import RegistryError
+
+    home = resolve_home(home_override)
+    bootstrap(home)
+    paths = paths_for(home)
+
+    action = args.llm_action
+    try:
+        if action == "list":
+            return _llm.list_models(paths)
+        if action == "status":
+            return _llm.show_status(paths)
+        if action == "start":
+            return _llm.start_server(paths, args.model_id)
+        if action == "stop":
+            return _llm.stop_server(paths)
+        if action == "restart":
+            return _llm.restart_server(paths, args.model_id)
+        if action == "logs":
+            return _llm.show_logs(paths, tail=args.tail)
+    except RegistryError as e:
+        print(str(e), file=sys.stderr)
+        return 2
+
+    print(f"unknown llm action: {action}", file=sys.stderr)
+    return 2
+
+
+def _cmd_setup(
+    home_override: str | None,
+    *,
+    provider: str | None,
+    model: str | None,
+    print_only: bool,
+    no_launch: bool,
+) -> int:
+    """Interactive provider+model picker.  See _design/0017-provider-picker.md.
+
+    After a successful *interactive* setup (no --provider/--model flags),
+    drop into a TUI session against the freshly-picked provider so the
+    common "pick → use" flow doesn't bounce through the shell.  Scripted
+    setup (with flags) keeps its non-interactive contract.
+    """
+    from arc.bootstrap import resolve_home
+    from arc.setup import run_setup
+
+    if model is not None and provider is None:
+        print("--model requires --provider", file=sys.stderr)
+        return 2
+
+    try:
+        result = run_setup(
+            home=resolve_home(home_override),
+            provider_override=provider,
+            model_override=model,
+            print_only=print_only,
+        )
+    except SystemExit as exc:
+        # run_setup raises SystemExit on abort/error with a clear message
+        print(str(exc.code) if exc.code and not isinstance(exc.code, int) else "aborted",
+              file=sys.stderr)
+        return 1 if exc.code else 0
+
+    if print_only:
+        return 0
+
+    print(f"arc setup → {result.provider}/{result.model}")
+    print(f"  config: {result.config_path}")
+    print(result.diff_text)
+    if result.api_key_warning:
+        print(f"  warning: {result.api_key_warning}", file=sys.stderr)
+
+    # Auto-launch the TUI if the user just walked the interactive picker.
+    # Skip for scripted mode (flags-only), --no-launch, or missing api key
+    # — the last one would just fail at provider construction.
+    interactive_path = provider is None and model is None
+    if not interactive_path:
+        return 0
+    if no_launch:
+        return 0
+    if result.api_key_warning:
+        print("  (skipping launch — fix the env var above, then run `arc`)",
+              file=sys.stderr)
+        return 0
+
+    print()
+    print(f"starting session against {result.provider}/{result.model}…")
+    return _cmd_interactive(home_override)
 
 
 def _cmd_config_path(home_override: str | None) -> int:
@@ -356,17 +614,28 @@ def _cmd_run(home_override: str | None, *, prompt: str) -> int:
 def _cmd_replay(
     home_override: str | None,
     *,
-    session_id: str,
+    session_id: str | None,
     live_llm: bool,
     do_diff: bool,
+    override_provider: str | None = None,
+    override_model: str | None = None,
+    max_cost_usd: float | None = None,
+    against_spec: str | None = None,
 ) -> int:
-    """Replay a recorded session. Mode 2 (default) or mode 3 (--live-llm).
+    """Replay a recorded session.
 
-    Writes a NEW session dir for the replay (so the original is untouched
-    and the diff layer has something to compare against). Returns 0 on
-    match (or on success-without-diff), 1 on divergence or error.
+    Modes:
+      - no session_id  → drop into the 0019 TUI replay menu
+      - --against      → batch replay against multiple targets (0019)
+      - override flags → cross-provider single replay (0019)
+      - --live-llm     → mode 3 same-provider
+      - default        → mode 2 deterministic
     """
     _load_dotenv_into_environ(home_override)
+
+    # ── No session id → TUI replay menu ───────────────────────────────────
+    if session_id is None:
+        return _cmd_replay_menu(home_override)
 
     from arc.bootstrap import bootstrap, paths_for, resolve_home
     from arc.config import load
@@ -380,6 +649,7 @@ def _cmd_replay(
         diff_event_logs,
         load as load_replay,
     )
+    from arc.replay.override import OverrideError, apply_override
     from arc.runtime.bus import EventBus, HookRegistry
     from arc.runtime.ids import new_session_id
     from arc.runtime.loop import AgentSession
@@ -387,6 +657,15 @@ def _cmd_replay(
     home = resolve_home(home_override)
     paths = paths_for(home)
     source_dir = paths.sessions_dir / session_id
+
+    # ── --against → batch fan-out via batch.py ─────────────────────────
+    if against_spec is not None:
+        return _cmd_replay_batch(
+            home, paths.sessions_dir,
+            source_id=session_id,
+            against_spec=against_spec,
+            max_cost_usd=max_cost_usd,
+        )
 
     try:
         replay_data = load_replay(source_dir)
@@ -397,6 +676,21 @@ def _cmd_replay(
     # Use the current config (so the user can edit it between recording
     # and replay to test changes). The snapshot is informational only.
     cfg = load(paths.config_file)
+
+    # Apply provider/model override if requested (0019).  Override implies
+    # --live-llm; otherwise the recorded ReplayProvider would just replay
+    # the original LLM and the override would have no effect.
+    if override_provider is not None:
+        if not live_llm:
+            live_llm = True  # silently upgrade — override is meaningless without --live-llm
+        if not override_model:
+            print("--override-provider requires --override-model", file=sys.stderr)
+            return 2
+        try:
+            cfg = apply_override(cfg, provider=override_provider, model=override_model)
+        except OverrideError as e:
+            print(f"replay override: {e}", file=sys.stderr)
+            return 2
 
     # Tool registry comes from the recording, not the config — the recording
     # tells us what tool names were called, with what inputs/outputs.
@@ -425,15 +719,33 @@ def _cmd_replay(
     for built in plugins:
         registry.register(built.instance, hooks_order=built.hooks_order)
 
+    # 0019: inject max_cost plugin if requested.  Lives outside cfg.plugins
+    # because the cap is a per-invocation flag, not a config-file setting.
+    max_cost_plugin = None
+    if max_cost_usd is not None and max_cost_usd > 0:
+        from arc.plugins.max_cost import MaxCostPlugin
+        from arc.tui.pricing import PricingTable
+        max_cost_plugin = MaxCostPlugin(
+            max_cost_usd=float(max_cost_usd),
+            pricing_table=PricingTable(cache_path=paths.home / "pricing_cache.json"),
+        )
+        max_cost_plugin.bind_bus(bus)
+        registry.register(max_cost_plugin, hooks_order={})
+
     sess = AgentSession(
         config=cfg, provider=provider, tools=tools,
         registry=registry, bus=bus, session_id=new_session_id_,
     )
 
-    print(f"replaying {session_id} → {new_session_id_}  "
-          f"(mode {'3 (live LLM)' if live_llm else '2 (strict)'})")
+    mode_label = "3 (live LLM)" if live_llm else "2 (strict)"
+    if override_provider:
+        mode_label += f" — override {override_provider}/{override_model}"
+    if max_cost_usd is not None:
+        mode_label += f" — max ${max_cost_usd:.2f}"
+    print(f"replaying {session_id} → {new_session_id_}  (mode {mode_label})")
 
     diverged = False
+    aborted = False
     try:
         sess.start()
         for user_input in replay_data.user_inputs:
@@ -441,6 +753,14 @@ def _cmd_replay(
     except ReplayDivergenceError as e:
         print(f"\nREPLAY DIVERGED:\n  {e}\n", file=sys.stderr)
         diverged = True
+    except Exception as e:
+        # max_cost or other plugin errors bubble here
+        from arc.plugins.max_cost import MaxCostExceeded
+        if isinstance(e, MaxCostExceeded):
+            print(f"\nREPLAY ABORTED: {e}", file=sys.stderr)
+            aborted = True
+        else:
+            raise
     finally:
         sess.end()
 
@@ -453,8 +773,8 @@ def _cmd_replay(
         meta["replay_mode"] = "by_call" if live_llm else "in_order"
         new_meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False))
 
-    if not do_diff:
-        return 1 if diverged else 0
+    if not do_diff or aborted:
+        return 1 if (diverged or aborted) else 0
 
     # Run the diff
     result = diff_event_logs(
@@ -474,6 +794,120 @@ def _cmd_replay(
     print(file=sys.stderr)
     print(result.unified_diff, file=sys.stderr)
     return 1
+
+
+def _cmd_replay_batch(
+    home: Path,
+    sessions_dir: Path,
+    *,
+    source_id: str,
+    against_spec: str,
+    max_cost_usd: float | None,
+) -> int:
+    """Multi-target replay via arc.replay.batch.  Auto-launches `arc compare`
+    at the end against the source + all completed targets (0019)."""
+    from arc.replay.batch import BatchTarget, run_batch
+    from arc.replay.compare import render_full_comparison
+    from arc.replay.override import OverrideError, parse_target_list
+
+    try:
+        target_pairs = parse_target_list(against_spec)
+    except OverrideError as e:
+        print(f"replay --against: {e}", file=sys.stderr)
+        return 2
+
+    targets = [BatchTarget(provider=p, model=m) for p, m in target_pairs]
+    print(f"replay batch: source={source_id}  targets={len(targets)}")
+    for t in targets:
+        print(f"  + {t.short()}")
+
+    def _on_start(t):
+        print(f"\n→ running {t.short()} …", file=sys.stderr)
+
+    def _on_done(r):
+        status = "ok" if r.succeeded else f"failed (rc={r.return_code})"
+        sid = r.target_session_id or "—"
+        print(f"  {t_short(r.target)}: {status}  session={sid}  {r.elapsed_seconds:.1f}s",
+              file=sys.stderr)
+
+    results = run_batch(
+        source_session_id=source_id,
+        targets=targets,
+        arc_home=home,
+        max_cost_usd=max_cost_usd,
+        on_target_start=_on_start,
+        on_target_done=_on_done,
+    )
+
+    successes = [r for r in results if r.succeeded]
+    print(f"\nbatch complete: {len(successes)}/{len(results)} succeeded")
+
+    if successes:
+        # Auto-launch compare against source + successful targets
+        dirs = [sessions_dir / source_id] + [
+            sessions_dir / r.target_session_id for r in successes  # type: ignore[arg-type]
+        ]
+        from arc.tui.pricing import PricingTable
+        table = PricingTable(cache_path=home / "pricing_cache.json")
+        print()
+        print(render_full_comparison(dirs, pricing_table=table))
+
+    return 0 if all(r.succeeded for r in results) else 1
+
+
+def t_short(target) -> str:  # tiny shim, batch.BatchTarget has .short()
+    return target.short()
+
+
+def _cmd_compare(
+    home_override: str | None,
+    *,
+    session_ids: list[str],
+    full: bool,
+) -> int:
+    """`arc compare` — side-by-side comparison of N sessions (0019)."""
+    from arc.bootstrap import paths_for, resolve_home
+    from arc.replay.compare import render_full_comparison
+    from arc.tui.pricing import PricingTable
+
+    if len(session_ids) < 2:
+        print("arc compare: need at least 2 session ids", file=sys.stderr)
+        return 2
+
+    home = resolve_home(home_override)
+    paths = paths_for(home)
+    dirs = [paths.sessions_dir / sid for sid in session_ids]
+    missing = [d for d in dirs if not (d / "events.jsonl").is_file()]
+    if missing:
+        for d in missing:
+            print(f"compare: missing events.jsonl in {d}", file=sys.stderr)
+        return 1
+
+    if full:
+        # Verbose mode: just dump the events files side-by-side
+        for d in dirs:
+            print(f"\n========== {d.name} ==========")
+            print((d / "events.jsonl").read_text())
+        return 0
+
+    table = PricingTable(cache_path=home / "pricing_cache.json")
+    print(render_full_comparison(dirs, pricing_table=table))
+    return 0
+
+
+def _cmd_replay_menu(home_override: str | None) -> int:
+    """`arc replay` with no args → interactive replay menu (0019).
+
+    Lazy-imports the menu module so non-TUI users (CI, scripted callers)
+    aren't penalized by prompt_toolkit pulls.
+    """
+    from arc.bootstrap import bootstrap, paths_for, resolve_home
+    from arc.tui.replay_menu import run_replay_menu
+
+    home = resolve_home(home_override)
+    bootstrap(home)
+    paths = paths_for(home)
+    return run_replay_menu(home=home, sessions_dir=paths.sessions_dir)
 
 
 def _cmd_resume(

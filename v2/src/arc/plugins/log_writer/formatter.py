@@ -311,6 +311,31 @@ def _fmt_safety_denied(e: RuntimeEvent, n: int) -> list[tuple[str, int, str]]:
     ]
 
 
+def _fmt_session_aborted(e: RuntimeEvent, n: int) -> list[tuple[str, int, str]]:
+    p = e.payload
+    reason = p.get("reason", "?")
+    if reason == "cost_cap":
+        msg = (
+            f"  {WARN_GLYPH} session aborted: cost ${p.get('running_usd', 0):.4f} "
+            f"exceeded cap ${p.get('cap_usd', 0):.2f} "
+            f"({p.get('provider', '?')}/{p.get('model', '?')})"
+        )
+    else:
+        msg = f"  {WARN_GLYPH} session aborted: {reason}"
+    return [("arc.runtime", logging.WARNING, msg)]
+
+
+def _fmt_replay_target_completed(e: RuntimeEvent, n: int) -> list[tuple[str, int, str]]:
+    p = e.payload
+    return [
+        ("arc.replay", logging.INFO,
+         f"  ✓ replay target {p.get('provider', '?')}/{p.get('model', '?')} done — "
+         f"{p.get('wallclock_seconds', 0):.1f}s, "
+         f"cost ${p.get('cost_usd', 0):.4f}, "
+         f"session {p.get('target_session_id', '?')[:14]}…"),
+    ]
+
+
 # ── Dispatch table ─────────────────────────────────────────────────────────
 
 
@@ -335,4 +360,6 @@ _DISPATCH = {
     EventType.SAFETY_CONFIRMATION_REQUESTED: _fmt_safety_requested,
     EventType.SAFETY_CONFIRMATION_ALLOWED: _fmt_safety_allowed,
     EventType.SAFETY_CONFIRMATION_DENIED: _fmt_safety_denied,
+    EventType.SESSION_ABORTED: _fmt_session_aborted,
+    EventType.REPLAY_TARGET_COMPLETED: _fmt_replay_target_completed,
 }

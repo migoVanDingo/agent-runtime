@@ -17,10 +17,12 @@ from arc.config import PluginsConfig
 from arc.plugins.guard import GuardPlugin
 from arc.plugins.jsonl_recorder import JSONLRecorder
 from arc.plugins.log_writer import LogWriterPlugin
+from arc.plugins.max_cost import MaxCostPlugin
 from arc.plugins.pause_resume import PauseResumePlugin
 from arc.plugins.safety_gate import Pattern as SafetyPattern
 from arc.plugins.safety_gate import SafetyGatePlugin
 from arc.plugins.sliding_window_context import SlidingWindowContextPlugin
+from arc.tui.pricing import PricingTable
 from arc.user_gate import NoOpGate, UserGate
 
 
@@ -127,6 +129,19 @@ def _build_sliding_window_context(cfg: dict, build_ctx: PluginBuildContext) -> A
     return p
 
 
+def _build_max_cost(cfg: dict, build_ctx: PluginBuildContext) -> Any:
+    from arc.bootstrap import paths_for, resolve_home
+    cap = float(cfg.get("max_cost_usd", 0.0))
+    if cap <= 0:
+        raise ValueError("max_cost plugin requires positive max_cost_usd")
+    cache_path = paths_for(resolve_home()).home / "pricing_cache.json"
+    table = PricingTable(cache_path=cache_path)
+    p = MaxCostPlugin(max_cost_usd=cap, pricing_table=table)
+    if build_ctx.bus is not None:
+        p.bind_bus(build_ctx.bus)
+    return p
+
+
 _BUILDERS = {
     "jsonl-recorder": _build_jsonl_recorder,
     "guard": _build_guard,
@@ -134,6 +149,7 @@ _BUILDERS = {
     "pause-resume": _build_pause_resume,
     "log-writer": _build_log_writer,
     "sliding-window-context": _build_sliding_window_context,
+    "max-cost": _build_max_cost,
 }
 
 

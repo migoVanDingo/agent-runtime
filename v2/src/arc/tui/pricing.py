@@ -30,6 +30,13 @@ _LITELLM_URL = (
 _CACHE_MAX_AGE_SECONDS = 7 * 24 * 3600  # 1 week
 _FETCH_TIMEOUT_SECONDS = 10
 
+# Local-inference providers: never billed per-token, regardless of model.
+_LOCAL_FREE_PROVIDERS = frozenset({"ollama", "llama_cpp"})
+_LOCAL_FREE_RATES: dict[str, Any] = {
+    "input_cost_per_token": 0.0,
+    "output_cost_per_token": 0.0,
+}
+
 
 class PricingTable:
     """A lazy, cached, gracefully-failing pricing lookup.
@@ -50,8 +57,16 @@ class PricingTable:
         """Return pricing dict for the (provider, model) or None if unknown.
 
         Tries several key variants since LiteLLM's naming isn't strictly
-        consistent with what each SDK uses.
+        consistent with what each SDK uses.  Local providers (ollama,
+        llama_cpp) fall back to a built-in $0 entry so the TUI can still
+        show "$0.00" instead of an empty cost slot.
         """
+        # Local providers are always free, even if LiteLLM doesn't list them
+        # and even if the upstream fetch failed (no network on the inference
+        # host is a common case).
+        if provider in _LOCAL_FREE_PROVIDERS:
+            return _LOCAL_FREE_RATES
+
         data = self._get_data()
         if not data:
             return None

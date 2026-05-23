@@ -206,6 +206,38 @@ def builtin_plugin_names() -> set[str]:
 _refresh_builders()
 
 
+# Default priority for hooks the plugin implements but the user didn't pin
+# in config.yml. Higher number = later. Built-ins typically use 5–30 for
+# leading observability/policy concerns; 50 puts external plugins after
+# those defaults but ahead of any user-pinned tail-end work.
+DEFAULT_PLUGIN_HOOK_PRIORITY = 50
+
+
+def _resolve_hooks_order(instance: Any, configured: dict[str, int]) -> dict[str, int]:
+    """Auto-fill hook priorities for plugins whose config.yml entry has an
+    empty `hooks_order` — typical for external plugins persisted by the
+    first-run enablement flow.
+
+    Behavior:
+      - Non-empty `configured` → return it unchanged. Built-ins (and any
+        plugin whose author explicitly pinned hooks in config.yml) keep
+        their wiring exactly as specified.
+      - Empty `configured` → register every hook method the plugin defines
+        at DEFAULT_PLUGIN_HOOK_PRIORITY. Without this, an external plugin
+        loads but its `on_session_start` / `provides_tools()` never fires,
+        which manifests as "the plugin's tools mysteriously don't appear."
+    """
+    if configured:
+        return dict(configured)
+    from arc.runtime.hooks import ALL_HOOK_NAMES
+    resolved: dict[str, int] = {}
+    for hook_name in ALL_HOOK_NAMES:
+        method = getattr(instance, hook_name, None)
+        if callable(method):
+            resolved[hook_name] = DEFAULT_PLUGIN_HOOK_PRIORITY
+    return resolved
+
+
 def build(cfg: PluginsConfig, build_ctx: PluginBuildContext) -> list[BuiltPlugin]:
     """Construct active plugins. Skips entries with enabled=False.
 
@@ -215,7 +247,10 @@ def build(cfg: PluginsConfig, build_ctx: PluginBuildContext) -> list[BuiltPlugin
     `arc plugins` menu surfaces these as dangling so the user can clean up.
 
     Returns BuiltPlugin objects with their hooks_order so the runtime can
-    register them in the right order against the hook registry.
+    register them in the right order against the hook registry. Missing
+    entries in hooks_order are auto-populated from the plugin's method set
+    so external plugins "just work" without forcing the user to wire each
+    hook priority by hand.
     """
     out: list[BuiltPlugin] = []
     for entry in cfg.active():
@@ -230,10 +265,11 @@ def build(cfg: PluginsConfig, build_ctx: PluginBuildContext) -> list[BuiltPlugin
             )
             continue
         instance = _BUILDERS[entry.name](entry.config, build_ctx)
+        hooks_order = _resolve_hooks_order(instance, dict(entry.hooks_order))
         out.append(BuiltPlugin(
             name=entry.name,
             instance=instance,
-            hooks_order=dict(entry.hooks_order),
+            hooks_order=hooks_order,
         ))
     return out
 

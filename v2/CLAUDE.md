@@ -78,11 +78,50 @@ arc sessions                 list recorded sessions
 arc show <id>                pretty-print events
 arc log <id> [--tail N]      human-readable session.log
 arc config show / path       inspect resolved config
+arc plugins [list]           manage installed plugins (toggle / clean dangling)
 arc replay <id> [--live-llm] mode 2 (deterministic) / mode 3 (live LLM)
 arc resume <id> [--at-turn N --prompt "..."]   mode 1 (time-travel) / mode 4 (branch)
 arc rerun <id>               mode 5 (rerun user inputs vs fresh agent)
 arc --home <path> <cmd>      override ARC_HOME for one invocation
 ```
+
+## Out-of-tree plugins
+
+arc supports **external** plugins shipped as pip-installable packages.
+They register via the `arc.plugins` entry-point group and arc discovers
+them at startup. The contract:
+
+- **Public API:** `arc.plugin_api` (v0.1) is the single stable import path.
+  See `src/arc/plugin_api.py` — re-exports `Tool`, `ToolError`,
+  `RuntimeEvent`, `SessionContext`, `PluginBuildContext`, hook payloads.
+  Plugin authors MUST NOT import from `arc.tools.base`, `arc.runtime.hooks`,
+  etc. — those can move.
+- **Discovery:** `arc/plugins/discovery.py` walks `entry_points(group="arc.plugins")`.
+  Each entry resolves to a `build(config, build_ctx) -> object` callable.
+  Built-ins always win on name conflict; failures are isolated to one plugin.
+- **First-run enablement:** `arc/plugins/enablement.py` + `_apply_first_run_enablement`
+  in `cli.py`. Interactive mode prompts on discovery of a new plugin and
+  persists the answer to `config.yml`. Headless mode skips the prompt.
+- **Tool contribution:** plugins can implement `provides_tools() -> list[Tool]`.
+  Tools are merged into the registry by `AgentSession._merge_plugin_tools()`
+  after `on_session_start` fires.
+- **Tool bus binding:** any tool that defines `bind_bus(bus)` gets the
+  event bus injected by `AgentSession._bind_bus_to_tools()`.
+- **Hooks_order auto-fill:** plugins with `hooks_order: {}` in config (the
+  shape persisted by first-run enablement) get every hook method they
+  implement auto-registered at `DEFAULT_PLUGIN_HOOK_PRIORITY=50`. Built-ins
+  with explicit `hooks_order` are unaffected. See `_resolve_hooks_order`
+  in `arc/plugins/__init__.py`.
+
+**Existing external plugins** (forks of `arc-plugin-template`):
+- `arc-plugin-briefbot` — read-only tools over a local Briefbot SQLite corpus
+- `arc-plugin-websearch` — `web_search` / `read_url` / `http_request` / `extract_html`
+  with pluggable backends
+
+`arc plugins` opens a checkbox menu (built-ins + external + dangling
+entries from uninstalled packages). `arc plugins list` is the non-
+interactive print. Both use the comment-preserving writer at
+`arc/setup/writer.py`.
 
 ## ARC_HOME resolution
 
@@ -102,8 +141,11 @@ arc --home <path> <cmd>      override ARC_HOME for one invocation
 - **Don't break replay.** If you change provider translation or event shape,
   run replay tests specifically and update fixtures if needed (intentional)
   or fix the regression (not intentional).
-- **New plugin = builder + `_BUILDERS` entry + `defaults.py` entry + tests.**
-  See `_architecture/plugin-authoring.md`.
+- **New built-in plugin = builder + `_BUILTIN_BUILDERS` entry + `defaults.py` entry + tests.**
+  See `_architecture/plugin-authoring.md`. `_BUILDERS` is now a derived dict
+  populated by `_refresh_builders()` at import time — don't edit it directly.
+- **New external plugin = its own repo, forked from `arc-plugin-template`.**
+  Don't add it to this tree.
 - **New event type = `events.py` constant + `log_writer/formatter.py`
   dispatch entry.** Don't skip the formatter — session.log loses fidelity.
 - **Comments: minimal.** No multi-paragraph docstrings, no obvious comments.

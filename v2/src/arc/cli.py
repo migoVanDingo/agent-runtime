@@ -305,10 +305,30 @@ def _build_parser() -> argparse.ArgumentParser:
 
     plugins = sub.add_parser(
         "plugins",
-        help="manage installed plugins (enable, disable, clean up)",
+        help="manage installed plugins (enable/disable/clean up)",
+        description=(
+            "Manage built-in and out-of-tree (pip-installed) plugins.\n"
+            "\n"
+            "With no subcommand, opens an interactive checkbox menu showing\n"
+            "every plugin arc knows about — built-ins, discovered external\n"
+            "packages, and any dangling config entries from uninstalled\n"
+            "packages. Space toggles, Enter saves to ~/.arc/config.yml.\n"
+            "\n"
+            "External plugins are pip-installable packages that register\n"
+            "via the `arc.plugins` entry-point group. arc prompts once on\n"
+            "first discovery; this command is the always-available toggle."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    plugins_sub = plugins.add_subparsers(dest="plugins_action")
-    plugins_sub.add_parser("list", help="print plugin status (non-interactive)")
+    plugins_sub = plugins.add_subparsers(
+        dest="plugins_action",
+        metavar="{list}",
+        title="subcommands",
+    )
+    plugins_sub.add_parser(
+        "list",
+        help="print plugin status as a plain-text table (non-interactive)",
+    )
     # No subcommand → interactive menu
 
     return p

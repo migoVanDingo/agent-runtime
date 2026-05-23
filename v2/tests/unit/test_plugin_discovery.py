@@ -284,3 +284,42 @@ def test_bind_bus_to_tools_calls_bind_bus_only_when_defined():
     bound = bind_bus_to_tools(reg, bus)
     assert bound == ["chatty"]
     assert chatty._bus_seen is bus
+
+
+# ── hooks_order auto-fill ─────────────────────────────────────────────────
+
+
+class _PluginWithHooks:
+    """Plugin that implements three hooks but the user's config didn't pin
+    any priorities (the first-run-enablement shape)."""
+    name = "fake_pl"
+
+    def on_session_start(self, ctx): pass
+    def on_session_end(self, ctx, outcome): pass
+    def provides_tools(self): return []
+
+
+def test_resolve_hooks_order_autofills_when_config_empty():
+    from arc.plugins import DEFAULT_PLUGIN_HOOK_PRIORITY, _resolve_hooks_order
+
+    resolved = _resolve_hooks_order(_PluginWithHooks(), configured={})
+    # Both lifecycle hooks the plugin defines should get default priorities
+    assert resolved["on_session_start"] == DEFAULT_PLUGIN_HOOK_PRIORITY
+    assert resolved["on_session_end"] == DEFAULT_PLUGIN_HOOK_PRIORITY
+    # provides_tools is not in ALL_HOOK_NAMES — it's a tool-contribution
+    # contract, not a hook — so it should not appear
+    assert "provides_tools" not in resolved
+    # Hooks the plugin doesn't implement are absent (we don't blindly fill
+    # every hook in the catalog)
+    assert "before_llm_call" not in resolved
+
+
+def test_resolve_hooks_order_preserves_explicit_config():
+    """Built-in plugins pin specific priorities in defaults.py — auto-fill
+    must NOT silently widen those to all implemented hooks. The test asserts
+    we keep the configured shape unchanged when it's non-empty."""
+    from arc.plugins import _resolve_hooks_order
+
+    configured = {"on_event": 100}  # mimics the recorder's stub config in tests
+    resolved = _resolve_hooks_order(_PluginWithHooks(), configured=configured)
+    assert resolved == configured

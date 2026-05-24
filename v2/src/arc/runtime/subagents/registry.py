@@ -104,6 +104,10 @@ class SubAgentRegistry:
         report = DiscoveryReport()
         merged: dict[str, SubAgentSpec] = {}
         enabled: dict[str, bool] = {}
+        # Builder callables remembered per plugin name so step 3 can re-call
+        # build() with user-provided config (enabling specs that need to render
+        # prompts or set params from user keys, per 0022 §Config injection).
+        plugin_builders: dict[str, tuple[Any, str]] = {}
 
         # 1. Built-ins
         for name, spec in self._builtins.items():
@@ -168,6 +172,8 @@ class SubAgentRegistry:
             tagged = replace(spec, source="plugin", source_package=pkg)
             merged[ep.name] = tagged
             enabled[ep.name] = True
+            # Remember the builder so step 3 can re-call with user config.
+            plugin_builders[ep.name] = (builder, pkg)
             report.plugins.append(_DiscoveredSpec(
                 spec=tagged,
                 package=pkg,
@@ -176,6 +182,9 @@ class SubAgentRegistry:
             ))
 
         # 3. Config overrides + config-only definitions
+        spec_field_names = {
+            f.name for f in SubAgentSpec.__dataclass_fields__.values()
+        }
         for name, raw in (subagents_config or {}).items():
             if not isinstance(raw, dict):
                 raise ValueError(
@@ -185,10 +194,38 @@ class SubAgentRegistry:
             user_enabled = bool(raw.get("enabled", True))
 
             if name in merged:
-                # Field-level override on existing plugin/builtin spec.
+                # If this is a plugin spec and the user supplied any config
+                # keys, re-call `build()` with the user's full config so the
+                # spec author can consume their own custom keys (rendering
+                # prompts, setting params, etc.) Per 0022 §Config injection.
+                if name in plugin_builders and override_fields:
+                    builder, pkg = plugin_builders[name]
+                    ctx = SubAgentBuildContext(arc_home=self._arc_home)
+                    try:
+                        rebuilt = builder(override_fields, ctx)
+                        if isinstance(rebuilt, SubAgentSpec):
+                            merged[name] = replace(
+                                rebuilt, source="config", source_package=pkg,
+                            )
+                    except Exception as exc:
+                        report.failures.append(_LoadFailure(
+                            name=name, package=pkg,
+                            entry_point_value=f"{name}.build (rebuild)",
+                            error=f"rebuild with user config failed: "
+                                  f"{type(exc).__name__}: {exc}",
+                        ))
+
+                # Then apply any keys that ARE valid SubAgentSpec fields as
+                # field-level overrides on top of (possibly-rebuilt) spec.
+                # Filter out keys the build() consumed — those aren't fields.
+                field_overrides = {
+                    k: v for k, v in override_fields.items()
+                    if k in spec_field_names
+                }
+                if field_overrides:
+                    merged[name] = merged[name].merged_with(field_overrides)
+
                 if override_fields:
-                    merged[name] = merged[name].merged_with(override_fields)
-                    # source tag updated to reflect config touched it.
                     merged[name] = replace(merged[name], source="config")
                     report.config_overrides.append(name)
                 enabled[name] = user_enabled

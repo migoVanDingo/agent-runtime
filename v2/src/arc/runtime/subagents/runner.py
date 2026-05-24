@@ -458,7 +458,11 @@ class SubAgentRunner:
 
         # Provider — pin to spec's provider/model. Inherit retry/timeout
         # from parent (reasonable defaults; spec can override env/url).
+        # spec.params is merged INTO parent's provider params (spec wins on
+        # key collision) so sub-agents can supply provider-specific config
+        # like vertex_gemini's project_id + region.
         api_key_env = spec.api_key_env or _DEFAULT_API_KEY_ENV.get(spec.provider, "")
+        merged_params = {**dict(parent.provider.params), **dict(spec.params)}
         child_provider = ProviderConfig(
             name=spec.provider,
             model=spec.model,
@@ -466,7 +470,7 @@ class SubAgentRunner:
             base_url=spec.base_url,
             timeout_seconds=parent.provider.timeout_seconds,
             retry=parent.provider.retry,
-            params=dict(parent.provider.params),
+            params=merged_params,
         )
 
         # Runtime — override system prompt + cap iterations to spec.max_turns.

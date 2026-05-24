@@ -168,7 +168,8 @@ def test_messages_to_contents_simple_text(mock_client_cls, monkeypatch):
         Message(role="user", content="hi"),
         Message(role="assistant", content="hello"),
     ]
-    contents = p._messages_to_contents(msgs)
+    from arc.providers._gemini_translation import messages_to_contents
+    contents = messages_to_contents(msgs)
     assert contents == [
         {"role": "user", "parts": [{"text": "hi"}]},
         {"role": "model", "parts": [{"text": "hello"}]},
@@ -183,7 +184,8 @@ def test_messages_to_contents_with_tool_call(mock_client_cls, monkeypatch):
         ContentBlock(type="text", text="let me check"),
         ContentBlock(type="tool_use", tool_name="ls", tool_input={"path": "/tmp"}),
     ])]
-    contents = p._messages_to_contents(msgs)
+    from arc.providers._gemini_translation import messages_to_contents
+    contents = messages_to_contents(msgs)
     assert contents == [{
         "role": "model",
         "parts": [

@@ -7,7 +7,7 @@ and register it via the `arc.subagents` entry-point group.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import Literal
+from typing import Any, Literal
 
 
 SpecSource = Literal["builtin", "plugin", "config"]
@@ -62,6 +62,13 @@ class SubAgentSpec:
     max_dispatches_per_session: int = 5
     max_consecutive_failures: int = 2
     max_transient_retries: int = 2
+
+    # Provider-specific config to thread into the child's ProviderConfig.params.
+    # Used by sub-agents that pin a provider needing extra config beyond
+    # api_key_env / base_url (e.g., `vertex_gemini` needs project_id + region).
+    # Frozen dict-equivalent — pass a regular dict at construction; the spec
+    # stays equal-by-value across instances with same contents.
+    params: dict[str, Any] = field(default_factory=dict)
 
     # Provenance — set by the registry during discovery/merge. Authors
     # don't need to set these; the registry overrides.

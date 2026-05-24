@@ -66,3 +66,31 @@ def test_merged_with_rejects_unknown_field():
 def test_merged_with_empty_returns_self():
     spec = _spec()
     assert spec.merged_with({}) is spec
+
+
+# ── params field (0022) ───────────────────────────────────────────────────
+
+
+def test_params_defaults_to_empty_dict():
+    spec = _spec()
+    assert spec.params == {}
+
+
+def test_params_carries_provider_specific_config():
+    spec = _spec(params={"vertex_project_id": "my-proj", "vertex_region": "us-central1"})
+    assert spec.params["vertex_project_id"] == "my-proj"
+    assert spec.params["vertex_region"] == "us-central1"
+
+
+def test_merged_with_can_override_params():
+    spec = _spec(params={"vertex_project_id": "default-proj"})
+    merged = spec.merged_with({"params": {"vertex_project_id": "overridden"}})
+    assert merged.params["vertex_project_id"] == "overridden"
+
+
+def test_equality_includes_params():
+    a = _spec(params={"k": "v"})
+    b = _spec(params={"k": "v"})
+    c = _spec(params={"k": "other"})
+    assert a == b
+    assert a != c

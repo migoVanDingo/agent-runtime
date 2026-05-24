@@ -229,6 +229,46 @@ def test_expected_output_appended_to_system_prompt(monkeypatch):
     assert '{"x": int}' in sent_system
 
 
+def test_spec_params_thread_into_child_provider_config(monkeypatch):
+    """spec.params merges into the child's ProviderConfig.params at dispatch."""
+    spec = SubAgentSpec(
+        name="vertex_thing", description="d",
+        provider="vertex_gemini", model="gemini-2.5-pro",
+        system_prompt="p", tools=(),
+        params={"vertex_project_id": "my-proj", "vertex_region": "us-east1"},
+    )
+    reg = _registry_with({"vertex_thing": spec})
+    parent_reg = HookRegistry(failure_threshold=3, exception_message_max_chars=500)
+    parent_bus = EventBus(parent_reg)
+
+    seen_configs = []
+
+    class FakeForCapture:
+        name = "fake"
+        def chat(self, req):
+            return LLMResponse(
+                content=[ContentBlock(type="text", text="ok")],
+                stop_reason="end_turn", input_tokens=1, output_tokens=1, raw={},
+            )
+
+    def _fake_build(cfg):
+        seen_configs.append(cfg)
+        return FakeForCapture()
+
+    monkeypatch.setattr("arc.providers.build", _fake_build)
+
+    runner = SubAgentRunner(
+        registry=reg, parent_bus=parent_bus, parent_tools=ToolRegistry(),
+        parent_config=_parent_config(), arc_home=Path("/tmp"), sessions_dir=Path("/tmp"),
+    )
+    runner.dispatch("vertex_thing", "task", parent_session_id="parent_1")
+
+    assert len(seen_configs) == 1
+    child_cfg = seen_configs[0]
+    assert child_cfg.params["vertex_project_id"] == "my-proj"
+    assert child_cfg.params["vertex_region"] == "us-east1"
+
+
 def test_quota_denied_returns_error_without_running(monkeypatch):
     """Once quota is exhausted, dispatch returns error and does NOT call provider."""
     spec = SubAgentSpec(

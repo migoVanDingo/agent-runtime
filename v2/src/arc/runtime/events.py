@@ -98,6 +98,21 @@ class EventType:
     SESSION_ABORTED = "session.aborted"
     REPLAY_TARGET_COMPLETED = "replay.target_completed"
 
+    # Sub-agent dispatch (0020). All emitted on the PARENT's bus — the child's
+    # events go to its own (separate) bus.
+    #   SUBAGENT_DISPATCHED       — about to spawn the child
+    #   SUBAGENT_RETURNED         — normal completion, with metrics
+    #   SUBAGENT_ABORTED          — abnormal completion (timeout, cancelled, provider_error)
+    #   SUBAGENT_QUOTA_EXCEEDED   — denied because per-session quota was hit (emitted once per spec)
+    #   SUBAGENT_CIRCUIT_TRIPPED  — circuit breaker just locked the spec for this session
+    #   SUBAGENT_RETRY_ATTEMPTED  — runner-internal transient-error retry
+    SUBAGENT_DISPATCHED = "subagent.dispatched"
+    SUBAGENT_RETURNED = "subagent.returned"
+    SUBAGENT_ABORTED = "subagent.aborted"
+    SUBAGENT_QUOTA_EXCEEDED = "subagent.quota_exceeded"
+    SUBAGENT_CIRCUIT_TRIPPED = "subagent.circuit_tripped"
+    SUBAGENT_RETRY_ATTEMPTED = "subagent.retry_attempted"
+
     # Catch-all for non-categorized observations
     EVENT_EMITTED = "event.emitted"
 

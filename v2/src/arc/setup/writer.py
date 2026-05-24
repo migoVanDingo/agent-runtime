@@ -187,6 +187,61 @@ def write_plugin_enablement(
     return changes
 
 
+def write_subagent_enablement(
+    config_path: Path,
+    *,
+    name: str,
+    enabled: bool,
+) -> list[WriteChange]:
+    """Toggle `subagents.<name>.enabled` in config.yml, preserving comments.
+
+    If the spec has no existing block, a fresh one is inserted with just
+    `enabled: <bool>`. Field overrides (model, timeout_s, etc.) are not
+    touched by this helper — use a `subagents:` block edit for those.
+
+    Used by `arc subagents enable|disable`.
+    """
+    from ruamel.yaml import YAML
+    from ruamel.yaml.comments import CommentedMap
+
+    yaml = YAML(typ="rt")
+    yaml.preserve_quotes = True
+    yaml.width = 4096
+
+    with config_path.open("r", encoding="utf-8") as f:
+        data = yaml.load(f)
+
+    if data is None:
+        raise ValueError(f"config at {config_path} is empty")
+    if "subagents" not in data or data["subagents"] is None:
+        data["subagents"] = CommentedMap()
+
+    block = data["subagents"]
+    if name not in block:
+        new_entry = CommentedMap()
+        new_entry["enabled"] = enabled
+        block[name] = new_entry
+        changes = [WriteChange(
+            key=f"subagents.{name}",
+            old=None,
+            new=f"{{enabled: {enabled}}}",
+        )]
+    else:
+        entry = block[name]
+        old_enabled = bool(entry.get("enabled", True))
+        entry["enabled"] = enabled
+        changes = [WriteChange(
+            key=f"subagents.{name}.enabled",
+            old=str(old_enabled),
+            new=str(enabled),
+        )]
+
+    buf = StringIO()
+    yaml.dump(data, buf)
+    config_path.write_text(buf.getvalue(), encoding="utf-8")
+    return changes
+
+
 def remove_plugin_entry(config_path: Path, *, name: str) -> list[WriteChange]:
     """Remove a plugin entry by name. Used by `arc plugins` when cleaning up
     dangling entries (plugin uninstalled but still listed in config.yml).

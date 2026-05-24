@@ -111,6 +111,37 @@ class BootstrapConfig:
 
 
 @dataclass(frozen=True)
+class SubAgentEntry:
+    """One entry from the `subagents:` config block.
+
+    Can either OVERRIDE fields of an existing plugin/builtin spec (only the
+    listed fields are touched) or DEFINE a new config-only spec (must carry
+    description, provider, model, system_prompt at minimum).
+
+    `enabled` defaults to True so listing an entry is equivalent to turning
+    it on, mirroring the `plugins.enabled` pattern.
+    """
+    name: str
+    enabled: bool
+    fields: dict[str, Any]            # all override/definition fields except `enabled`
+
+
+@dataclass(frozen=True)
+class SubAgentsConfig:
+    """Parsed `subagents:` block. The registry consumes `as_overrides()`."""
+    entries: list[SubAgentEntry]
+
+    def as_overrides(self) -> dict[str, dict[str, Any]]:
+        """Shape the registry expects: name -> {**fields, "enabled": bool}."""
+        out: dict[str, dict[str, Any]] = {}
+        for e in self.entries:
+            row = dict(e.fields)
+            row["enabled"] = e.enabled
+            out[e.name] = row
+        return out
+
+
+@dataclass(frozen=True)
 class Config:
     """Resolved, validated config. Frozen — nothing mutates after load."""
     runtime: RuntimeConfig
@@ -120,11 +151,16 @@ class Config:
     tui: TUIConfig
     bootstrap: BootstrapConfig
     source_path: Path  # where the config was loaded from (debug aid)
+    # Sub-agents (0020). Optional with empty default so older callers
+    # (tests, programmatic Config construction) don't have to thread it.
+    subagents: SubAgentsConfig = field(default_factory=lambda: SubAgentsConfig(entries=[]))
 
 
 # ── Loader ──────────────────────────────────────────────────────────────────
 
-KNOWN_TOP_LEVEL = {"runtime", "provider", "tools", "plugins", "tui", "bootstrap"}
+# `subagents` is optional — older configs without the block keep loading.
+KNOWN_TOP_LEVEL = {"runtime", "provider", "tools", "plugins", "subagents", "tui", "bootstrap"}
+_REQUIRED_TOP_LEVEL = {"runtime", "provider", "tools", "plugins", "tui", "bootstrap"}
 
 
 def load(path: Path) -> Config:
@@ -158,7 +194,7 @@ def load(path: Path) -> Config:
             f"config at {path} has unknown top-level keys: {sorted(unknown)}\n"
             f"  known keys: {sorted(KNOWN_TOP_LEVEL)}"
         )
-    missing = KNOWN_TOP_LEVEL - set(raw.keys())
+    missing = _REQUIRED_TOP_LEVEL - set(raw.keys())
     if missing:
         raise ConfigError(
             f"config at {path} is missing required sections: {sorted(missing)}"
@@ -170,6 +206,7 @@ def load(path: Path) -> Config:
             provider=_parse_provider(raw["provider"]),
             tools=_parse_tools(raw["tools"]),
             plugins=_parse_plugins(raw["plugins"]),
+            subagents=_parse_subagents(raw.get("subagents")),
             tui=_parse_tui(raw["tui"]),
             bootstrap=_parse_bootstrap(raw["bootstrap"]),
             source_path=path,
@@ -255,6 +292,50 @@ def _parse_plugins(d: dict) -> PluginsConfig:
         exception_message_max_chars=int(d["exception_message_max_chars"]),
         enabled=entries,
     )
+
+
+def _parse_subagents(d: dict | None) -> SubAgentsConfig:
+    """Parse the optional `subagents:` block.
+
+    Shape:
+
+        subagents:
+          example_log_grepper:               # override-only block
+            model: claude-haiku-4-5
+            timeout_s: 60
+          custom_classifier:                 # new spec definition
+            description: ...
+            provider: anthropic
+            model: claude-haiku-4-5
+            system_prompt: ...
+            tools: [bash]
+            enabled: true
+
+    The registry distinguishes overrides from new specs by whether the
+    underlying name is already discovered. Here we just parse the YAML
+    into SubAgentEntry instances; validation of "is this a valid override
+    vs. a complete new spec?" happens at registry.discover() time so we
+    can give per-spec errors with full discovery context.
+    """
+    if d is None:
+        return SubAgentsConfig(entries=[])
+    if not isinstance(d, dict):
+        raise ValueError("subagents must be a mapping of spec_name -> fields")
+    entries: list[SubAgentEntry] = []
+    for name, raw in d.items():
+        if not isinstance(raw, dict):
+            raise ValueError(
+                f"subagents.{name} must be a mapping; got {type(raw).__name__}"
+            )
+        # Pull `enabled` out; everything else becomes a field override / definition.
+        enabled = bool(raw.get("enabled", True))
+        fields = {k: v for k, v in raw.items() if k != "enabled"}
+        entries.append(SubAgentEntry(
+            name=str(name),
+            enabled=enabled,
+            fields=fields,
+        ))
+    return SubAgentsConfig(entries=entries)
 
 
 def _parse_tui(d: dict) -> TUIConfig:

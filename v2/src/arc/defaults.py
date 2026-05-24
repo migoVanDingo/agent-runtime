@@ -192,6 +192,29 @@ plugins:
       hooks_order:
         pack_context: 100
 
+# ── Sub-agents (0020) ───────────────────────────────────────────────────────
+# Optional. List installed sub-agent specs here to override fields (model,
+# timeout_s, max_dispatches_per_session, etc.) or define new config-only
+# specs. Built-ins and plugin-discovered specs are loaded automatically;
+# you only need an entry here if you want to customize one.
+#
+# Example overrides on a plugin-shipped spec:
+#   subagents:
+#     example_log_grepper:
+#       model: claude-haiku-4-5
+#       timeout_s: 60
+#       enabled: true
+#
+# Example new config-only spec:
+#   subagents:
+#     my_classifier:
+#       description: "Classify a snippet as one of {A, B, C}. Return JSON."
+#       provider: anthropic
+#       model: claude-haiku-4-5
+#       system_prompt: "You are a focused classifier. Return only JSON …"
+#       tools: []
+subagents: {}
+
 # ── TUI ─────────────────────────────────────────────────────────────────────
 tui:
   enabled: true                     # false = headless CLI mode (also used by replay)

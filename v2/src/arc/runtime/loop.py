@@ -64,10 +64,16 @@ class AgentSession:
     # Pre-loaded conversation. Used by `arc resume` to start a session
     # with prior context already in place. Left empty for fresh sessions.
     initial_messages: list[Message] | None = None
+    # Optional sub-agent registry (0020). When set, AgentSession merges
+    # SubAgentTool adapters for every enabled spec into the tool registry
+    # after plugin tools are merged. None disables sub-agent dispatch for
+    # this session.
+    subagent_registry: Any = None  # SubAgentRegistry | None — Any to avoid runtime import
     _messages: list[Message] = None  # type: ignore[assignment]
     _session_ctx: SessionContext | None = None
     _started: bool = False
     _last_outcome: TurnOutcome | None = None
+    _subagent_runner: Any = None  # SubAgentRunner | None — populated in start()
 
     def __post_init__(self) -> None:
         if not self.session_id:
@@ -108,6 +114,11 @@ class AgentSession:
             # Merge plugin-contributed tools (no-op if no plugin defines
             # provides_tools). Collisions raise — this is loud on purpose.
             self._merge_plugin_tools()
+
+            # Merge sub-agent tools (0020). MUST run after plugin tools so
+            # specs can reference plugin-contributed tools in their allowlist.
+            # Skipped when inside a sub-agent (recursion prohibition layer 1).
+            self._merge_subagent_tools()
 
             # Bind the bus to tools that need it (optional contract).
             self._bind_bus_to_tools()
@@ -180,6 +191,68 @@ class AgentSession:
             binder = getattr(tool, "bind_bus", None)
             if callable(binder):
                 binder(self.bus)
+
+    def _merge_subagent_tools(self) -> None:
+        """Register a SubAgentTool wrapper for every enabled sub-agent spec.
+
+        Two layers of the recursion prohibition coordinate here:
+          - Layer 1 (registry filter): if we're already inside a sub-agent
+            (per the tripwire contextvar), skip registration entirely.
+            The child literally cannot see sub-agent dispatch as a tool.
+          - Layer 2 (tripwire): even if a SubAgentTool reference leaked
+            in, the runner's dispatch() checks the contextvar and raises
+            SubAgentRecursionError. Implemented in runner.dispatch().
+
+        Tool-name collisions with built-in or plugin tools raise loudly —
+        the user can rename their sub-agent or its colliding tool.
+        """
+        if self.subagent_registry is None:
+            return
+
+        # Import here to avoid pulling subagents into the loop's
+        # module-level imports (and any subsequent import-time circularity).
+        from arc.runtime.subagents.tool_adapter import SubAgentTool
+        from arc.runtime.subagents.tripwire import inside_subagent
+        from arc.runtime.subagents.runner import SubAgentRunner
+
+        if inside_subagent():
+            # Layer 1 — child sessions get zero sub-agent tools.
+            return
+
+        # Build the per-session runner once, share across all SubAgentTool
+        # instances so guard state (quota, circuit) is unified per spec.
+        # arc_home / sessions_dir are needed for the child session dir;
+        # pull from config/workspace if available. The runner doesn't
+        # actually write to disk in v0.1 (child plugins are empty), so
+        # passing Path(".") as a placeholder is acceptable.
+        from pathlib import Path
+        arc_home = Path(self.config.runtime.workspace)
+        sessions_dir = arc_home
+        self._subagent_runner = SubAgentRunner(
+            registry=self.subagent_registry,
+            parent_bus=self.bus,
+            parent_tools=self.tools,
+            parent_config=self.config,
+            arc_home=arc_home,
+            sessions_dir=sessions_dir,
+        )
+
+        added: list[str] = []
+        for spec_name, spec in self.subagent_registry.enabled_specs().items():
+            tool = SubAgentTool(spec, self._subagent_runner)
+            if tool.name in self.tools:
+                raise ValueError(
+                    f"sub-agent {spec_name!r} would register tool {tool.name!r} "
+                    f"but a tool with that name is already registered"
+                )
+            self.tools.register(tool)
+            added.append(tool.name)
+        if added:
+            self.bus.emit(RuntimeEvent(
+                type=EventType.PLUGIN_TOOLS_REGISTERED,
+                stage="AgentSession",
+                payload={"tools": added, "source": "subagents"},
+            ))
 
     def end(self) -> None:
         """Finalize the session.

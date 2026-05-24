@@ -373,6 +373,73 @@ def _fmt_replay_target_completed(e: RuntimeEvent, n: int) -> list[tuple[str, int
     ]
 
 
+# ── Sub-agent dispatch (0020) ──────────────────────────────────────────────
+
+
+def _fmt_subagent_dispatched(e: RuntimeEvent, n: int) -> list[tuple[str, int, str]]:
+    p = e.payload
+    retry = p.get("retry_attempt", 0) or 0
+    retry_tag = f" (retry #{retry})" if retry else ""
+    return [
+        ("arc.subagent", logging.INFO,
+         f"  {ARROW_IN} subagent {p.get('spec_name', '?')} dispatching → "
+         f"{p.get('provider', '?')}/{p.get('model', '?')} "
+         f"[child {str(p.get('child_session_id', '?'))[:14]}…]{retry_tag}"),
+    ]
+
+
+def _fmt_subagent_returned(e: RuntimeEvent, n: int) -> list[tuple[str, int, str]]:
+    p = e.payload
+    return [
+        ("arc.subagent", logging.INFO,
+         f"  {ARROW_OUT} subagent {p.get('spec_name', '?')} ok — "
+         f"{p.get('turns', 0)} turns, "
+         f"{p.get('tool_calls', 0)} tool calls, "
+         f"${p.get('cost_usd', 0):.4f}, "
+         f"{p.get('wallclock_s', 0):.1f}s, "
+         f"output {p.get('output_chars', 0)} chars"),
+    ]
+
+
+def _fmt_subagent_aborted(e: RuntimeEvent, n: int) -> list[tuple[str, int, str]]:
+    p = e.payload
+    reason = p.get("reason", "?")
+    return [
+        ("arc.subagent", logging.WARNING,
+         f"  {FAILED} subagent {p.get('spec_name', '?')} aborted: {reason} "
+         f"({p.get('turns', 0)} turns, {p.get('wallclock_s', 0):.1f}s)"),
+    ]
+
+
+def _fmt_subagent_quota_exceeded(e: RuntimeEvent, n: int) -> list[tuple[str, int, str]]:
+    p = e.payload
+    return [
+        ("arc.subagent", logging.WARNING,
+         f"  {DENIED} subagent {p.get('spec_name', '?')} quota exceeded "
+         f"(cap {p.get('cap', '?')}; denied task of {p.get('denied_task_chars', 0)} chars)"),
+    ]
+
+
+def _fmt_subagent_circuit_tripped(e: RuntimeEvent, n: int) -> list[tuple[str, int, str]]:
+    p = e.payload
+    return [
+        ("arc.subagent", logging.WARNING,
+         f"  {WARN_GLYPH} subagent {p.get('spec_name', '?')} circuit tripped "
+         f"({p.get('consecutive_failures', '?')} consecutive failures); "
+         f"locked for this session"),
+    ]
+
+
+def _fmt_subagent_retry_attempted(e: RuntimeEvent, n: int) -> list[tuple[str, int, str]]:
+    p = e.payload
+    return [
+        ("arc.subagent", logging.WARNING,
+         f"  {WARN_GLYPH} subagent {p.get('spec_name', '?')} transient retry #"
+         f"{p.get('attempt', '?')} ({p.get('error_class', '?')}; "
+         f"backoff {p.get('backoff_s', 0):.1f}s)"),
+    ]
+
+
 # ── Dispatch table ─────────────────────────────────────────────────────────
 
 
@@ -399,4 +466,10 @@ _DISPATCH = {
     EventType.SAFETY_CONFIRMATION_DENIED: _fmt_safety_denied,
     EventType.SESSION_ABORTED: _fmt_session_aborted,
     EventType.REPLAY_TARGET_COMPLETED: _fmt_replay_target_completed,
+    EventType.SUBAGENT_DISPATCHED: _fmt_subagent_dispatched,
+    EventType.SUBAGENT_RETURNED: _fmt_subagent_returned,
+    EventType.SUBAGENT_ABORTED: _fmt_subagent_aborted,
+    EventType.SUBAGENT_QUOTA_EXCEEDED: _fmt_subagent_quota_exceeded,
+    EventType.SUBAGENT_CIRCUIT_TRIPPED: _fmt_subagent_circuit_tripped,
+    EventType.SUBAGENT_RETRY_ATTEMPTED: _fmt_subagent_retry_attempted,
 }

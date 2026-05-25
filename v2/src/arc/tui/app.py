@@ -26,6 +26,7 @@ from arc.config import Config
 from arc.runtime.events import EventType, RuntimeEvent
 from arc.runtime.loop import AgentSession
 from arc.tui import render
+from arc.tui.themes import active as _active_theme, resolve_from_config
 
 
 # Type alias for the prompt function (injectable for tests)
@@ -53,7 +54,18 @@ class TUIApp:
         self._cfg = config
         self._session = session
         self._home_display = home_display
-        self._console = console or Console()
+        # Resolve & cache the active theme so render.py + dialogs see it.
+        # If the caller injected its own Console (tests), push our theme
+        # onto it so the arc.* named styles resolve there too.
+        theme = resolve_from_config(config.tui.theme)
+        if console is None:
+            self._console = Console(theme=theme.rich_theme)
+        else:
+            self._console = console
+            try:
+                self._console.push_theme(theme.rich_theme)
+            except Exception:
+                pass
         self._prompt_fn = prompt_fn  # None → use prompt_toolkit at .run() time
         self._status: Status | None = None
         self._last_tokens_in = 0
@@ -136,7 +148,7 @@ class TUIApp:
                 self._console.print(render.render_turn_separator())
 
                 if not outcome.success and outcome.error:
-                    self._console.print(f"[red]turn error: {outcome.error}[/red]")
+                    self._console.print(f"[arc.error]turn error: {outcome.error}[/arc.error]")
         finally:
             self._stop_status()
             self._session.end()
@@ -151,7 +163,7 @@ class TUIApp:
         t = event.type
 
         if t == EventType.LLM_CALL_STARTED:
-            self._start_status("thinking", style="bold cyan")
+            self._start_status("thinking", style="arc.brand")
 
         elif t == EventType.LLM_CALL_COMPLETED:
             self._stop_status()
@@ -178,7 +190,7 @@ class TUIApp:
         elif t == EventType.LLM_CALL_FAILED:
             self._stop_status()
             msg = event.payload.get("exception_message", "")
-            self._console.print(f"[red]LLM call failed: {msg}[/red]")
+            self._console.print(f"[arc.error]LLM call failed: {msg}[/arc.error]")
 
         elif t == EventType.TOOL_CALL_STARTED:
             self._stop_status()
@@ -188,7 +200,7 @@ class TUIApp:
             ))
             self._start_status(
                 f"running {event.payload.get('tool_name', '?')}",
-                style="dim yellow",
+                style="arc.tool.call",
             )
 
         elif t == EventType.TOOL_CALL_COMPLETED:
@@ -225,15 +237,15 @@ class TUIApp:
         elif t == EventType.RUNTIME_CONTEXT_PACKED:
             p = event.payload
             self._console.print(
-                f"[dim]context packed: {p.get('n_messages_before', '?')} → "
+                f"[arc.dim]context packed: {p.get('n_messages_before', '?')} → "
                 f"{p.get('n_messages_after', '?')} messages, "
-                f"{p.get('bytes_dropped', 0)} bytes dropped[/dim]"
+                f"{p.get('bytes_dropped', 0)} bytes dropped[/arc.dim]"
             )
 
         elif t == EventType.RUNTIME_CYCLE_DETECTED:
             self._stop_status()
             self._console.print(
-                f"[bold yellow]⚠ cycle detected — forcing wrap-up[/bold yellow]"
+                f"[arc.warning]⚠ cycle detected — forcing wrap-up[/arc.warning]"
             )
 
         elif t == EventType.SUBAGENT_DISPATCHED:
@@ -253,7 +265,7 @@ class TUIApp:
             self._sub_dispatch_spec = p.get("spec_name", "?")
             self._start_status(
                 f"subagent {self._sub_dispatch_spec} dispatching",
-                style="bold cyan",
+                style="arc.subagent.name",
             )
 
         elif t == EventType.SUBAGENT_PROGRESS:
@@ -267,7 +279,7 @@ class TUIApp:
             elapsed = _t.monotonic() - getattr(self, "_sub_dispatch_start", _t.monotonic())
             if self._status is not None:
                 self._status.update(
-                    f"[bold cyan]subagent {spec}: {msg} ({elapsed:.0f}s)[/bold cyan]"
+                    f"[arc.subagent.name]subagent {spec}: {msg} ({elapsed:.0f}s)[/arc.subagent.name]"
                 )
 
         elif t == EventType.SUBAGENT_RETURNED:
@@ -297,21 +309,21 @@ class TUIApp:
 
         elif t == EventType.SUBAGENT_QUOTA_EXCEEDED:
             self._console.print(
-                f"[yellow]⊘ subagent {event.payload.get('spec_name', '?')} "
-                f"quota exceeded ({event.payload.get('cap', '?')}/session)[/yellow]"
+                f"[arc.warning]⊘ subagent {event.payload.get('spec_name', '?')} "
+                f"quota exceeded ({event.payload.get('cap', '?')}/session)[/arc.warning]"
             )
 
         elif t == EventType.SUBAGENT_CIRCUIT_TRIPPED:
             self._console.print(
-                f"[yellow]⚠ subagent {event.payload.get('spec_name', '?')} "
-                f"circuit tripped (locked for this session)[/yellow]"
+                f"[arc.warning]⚠ subagent {event.payload.get('spec_name', '?')} "
+                f"circuit tripped (locked for this session)[/arc.warning]"
             )
 
         elif t == EventType.SUBAGENT_RETRY_ATTEMPTED:
             p = event.payload
             self._console.print(
-                f"[dim]subagent {p.get('spec_name', '?')} transient retry "
-                f"#{p.get('attempt', '?')} ({p.get('error_class', '?')})[/dim]"
+                f"[arc.dim]subagent {p.get('spec_name', '?')} transient retry "
+                f"#{p.get('attempt', '?')} ({p.get('error_class', '?')})[/arc.dim]"
             )
 
     # ── Slash commands ─────────────────────────────────────────────────────
@@ -333,7 +345,7 @@ class TUIApp:
         if cmd == "/replay":
             self._handle_replay_menu()
             return False
-        self._console.print(f"[red]unknown command: {cmd}  (try /help)[/red]")
+        self._console.print(f"[arc.error]unknown command: {cmd}  (try /help)[/arc.error]")
         return False
 
     def _handle_replay_menu(self) -> None:
@@ -349,7 +361,7 @@ class TUIApp:
         from arc.bootstrap import resolve_home
         home = resolve_home()
         argv = [sys.executable, "-m", "arc.cli", "--home", str(home), "replay"]
-        self._console.print("[dim]launching replay menu (this session continues after)…[/dim]")
+        self._console.print("[arc.dim]launching replay menu (this session continues after)…[/arc.dim]")
         subprocess.run(argv, env=os.environ.copy())
 
     def _handle_clear(self) -> None:
@@ -375,7 +387,7 @@ class TUIApp:
         self._session_tokens_out = 0
         self._session_turn_count = 0
         self._console.print(
-            f"[dim]conversation cleared ({n} messages removed; session continues)[/dim]"
+            f"[arc.dim]conversation cleared ({n} messages removed; session continues)[/arc.dim]"
         )
 
     def _handle_sessions_list(self) -> None:
@@ -384,11 +396,11 @@ class TUIApp:
         # cleanest way to discover it without re-resolving env vars).
         sessions_dir = self._find_sessions_dir()
         if sessions_dir is None:
-            self._console.print("[dim]/sessions: could not locate sessions directory[/dim]")
+            self._console.print("[arc.dim]/sessions: could not locate sessions directory[/arc.dim]")
             return
         index_path = sessions_dir / "index.jsonl"
         if not index_path.exists():
-            self._console.print("[dim]no sessions recorded yet[/dim]")
+            self._console.print("[arc.dim]no sessions recorded yet[/arc.dim]")
             return
         self._console.print(render.render_sessions_table(sessions_dir, index_path))
 
@@ -507,7 +519,6 @@ class TUIApp:
         from prompt_toolkit.completion import WordCompleter
         from prompt_toolkit.history import FileHistory, InMemoryHistory
         from prompt_toolkit.patch_stdout import patch_stdout
-        from prompt_toolkit.styles import Style
 
         # Tab-completion for slash commands
         slash_completer = WordCompleter(
@@ -528,18 +539,10 @@ class TUIApp:
         # Bottom toolbar callable — evaluated each prompt() call
         bottom_toolbar = self._build_bottom_toolbar_fn() if self._cfg.tui.toolbar_enabled else None
 
-        # Custom style: prompt_toolkit's default `bottom-toolbar` is reverse
-        # video (white-on-bright), which we found visually loud. Override to
-        # a soft grey on default bg so it sits quietly below the prompt.
-        toolbar_style = Style.from_dict({
-            "bottom-toolbar":          "noreverse fg:#7a7a7a bg:default",
-            "toolbar.provider":        "fg:#8aa0c0 bg:default",
-            "toolbar.sid":             "fg:#7a7a7a bg:default",
-            "toolbar.turn":            "fg:#7a7a7a bg:default",
-            "toolbar.tokens":          "fg:#8a8a6a bg:default",
-            "toolbar.cost":            "fg:#7a9a7a bg:default",
-            "toolbar.sep":             "fg:#4a4a4a bg:default",
-        })
+        # Pull bottom-toolbar and toolbar.* style classes from the active theme.
+        # See arc/tui/themes/ — every theme provides these so swapping themes
+        # restyles the toolbar without touching this file.
+        toolbar_style = _active_theme().pt_style
 
         pt_session = PromptSession(
             history=history,

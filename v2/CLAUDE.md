@@ -73,15 +73,22 @@ src/arc/
 ```
 arc                          interactive TUI
 arc bootstrap [--force]      create $ARC_HOME + default config
+arc setup                    interactive setup hub (sidebar + content; see 0023)
+arc setup --picker           classic provider/model picker only (0017)
+arc setup --section NAME     open hub focused on a specific section
 arc run "<prompt>"           one-shot non-interactive turn
 arc sessions                 list recorded sessions
 arc show <id>                pretty-print events
 arc log <id> [--tail N]      human-readable session.log
 arc config show / path       inspect resolved config
-arc plugins [list]           manage installed plugins (toggle / clean dangling)
+arc plugins [list]           list (non-interactive); no args → hub on Plugins
+arc subagents [list|show|enable|disable] no args → hub on Sub-agents
+arc llm [list|status|start|stop|restart|logs] no args → hub on LLM Server
 arc replay <id> [--live-llm] mode 2 (deterministic) / mode 3 (live LLM)
+arc replay                   no id → hub on Replay
 arc resume <id> [--at-turn N --prompt "..."]   mode 1 (time-travel) / mode 4 (branch)
 arc rerun <id>               mode 5 (rerun user inputs vs fresh agent)
+arc wipe [--all|--sessions|--llm|--history|--pricing-cache|--dry-run]
 arc --home <path> <cmd>      override ARC_HOME for one invocation
 ```
 
@@ -150,6 +157,13 @@ interactive print. Both use the comment-preserving writer at
   dispatch entry.** Don't skip the formatter — session.log loses fidelity.
 - **Comments: minimal.** No multi-paragraph docstrings, no obvious comments.
   WHY-only when non-obvious; let names carry the WHAT.
+- **New theme = drop a module in `arc/tui/themes/` + add it to `_THEMES` in
+  `arc/tui/themes/__init__._build_registry()`.** Cover the full `RICH_STYLE_KEYS`
+  and `PT_STYLE_KEYS` namespaces; the `test_themes.py` parametrized tests
+  enforce it. See `_design/0023-setup-hub-and-themes.md`.
+- **New hub section = drop a module in `arc/setup/sections/` exporting
+  `build(ctx) -> Section` + register it in `Hub._build_sections()`.** Layout
+  stays sidebar+content; sections only own the right pane.
 
 ## Common gotchas
 

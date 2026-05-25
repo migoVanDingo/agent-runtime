@@ -27,7 +27,7 @@ def test_default_config_loads_cleanly(bootstrapped):
     assert cfg.runtime.workspace == "."
     assert cfg.runtime.max_iterations == 50
     assert cfg.provider.name == "gemini"
-    assert cfg.provider.model == "gemini-3.1-flash-lite-preview"
+    assert cfg.provider.model == "gemini-2.5-flash"
     assert cfg.provider.api_key_env == "GEMINI_API_KEY"
     assert cfg.provider.retry.max_attempts == 3
     assert cfg.tools.enabled == ["ls", "bash_exec"]

@@ -72,7 +72,7 @@ runtime:
 #       mode: compat                  # 'compat' (OpenAI-compatible) | 'grammar' (GBNF)
 provider:
   name: gemini                      # 'gemini' | 'anthropic' | 'ollama' | 'llama_cpp'
-  model: gemini-3.1-flash-lite-preview
+  model: gemini-2.5-flash
   api_key_env: GEMINI_API_KEY       # env var name to read the key from
   base_url: null                    # null = SDK/library default
   timeout_seconds: 60
@@ -266,14 +266,20 @@ anthropic:
 
 gemini:
   - id: gemini-2.5-pro
-    label: "Pro"
-    note: "most capable"
+    label: "2.5 Pro"
+    note: "most capable, stable"
   - id: gemini-2.5-flash
-    label: "Flash"
-    note: "balanced default"
-  - id: gemini-3.1-flash-lite-preview
-    label: "Flash-Lite"
-    note: "cheapest"
+    label: "2.5 Flash"
+    note: "balanced default, stable"
+  - id: gemini-2.5-flash-lite
+    label: "2.5 Flash-Lite"
+    note: "cheapest stable"
+  - id: gemini-3-pro-preview
+    label: "3 Pro (preview)"
+    note: "newest large model — preview, may change"
+  - id: gemini-3-flash-preview
+    label: "3 Flash (preview)"
+    note: "newest fast model — preview, may change"
 
 # Local providers — leave empty to use live discovery
 # (Ollama /api/tags, llama.cpp /v1/models).  Pin defaults here only if

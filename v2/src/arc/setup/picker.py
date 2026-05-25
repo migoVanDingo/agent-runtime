@@ -237,11 +237,14 @@ def _pick_provider() -> str:
     """Render a radiolist of providers.  Returns the chosen name."""
     from prompt_toolkit.shortcuts import radiolist_dialog
 
+    from arc.tui.themes import active as _active_theme
+
     values = [(name, f"{name:<11} {note}") for name, note in _PROVIDER_OPTIONS]
     choice = radiolist_dialog(
         title="arc setup — provider",
         text="Pick a provider:",
         values=values,
+        style=_active_theme().pt_style,
     ).run()
     if choice is None:
         raise SystemExit("setup aborted")
@@ -295,6 +298,10 @@ def _merge_discovered(
 def _radiolist_models(provider: str, entries: list[CatalogEntry]) -> str:
     from prompt_toolkit.shortcuts import input_dialog, radiolist_dialog
 
+    from arc.tui.themes import active as _active_theme
+
+    style = _active_theme().pt_style
+
     values = []
     for e in entries:
         label = f"{e.label}"
@@ -306,6 +313,7 @@ def _radiolist_models(provider: str, entries: list[CatalogEntry]) -> str:
         title=f"arc setup — model for {provider}",
         text="Pick a model:",
         values=values,
+        style=style,
     ).run()
     if choice is None:
         raise SystemExit("setup aborted")
@@ -314,6 +322,7 @@ def _radiolist_models(provider: str, entries: list[CatalogEntry]) -> str:
         text = input_dialog(
             title="Type a model id",
             text=f"Type the {provider} model id to use:",
+            style=style,
         ).run()
         if not text or not text.strip():
             raise SystemExit("setup aborted: empty model id")

@@ -86,6 +86,8 @@ def _list_sessions(sessions_dir: Path) -> list[dict]:
 def _pick_session(sessions: list[dict]) -> dict | None:
     from prompt_toolkit.shortcuts import radiolist_dialog
 
+    from arc.tui.themes import active as _active_theme
+
     values = []
     for r in sessions[:30]:  # cap to keep the menu legible
         sid = r.get("session_id", "?")
@@ -99,6 +101,7 @@ def _pick_session(sessions: list[dict]) -> dict | None:
         title="arc replay — pick a session",
         text="Pick a recorded session to replay:",
         values=values,
+        style=_active_theme().pt_style,
     ).run()
     return choice
 
@@ -109,6 +112,8 @@ def _pick_session(sessions: list[dict]) -> dict | None:
 def _pick_mode() -> str | None:
     from prompt_toolkit.shortcuts import radiolist_dialog
 
+    from arc.tui.themes import active as _active_theme
+
     choice = radiolist_dialog(
         title="arc replay — mode",
         text="How should the replay run?",
@@ -116,6 +121,7 @@ def _pick_mode() -> str | None:
             ("deterministic", "Deterministic — reuse recorded LLM responses (free, fast, verifies replay)"),
             ("live", "Live LLM — call the model fresh (lets you swap providers and compare)"),
         ],
+        style=_active_theme().pt_style,
     ).run()
     return choice
 
@@ -127,6 +133,8 @@ def _pick_provider_and_model(home: Path, source: dict) -> BatchTarget | None:
     """Pick the primary provider/model for a live replay."""
     from prompt_toolkit.shortcuts import radiolist_dialog
 
+    from arc.tui.themes import active as _active_theme
+
     original = f"{source.get('provider', '?')} / {source.get('model', '?')}"
     values = [(("keep", ""), f"keep original ({original})")]
     for p in known_providers():
@@ -136,6 +144,7 @@ def _pick_provider_and_model(home: Path, source: dict) -> BatchTarget | None:
         title="arc replay — provider",
         text="Which provider should run this replay?",
         values=values,
+        style=_active_theme().pt_style,
     ).run()
     if choice is None:
         return None
@@ -158,6 +167,10 @@ def _pick_model_for_provider(home: Path, provider: str) -> str | None:
     """Pick a model id from the catalog (cloud) or live discovery (local)."""
     from prompt_toolkit.shortcuts import input_dialog, radiolist_dialog
 
+    from arc.tui.themes import active as _active_theme
+
+    style = _active_theme().pt_style
+
     paths = paths_for(home)
     catalog = load_catalog(paths.catalog_file)
     entries = list(catalog.get(provider, []))
@@ -178,6 +191,7 @@ def _pick_model_for_provider(home: Path, provider: str) -> str | None:
         title=f"arc replay — model for {provider}",
         text="Pick a model:",
         values=values,
+        style=style,
     ).run()
     if choice is None:
         return None
@@ -185,6 +199,7 @@ def _pick_model_for_provider(home: Path, provider: str) -> str | None:
         text = input_dialog(
             title="Type a model id",
             text=f"Type the {provider} model id:",
+            style=style,
         ).run()
         return (text or "").strip() or None
     return choice
@@ -219,10 +234,13 @@ def _pick_additional_targets(home: Path, *, exclude: list[BatchTarget]) -> list[
     if not values:
         return []
 
+    from arc.tui.themes import active as _active_theme
+
     picks = checkboxlist_dialog(
         title="arc replay — add more models (batch mode)",
         text="Optionally pick additional models to run the same replay against (space to toggle):",
         values=values,
+        style=_active_theme().pt_style,
     ).run()
     if not picks:
         return []
@@ -240,6 +258,10 @@ def _pick_additional_targets(home: Path, *, exclude: list[BatchTarget]) -> list[
 def _pick_max_cost() -> float | None:
     from prompt_toolkit.shortcuts import input_dialog, radiolist_dialog
 
+    from arc.tui.themes import active as _active_theme
+
+    style = _active_theme().pt_style
+
     choice = radiolist_dialog(
         title="arc replay — max cost (USD)",
         text="Abort the replay if running cost exceeds this cap:",
@@ -250,11 +272,13 @@ def _pick_max_cost() -> float | None:
             (10.0, "$10"),
             ("custom", "custom…"),
         ],
+        style=style,
     ).run()
     if choice == "custom":
         text = input_dialog(
             title="Custom max cost",
             text="Enter max cost in USD (e.g. 2.50):",
+            style=style,
         ).run()
         if not text:
             return None
@@ -280,7 +304,9 @@ def _confirm(source: dict, targets: list[BatchTarget], mode: str,
         f"Max cost: {'unlimited' if max_cost is None else f'${max_cost:.2f}'}\n"
         f"\nLaunch?"
     )
-    return bool(yes_no_dialog(title="Confirm", text=msg).run())
+    from arc.tui.themes import active as _active_theme
+
+    return bool(yes_no_dialog(title="Confirm", text=msg, style=_active_theme().pt_style).run())
 
 
 # ── Step: launch ──────────────────────────────────────────────────────────

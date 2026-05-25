@@ -2,10 +2,11 @@
 
 Pure rendering functions — they take data, produce Rich renderables.
 No state. Composed by the TUI app.
+
+Color names are addressed through the arc.* named style namespace defined
+in arc.tui.themes. Swapping a theme can only change colors, never layout.
 """
 from __future__ import annotations
-
-from typing import Any
 
 from typing import Any
 
@@ -14,6 +15,8 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.text import Text
+
+from arc.tui.themes import active as _active_theme
 
 
 # ── Logo ────────────────────────────────────────────────────────────────────
@@ -32,36 +35,31 @@ _LOGO_LINES = [
 
 
 def render_logo() -> Group:
-    """ARC wordmark + v2 tag. Cyan glyphs, dim v2."""
+    """ARC wordmark + v2 tag, themed via arc.brand + arc.dim."""
     lines: list[Text] = []
     for raw in _LOGO_LINES:
-        # Split out the "v2" tag if present so we can style it differently
         if "v2" in raw:
             head, _, _ = raw.partition("v2")
-            t = Text(head, style="bold cyan")
-            t.append("v2", style="dim italic")
+            t = Text(head, style="arc.brand")
+            t.append("v2", style="arc.dim")
             lines.append(t)
         else:
-            lines.append(Text(raw, style="bold cyan"))
+            lines.append(Text(raw, style="arc.brand"))
     return Group(*lines)
 
 
 def render_user_prefix(prompt_prefix: str) -> Text:
     """The chip that goes before each printed user turn."""
-    return Text(prompt_prefix, style="bold magenta")
+    return Text(prompt_prefix, style="arc.user.prefix")
 
 
 def render_user_message(text: str, prompt_prefix: str) -> Group:
-    """A user's input as it lands in scrollback (after they hit enter).
-
-    Use Text.assemble so the prefix and the typed text get their own styles
-    while still rendering on a single line with a normal trailing newline.
-    """
+    """A user's input as it lands in scrollback (after they hit enter)."""
     return Group(
-        Text(),  # blank line above
+        Text(),
         Text.assemble(
-            (prompt_prefix, "bold magenta"),
-            (text, "magenta"),
+            (prompt_prefix, "arc.user.prefix"),
+            (text, "arc.user"),
         ),
     )
 
@@ -70,10 +68,11 @@ def render_assistant_text(text: str) -> Group:
     """The assistant's text response. Rendered as Markdown for code blocks etc."""
     if not text.strip():
         return Group()
+    code_theme = _active_theme().code_theme
     return Group(
         Text(),
-        Text.assemble(("◆ ", "bold cyan"), ("assistant", "bold dim")),
-        Markdown(text, code_theme="monokai"),
+        Text.assemble(("◆ ", "arc.assistant.glyph"), ("assistant", "arc.assistant.label")),
+        Markdown(text, code_theme=code_theme),
     )
 
 
@@ -85,8 +84,8 @@ def render_tool_call(tool_name: str, tool_input: dict) -> Group:
     return Group(
         Text(),
         Text.assemble(
-            ("→ ", "bold yellow"),
-            (f"{tool_name}({args})", "yellow"),
+            ("→ ", "arc.tool.arrow"),
+            (f"{tool_name}({args})", "arc.tool.call"),
         ),
     )
 
@@ -100,8 +99,8 @@ def render_tool_result(tool_name: str, output: str, ok: bool,
     events.jsonl + session.log. Critical for Ghidra-class tools whose
     outputs can be tens of thousands of chars per call.
     """
-    style = "dim green" if ok else "dim red"
-    arrow_style = "bold green" if ok else "bold red"
+    body_style = "arc.tool.ok" if ok else "arc.tool.fail"
+    arrow_style = "arc.tool.ok.arrow" if ok else "arc.tool.fail.arrow"
     arrow = "←" if ok else "✖"
 
     lines = output.splitlines()
@@ -109,7 +108,6 @@ def render_tool_result(tool_name: str, output: str, ok: bool,
     n_chars = len(output)
 
     if n_lines > max_lines:
-        # Show first ~5 lines + last ~5 lines, with elision in the middle
         head_n = min(5, max_lines // 2)
         tail_n = min(5, max_lines - head_n)
         head = "\n".join(lines[:head_n])
@@ -129,15 +127,15 @@ def render_tool_result(tool_name: str, output: str, ok: bool,
             (f"{arrow} ", arrow_style),
             (summary, "bold"),
         ),
-        Text(display, style=style) if display else Text(),
+        Text(display, style=body_style) if display else Text(),
     )
 
 
 def render_tool_denied(tool_name: str, reason: str) -> Group:
     return Group(
         Text.assemble(
-            ("⊘ ", "bold red"),
-            (f"{tool_name} denied: {reason}", "red"),
+            ("⊘ ", "arc.tool.denied.arrow"),
+            (f"{tool_name} denied: {reason}", "arc.tool.denied"),
         ),
     )
 
@@ -145,42 +143,37 @@ def render_tool_denied(tool_name: str, reason: str) -> Group:
 def render_session_banner(provider: str, model: str, session_id: str,
                           home: str, tools: list[str],
                           resumed_from: str | None = None) -> Group:
-    """Printed once at session start. Logo above, session info in a panel.
-
-    `resumed_from` is shown when the TUI was launched via `arc resume <id>` —
-    helps the user know this isn't a fresh session.
-    """
+    """Printed once at session start. Logo above, session info in a panel."""
     body = Text()
-    body.append("provider  ", style="dim")
-    body.append(f"{provider} / {model}\n", style="cyan")
-    body.append("session   ", style="dim")
-    body.append(f"{session_id}\n", style="cyan")
+    body.append("provider  ", style="arc.dim")
+    body.append(f"{provider} / {model}\n", style="arc.info")
+    body.append("session   ", style="arc.dim")
+    body.append(f"{session_id}\n", style="arc.info")
     if resumed_from:
-        body.append("resumed   ", style="dim")
-        body.append(f"from {resumed_from}\n", style="bold magenta")
-    body.append("home      ", style="dim")
-    body.append(f"{home}\n", style="cyan")
-    body.append("tools     ", style="dim")
-    body.append(", ".join(tools) or "(none)", style="cyan")
-    info = Panel(body, border_style="dim", expand=False)
+        body.append("resumed   ", style="arc.dim")
+        body.append(f"from {resumed_from}\n", style="arc.resume")
+    body.append("home      ", style="arc.dim")
+    body.append(f"{home}\n", style="arc.info")
+    body.append("tools     ", style="arc.dim")
+    body.append(", ".join(tools) or "(none)", style="arc.info")
+    info = Panel(body, border_style="arc.dim", expand=False)
     return Group(
-        Text(),       # blank line above the logo
+        Text(),
         render_logo(),
-        Text(),       # blank line between logo and info
+        Text(),
         info,
     )
 
 
 def render_footer_line(tokens_in: int, tokens_out: int,
                       n_events: int, show_events: bool) -> Group:
-    """One-line summary for after a turn, with a leading blank line so it
-    doesn't sit flush against the assistant's last response."""
+    """One-line summary for after a turn."""
     parts = [f"tokens in/out: {tokens_in}/{tokens_out}"]
     if show_events:
         parts.append(f"events: {n_events}")
     return Group(
         Text(),
-        Text("  ·  ".join(parts), style="dim"),
+        Text("  ·  ".join(parts), style="arc.dim"),
     )
 
 
@@ -209,15 +202,16 @@ def render_help() -> Group:
         Text("  OLLAMA_API_KEY        Ollama key (placeholder; stock Ollama ignores it)"),
         Text("  LLAMA_CPP_API_KEY     llama-server key (honored when --api-key is set)"),
         Text(),
-        Text("config (see ", style="bold", end="") + Text("$ARC_HOME/config.yml", style="bold cyan") + Text(")", style="bold"),
+        Text("config (see ", style="bold", end="") + Text("$ARC_HOME/config.yml", style="bold arc.info") + Text(")", style="bold"),
         Text("  provider.name         'gemini' | 'anthropic' | 'ollama' | 'llama_cpp'"),
         Text("  provider.model        e.g. claude-haiku-4-5, gemini-2.5-flash, llama3.1:8b"),
         Text("  runtime.system_prompt the base prompt the agent operates under"),
         Text("  tools.enabled         which tools are available this session"),
         Text("  tui.show_thinking     render extended-thinking blocks in TUI"),
         Text("  tui.toolbar_enabled   bottom toolbar with provider/tokens/$ cost"),
+        Text("  tui.theme             color theme name (see `arc setup` → Themes)"),
         Text(),
-        Text("arc home (see ", style="bold", end="") + Text("$ARC_HOME/", style="bold cyan") + Text(")", style="bold"),
+        Text("arc home (see ", style="bold", end="") + Text("$ARC_HOME/", style="bold arc.info") + Text(")", style="bold"),
         Text("  config.yml            main config (above)"),
         Text("  catalog.yml           model menu shown by `arc setup` (0017)"),
         Text("  llm_servers.yml       llama-server registry for `arc llm` (0018)"),
@@ -225,8 +219,8 @@ def render_help() -> Group:
         Text("  llm/                  current.pid + current.log for the local inference server"),
         Text(),
         Text("more CLI commands", style="bold"),
-        Text("  arc setup             interactive provider/model picker — "
-             "drops into a session after writing config (0017)"),
+        Text("  arc setup             interactive setup hub — navigate sections "
+             "(provider, plugins, themes, sub-agents, replay, llm, wipe, …)"),
         Text("  arc llm <action>      manage local llama-server: list, status, "
              "start <id>, stop, restart <id>, logs (0018)"),
         Text("  arc log <id>          print a session's session.log"),
@@ -242,14 +236,13 @@ def render_help() -> Group:
 
 
 def render_thinking(text: str) -> Group:
-    """Anthropic 3.7+/4+ thinking block, rendered in dim italic so it
-    visually subordinates to the assistant's actual response."""
+    """Anthropic 3.7+/4+ thinking block, visually subordinate to assistant text."""
     if not text.strip():
         return Group()
     return Group(
         Text(),
-        Text.assemble(("◇ ", "dim cyan"), ("thinking", "dim italic")),
-        Text(text, style="dim italic"),
+        Text.assemble(("◇ ", "arc.thinking.glyph"), ("thinking", "arc.thinking")),
+        Text(text, style="arc.thinking"),
     )
 
 
@@ -261,10 +254,10 @@ def render_subagent_dispatched(
     return Group(
         Text(""),
         Text.assemble(
-            ("↻ subagent ", "cyan"),
-            (spec_name, "bold cyan"),
-            (f"  ({provider}/{model})", "dim"),
-            (f"  child={short_sid}", "dim"),
+            ("↻ subagent ", "arc.subagent"),
+            (spec_name, "arc.subagent.name"),
+            (f"  ({provider}/{model})", "arc.dim"),
+            (f"  child={short_sid}", "arc.dim"),
         ),
     )
 
@@ -281,40 +274,40 @@ def render_subagent_done(
 ) -> Group:
     """One-line summary printed when a sub-agent dispatch ends."""
     if status == "ok":
-        glyph = ("✓", "bold green")
-        status_color = "green"
+        glyph = ("✓", "arc.subagent.ok.glyph")
+        status_color = "arc.subagent.ok"
     elif status in ("timeout", "cancelled", "user_cancelled"):
-        glyph = ("✗", "bold yellow")
-        status_color = "yellow"
+        glyph = ("✗", "arc.subagent.warn.glyph")
+        status_color = "arc.subagent.warn"
     else:
-        glyph = ("✗", "bold red")
-        status_color = "red"
+        glyph = ("✗", "arc.subagent.fail.glyph")
+        status_color = "arc.subagent.fail"
 
     parts = [
         glyph,
         (" subagent ", ""),
         (spec_name, "bold"),
-        (" → ", "dim"),
+        (" → ", "arc.dim"),
         (status, status_color),
-        ("  (", "dim"),
-        (f"{turns} turns", "dim"),
-        (", ", "dim"),
-        (f"{tool_calls} tool calls", "dim"),
-        (", ", "dim"),
-        (f"${cost_usd:.4f}" if cost_usd >= 0.0001 else "<$0.0001", "dim"),
-        (", ", "dim"),
-        (f"{wallclock_s:.1f}s", "dim"),
-        (")", "dim"),
+        ("  (", "arc.dim"),
+        (f"{turns} turns", "arc.dim"),
+        (", ", "arc.dim"),
+        (f"{tool_calls} tool calls", "arc.dim"),
+        (", ", "arc.dim"),
+        (f"${cost_usd:.4f}" if cost_usd >= 0.0001 else "<$0.0001", "arc.dim"),
+        (", ", "arc.dim"),
+        (f"{wallclock_s:.1f}s", "arc.dim"),
+        (")", "arc.dim"),
     ]
     lines = [Text.assemble(*parts)]
     if error_message:
-        lines.append(Text(f"  {error_message[:200]}", style="dim red"))
+        lines.append(Text(f"  {error_message[:200]}", style="arc.error"))
     return Group(*lines)
 
 
 def render_turn_separator() -> Text:
     """Subtle horizontal line between turns. Renders full terminal width."""
-    return Text("─" * 80, style="dim")
+    return Text("─" * 80, style="arc.dim")
 
 
 def render_sessions_table(sessions_dir, index_path) -> Any:
@@ -322,11 +315,11 @@ def render_sessions_table(sessions_dir, index_path) -> Any:
     import json
     from rich.table import Table
 
-    table = Table(show_header=True, header_style="bold cyan", box=None)
-    table.add_column("session_id", style="cyan", no_wrap=True)
-    table.add_column("started_at", style="dim")
+    table = Table(show_header=True, header_style="arc.table.header", box=None)
+    table.add_column("session_id", style="arc.info", no_wrap=True)
+    table.add_column("started_at", style="arc.dim")
     table.add_column("provider/model")
-    table.add_column("chain", style="dim")
+    table.add_column("chain", style="arc.dim")
 
     n = 0
     for line in index_path.read_text(encoding="utf-8").splitlines():
@@ -342,7 +335,6 @@ def render_sessions_table(sessions_dir, index_path) -> Any:
         provider = entry.get("provider", "?")
         model = entry.get("model", "?")
 
-        # Try to read meta.json for chain markers
         chain_bits = []
         meta_path = sessions_dir / sid / "meta.json"
         if meta_path.exists():
@@ -363,10 +355,10 @@ def render_sessions_table(sessions_dir, index_path) -> Any:
         n += 1
 
     if n == 0:
-        return Text("no sessions recorded yet", style="dim")
+        return Text("no sessions recorded yet", style="arc.dim")
     return Group(
         Text(),
-        Text(f"{n} session(s)", style="bold dim"),
+        Text(f"{n} session(s)", style="bold arc.dim"),
         table,
         Text(),
     )

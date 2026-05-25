@@ -48,6 +48,13 @@ def main(argv: list[str] | None = None) -> int:
     # consistent env resolution.
     _load_dotenv_into_environ(home_override)
 
+    # Resolve the active TUI theme once, here, so every subcommand path
+    # (interactive dialogs, hub, live TUI) sees the same theme without
+    # threading it through every call site. Falls back to `default` if
+    # config isn't readable yet (e.g. pre-bootstrap).
+    from arc.tui.themes import resolve_from_home
+    resolve_from_home(home_override)
+
     # Dispatch
     if args.command == "bootstrap":
         return _cmd_bootstrap(home_override, force=args.force)
@@ -58,6 +65,8 @@ def main(argv: list[str] | None = None) -> int:
             model=args.model,
             print_only=args.print_only,
             no_launch=args.no_launch,
+            hub=args.hub,
+            section=args.section,
         )
     if args.command == "llm":
         return _cmd_llm(home_override, args)
@@ -184,7 +193,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "llm",
         help="manage the local inference server (llama-server / llama-cpp-python)",
     )
-    llm_sub = llm.add_subparsers(dest="llm_action", required=True)
+    # llm_action is optional: no subcommand → opens the setup hub on LLM Server.
+    llm_sub = llm.add_subparsers(dest="llm_action")
     llm_sub.add_parser("list", help="list registered models + which is running")
     llm_sub.add_parser("status", help="show details about the running server")
     llm_start = llm_sub.add_parser("start", help="start the server for a given model id")
@@ -197,7 +207,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     setup = sub.add_parser(
         "setup",
-        help="interactive provider/model picker — writes config.yml",
+        help="interactive setup hub (provider, plugins, themes, sub-agents, …)",
     )
     setup.add_argument(
         "--provider", default=None,
@@ -214,6 +224,15 @@ def _build_parser() -> argparse.ArgumentParser:
     setup.add_argument(
         "--no-launch", dest="no_launch", action="store_true",
         help="don't drop into a TUI session after writing config (default is to launch)",
+    )
+    setup.add_argument(
+        "--picker", dest="hub", action="store_false", default=True,
+        help="run the classic provider/model picker only — skip the setup hub",
+    )
+    setup.add_argument(
+        "--section", default=None, metavar="NAME",
+        help="open the hub focused on a specific section "
+             "(provider|plugins|subagents|replay|llm|themes|status|wipe|config)",
     )
 
     run = sub.add_parser("run", help="one-shot, non-interactive turn")
@@ -425,16 +444,25 @@ def _cmd_wipe(home_override: str | None, args) -> int:
 
 
 def _cmd_llm(home_override: str | None, args) -> int:
-    """`arc llm` dispatcher.  See 0018."""
+    """`arc llm` dispatcher.  See 0018.
+
+    No subcommand → opens the setup hub on the LLM Server section.
+    """
     from arc.bootstrap import bootstrap, paths_for, resolve_home
     from arc import llm as _llm
     from arc.llm.registry import RegistryError
+    from arc.setup.hub import run_hub
 
     home = resolve_home(home_override)
     bootstrap(home)
     paths = paths_for(home)
 
     action = args.llm_action
+    if action is None:
+        result = run_hub(home, initial_section="llm")
+        if result.launch_session:
+            return _cmd_interactive(home_override)
+        return result.rc
     try:
         if action == "list":
             return _llm.list_models(paths)
@@ -463,20 +491,36 @@ def _cmd_setup(
     model: str | None,
     print_only: bool,
     no_launch: bool,
+    hub: bool = True,
+    section: str | None = None,
 ) -> int:
-    """Interactive provider+model picker.  See _design/0017-provider-picker.md.
+    """`arc setup` — opens the interactive setup hub by default.
 
-    After a successful *interactive* setup (no --provider/--model flags),
-    drop into a TUI session against the freshly-picked provider so the
-    common "pick → use" flow doesn't bounce through the shell.  Scripted
-    setup (with flags) keeps its non-interactive contract.
+    Behavior matrix:
+      arc setup                 → hub (sidebar + content; navigates to every section)
+      arc setup --picker        → classic provider/model picker (0017), then launch TUI
+      arc setup --provider X    → non-interactive write (preserves prior contract)
+      arc setup --section NAME  → hub focused on NAME
+
+    See _design/0023-setup-hub-and-themes.md for the hub, 0017 for the picker.
     """
-    from arc.bootstrap import resolve_home
+    from arc.bootstrap import bootstrap, resolve_home
     from arc.setup import run_setup
+    from arc.setup.hub import run_hub
 
     if model is not None and provider is None:
         print("--model requires --provider", file=sys.stderr)
         return 2
+
+    # No flags + hub enabled → open the hub (the default path).
+    if hub and provider is None and model is None and not print_only:
+        home = resolve_home(home_override)
+        # Hub assumes ARC_HOME exists; bootstrap if missing (idempotent).
+        bootstrap(home)
+        result = run_hub(home, initial_section=section)
+        if result.launch_session:
+            return _cmd_interactive(home_override)
+        return result.rc
 
     try:
         result = run_setup(
@@ -971,18 +1015,16 @@ def _cmd_compare(
 
 
 def _cmd_replay_menu(home_override: str | None) -> int:
-    """`arc replay` with no args → interactive replay menu (0019).
-
-    Lazy-imports the menu module so non-TUI users (CI, scripted callers)
-    aren't penalized by prompt_toolkit pulls.
-    """
+    """`arc replay` with no args → opens the setup hub on the Replay section."""
     from arc.bootstrap import bootstrap, paths_for, resolve_home
-    from arc.tui.replay_menu import run_replay_menu
+    from arc.setup.hub import run_hub
 
     home = resolve_home(home_override)
     bootstrap(home)
-    paths = paths_for(home)
-    return run_replay_menu(home=home, sessions_dir=paths.sessions_dir)
+    result = run_hub(home, initial_section="replay")
+    if result.launch_session:
+        return _cmd_interactive(home_override)
+    return result.rc
 
 
 def _cmd_resume(
@@ -1324,11 +1366,12 @@ def _cmd_interactive(home_override: str | None) -> int:
 def _cmd_plugins(home_override: str | None, *, action: str | None) -> int:
     """`arc plugins` — manage installed plugins.
 
-    No action  → interactive checkbox menu (the always-available toggle UI).
+    No action  → opens the setup hub on the Plugins section.
     list       → non-interactive plain-text status table.
     """
     from arc.bootstrap import bootstrap, paths_for, resolve_home
-    from arc.setup.plugin_menu import list_plugins, run_menu
+    from arc.setup.hub import run_hub
+    from arc.setup.plugin_menu import list_plugins
 
     home = resolve_home(home_override)
     bootstrap(home)
@@ -1336,7 +1379,10 @@ def _cmd_plugins(home_override: str | None, *, action: str | None) -> int:
 
     if action == "list":
         return list_plugins(paths.config_file)
-    return run_menu(paths.config_file)
+    result = run_hub(home, initial_section="plugins")
+    if result.launch_session:
+        return _cmd_interactive(home_override)
+    return result.rc
 
 
 def _cmd_subagents(
@@ -1347,7 +1393,7 @@ def _cmd_subagents(
 ) -> int:
     """`arc subagents` — list/show/enable/disable sub-agent specs.
 
-    No action  → falls through to `list` (interactive TUI menu is deferred).
+    No action  → opens the setup hub on the Sub-agents section.
     list       → tabular dump of every discovered spec with source + status.
     show NAME  → pretty-print the merged spec.
     enable / disable NAME → toggle the `subagents.<name>.enabled` flag in config.yml.
@@ -1355,17 +1401,22 @@ def _cmd_subagents(
     from arc.bootstrap import bootstrap, paths_for, resolve_home
     from arc.config import load
     from arc.runtime.subagents.registry import SubAgentRegistry
+    from arc.setup.hub import run_hub
     from arc.setup.writer import write_subagent_enablement
 
     home = resolve_home(home_override)
     bootstrap(home)
     paths = paths_for(home)
-    cfg = load(paths.config_file)
 
+    if action is None:
+        result = run_hub(home, initial_section="subagents")
+        if result.launch_session:
+            return _cmd_interactive(home_override)
+        return result.rc
+
+    cfg = load(paths.config_file)
     registry = SubAgentRegistry(arc_home=home)
     report = registry.discover(cfg.subagents.as_overrides())
-
-    action = action or "list"
 
     if action == "list":
         specs = registry.all_specs()

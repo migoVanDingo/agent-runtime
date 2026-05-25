@@ -116,6 +116,8 @@ def run_menu(config_path: Path) -> int:
     """Interactive checkbox menu. Returns 0 on success, non-zero on abort."""
     from prompt_toolkit.shortcuts import checkboxlist_dialog
 
+    from arc.tui.themes import active as _active_theme
+
     rows = collect_rows(config_path)
     if not rows:
         sys.stdout.write("(no plugins discovered)\n")
@@ -135,6 +137,7 @@ def run_menu(config_path: Path) -> int:
             text="Space to toggle, Enter to confirm. Built-ins can be disabled too.",
             values=values,
             default_values=default,
+            style=_active_theme().pt_style,
         ).run()
 
         if selected is None:

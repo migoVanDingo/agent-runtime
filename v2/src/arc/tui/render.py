@@ -253,6 +253,65 @@ def render_thinking(text: str) -> Group:
     )
 
 
+def render_subagent_dispatched(
+    *, spec_name: str, provider: str, model: str, child_session_id: str,
+) -> Group:
+    """Header line printed when a sub-agent dispatch begins."""
+    short_sid = child_session_id[:14] + "…" if len(child_session_id) > 14 else child_session_id
+    return Group(
+        Text(""),
+        Text.assemble(
+            ("↻ subagent ", "cyan"),
+            (spec_name, "bold cyan"),
+            (f"  ({provider}/{model})", "dim"),
+            (f"  child={short_sid}", "dim"),
+        ),
+    )
+
+
+def render_subagent_done(
+    *,
+    spec_name: str,
+    status: str,
+    turns: int,
+    tool_calls: int,
+    cost_usd: float,
+    wallclock_s: float,
+    error_message: str | None = None,
+) -> Group:
+    """One-line summary printed when a sub-agent dispatch ends."""
+    if status == "ok":
+        glyph = ("✓", "bold green")
+        status_color = "green"
+    elif status in ("timeout", "cancelled", "user_cancelled"):
+        glyph = ("✗", "bold yellow")
+        status_color = "yellow"
+    else:
+        glyph = ("✗", "bold red")
+        status_color = "red"
+
+    parts = [
+        glyph,
+        (" subagent ", ""),
+        (spec_name, "bold"),
+        (" → ", "dim"),
+        (status, status_color),
+        ("  (", "dim"),
+        (f"{turns} turns", "dim"),
+        (", ", "dim"),
+        (f"{tool_calls} tool calls", "dim"),
+        (", ", "dim"),
+        (f"${cost_usd:.4f}" if cost_usd >= 0.0001 else "<$0.0001", "dim"),
+        (", ", "dim"),
+        (f"{wallclock_s:.1f}s", "dim"),
+        (")", "dim"),
+    ]
+    lines = [Text.assemble(*parts)]
+    if error_message:
+        lines.append(Text(f"  {error_message[:200]}", style="dim red"))
+    return Group(*lines)
+
+
 def render_turn_separator() -> Text:
     """Subtle horizontal line between turns. Renders full terminal width."""
     return Text("─" * 80, style="dim")

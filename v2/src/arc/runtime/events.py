@@ -112,6 +112,11 @@ class EventType:
     SUBAGENT_QUOTA_EXCEEDED = "subagent.quota_exceeded"
     SUBAGENT_CIRCUIT_TRIPPED = "subagent.circuit_tripped"
     SUBAGENT_RETRY_ATTEMPTED = "subagent.retry_attempted"
+    # Bridged from a child's bus to the parent's bus during dispatch — gives
+    # the TUI / log_writer visibility into what the child is doing in real
+    # time without breaking context isolation (the parent's LLM still only
+    # sees the dispatched/returned pair as a single tool call).
+    SUBAGENT_PROGRESS = "subagent.progress"
 
     # Catch-all for non-categorized observations
     EVENT_EMITTED = "event.emitted"

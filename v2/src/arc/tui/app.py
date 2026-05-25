@@ -236,6 +236,84 @@ class TUIApp:
                 f"[bold yellow]⚠ cycle detected — forcing wrap-up[/bold yellow]"
             )
 
+        elif t == EventType.SUBAGENT_DISPATCHED:
+            # Sub-agent dispatch started. Print a header line and start a
+            # spinner; progress events will keep updating its message until
+            # SUBAGENT_RETURNED/ABORTED stops it.
+            p = event.payload
+            self._stop_status()
+            self._console.print(render.render_subagent_dispatched(
+                spec_name=p.get("spec_name", "?"),
+                provider=p.get("provider", "?"),
+                model=p.get("model", "?"),
+                child_session_id=p.get("child_session_id", ""),
+            ))
+            import time as _t
+            self._sub_dispatch_start = _t.monotonic()
+            self._sub_dispatch_spec = p.get("spec_name", "?")
+            self._start_status(
+                f"subagent {self._sub_dispatch_spec} dispatching",
+                style="bold cyan",
+            )
+
+        elif t == EventType.SUBAGENT_PROGRESS:
+            # Update the spinner text in place. Keeps the user informed
+            # about what the child is doing right now (uploading, calling
+            # LLM, etc.) without flooding the transcript.
+            import time as _t
+            p = event.payload
+            spec = p.get("spec_name", "?")
+            msg = p.get("message", "...")
+            elapsed = _t.monotonic() - getattr(self, "_sub_dispatch_start", _t.monotonic())
+            if self._status is not None:
+                self._status.update(
+                    f"[bold cyan]subagent {spec}: {msg} ({elapsed:.0f}s)[/bold cyan]"
+                )
+
+        elif t == EventType.SUBAGENT_RETURNED:
+            self._stop_status()
+            p = event.payload
+            self._console.print(render.render_subagent_done(
+                spec_name=p.get("spec_name", "?"),
+                status=p.get("status", "ok"),
+                turns=int(p.get("turns", 0)),
+                tool_calls=int(p.get("tool_calls", 0)),
+                cost_usd=float(p.get("cost_usd", 0.0)),
+                wallclock_s=float(p.get("wallclock_s", 0.0)),
+            ))
+
+        elif t == EventType.SUBAGENT_ABORTED:
+            self._stop_status()
+            p = event.payload
+            self._console.print(render.render_subagent_done(
+                spec_name=p.get("spec_name", "?"),
+                status=p.get("reason", "aborted"),
+                turns=int(p.get("turns", 0)),
+                tool_calls=0,
+                cost_usd=0.0,
+                wallclock_s=float(p.get("wallclock_s", 0.0)),
+                error_message=event.content.get("error_message") if event.content else None,
+            ))
+
+        elif t == EventType.SUBAGENT_QUOTA_EXCEEDED:
+            self._console.print(
+                f"[yellow]⊘ subagent {event.payload.get('spec_name', '?')} "
+                f"quota exceeded ({event.payload.get('cap', '?')}/session)[/yellow]"
+            )
+
+        elif t == EventType.SUBAGENT_CIRCUIT_TRIPPED:
+            self._console.print(
+                f"[yellow]⚠ subagent {event.payload.get('spec_name', '?')} "
+                f"circuit tripped (locked for this session)[/yellow]"
+            )
+
+        elif t == EventType.SUBAGENT_RETRY_ATTEMPTED:
+            p = event.payload
+            self._console.print(
+                f"[dim]subagent {p.get('spec_name', '?')} transient retry "
+                f"#{p.get('attempt', '?')} ({p.get('error_class', '?')})[/dim]"
+            )
+
     # ── Slash commands ─────────────────────────────────────────────────────
 
     def _handle_slash(self, text: str) -> bool:

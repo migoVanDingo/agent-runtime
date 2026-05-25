@@ -14,7 +14,7 @@ import re
 from typing import Any
 
 from arc.plugins.safety_gate.catalog import DEFAULT_PATTERNS, Pattern, catalog_by_name
-from arc.runtime.events import EventType
+from arc.runtime.events import EventType, RuntimeEvent
 from arc.runtime.hooks import ToolCall, ToolDenial
 from arc.user_gate import EscalationRequest, UserGate
 
@@ -137,4 +137,8 @@ class SafetyGatePlugin:
 
     def _emit(self, event_type: str, payload: dict) -> None:
         if self._bus is not None:
-            self._bus.emit(event_type, payload)
+            self._bus.emit(RuntimeEvent(
+                type=event_type,
+                stage="plugin",
+                payload=payload,
+            ))

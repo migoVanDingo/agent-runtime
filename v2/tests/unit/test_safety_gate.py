@@ -34,11 +34,17 @@ class _AlwaysDeny:
 
 
 class _CapturingBus:
+    """Stub bus mirroring EventBus.emit(event: RuntimeEvent).
+
+    `self.events` exposes (type, payload) tuples to match the existing
+    test assertions — extracted from the captured RuntimeEvent.
+    """
+
     def __init__(self):
         self.events: list[tuple[str, dict]] = []
 
-    def emit(self, event_type: str, payload: dict) -> None:
-        self.events.append((event_type, payload))
+    def emit(self, event) -> None:
+        self.events.append((event.type, event.payload))
 
 
 _ALL_PATTERN_NAMES = [p.name for p in DEFAULT_PATTERNS]

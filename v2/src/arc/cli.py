@@ -671,6 +671,7 @@ def _cmd_run(home_override: str | None, *, prompt: str) -> int:
     sess = AgentSession(
         config=cfg, provider=provider, tools=tools,
         registry=registry, bus=bus, session_id=session_id,
+        subagent_registry=_make_subagent_registry(cfg, home),
     )
 
     try:
@@ -808,6 +809,7 @@ def _cmd_replay(
     sess = AgentSession(
         config=cfg, provider=provider, tools=tools,
         registry=registry, bus=bus, session_id=new_session_id_,
+        subagent_registry=_make_subagent_registry(cfg, home),
     )
 
     mode_label = "3 (live LLM)" if live_llm else "2 (strict)"
@@ -1075,6 +1077,7 @@ def _cmd_resume(
     sess = AgentSession(
         config=cfg, provider=provider, tools=tools,
         registry=registry, bus=bus, session_id=new_sid,
+        subagent_registry=_make_subagent_registry(cfg, home),
         initial_messages=prior_messages,
     )
 
@@ -1204,6 +1207,7 @@ def _cmd_rerun(
     sess = AgentSession(
         config=cfg, provider=provider, tools=tools,
         registry=registry, bus=bus, session_id=new_sid,
+        subagent_registry=_make_subagent_registry(cfg, home),
     )
 
     print(f"rerunning {session_id} → {new_sid}  "
@@ -1302,6 +1306,7 @@ def _cmd_interactive(home_override: str | None) -> int:
     sess = AgentSession(
         config=cfg, provider=provider, tools=tools,
         registry=registry, bus=bus, session_id=session_id,
+        subagent_registry=_make_subagent_registry(cfg, home),
     )
     # Emit discovery + enablement events onto the session bus so they
     # land in events.jsonl alongside session.started. Done before app.run()
@@ -1445,6 +1450,31 @@ def _source_label(spec) -> str:
     if spec.source == "plugin":
         return f"plugin:{spec.source_package or 'unknown'}"
     return spec.source
+
+
+# ── Sub-agent registry helper ──────────────────────────────────────────────
+
+
+def _make_subagent_registry(cfg, home):
+    """Discover sub-agents (built-ins + entry points + config), return the
+    registry ready for AgentSession to consume.
+
+    None on construction failure — session continues without sub-agents.
+    Failures get written to stderr (same shape as plugin dangling errors)
+    so the user sees them.
+    """
+    try:
+        from arc.runtime.subagents.registry import SubAgentRegistry
+        reg = SubAgentRegistry(arc_home=home)
+        reg.discover(cfg.subagents.as_overrides())
+        return reg
+    except Exception as exc:  # noqa: BLE001 — sub-agents are optional, don't crash session
+        sys.stderr.write(
+            f"[arc] sub-agent registry construction failed; "
+            f"sub-agents unavailable this session: "
+            f"{type(exc).__name__}: {exc}\n"
+        )
+        return None
 
 
 # ── First-run plugin enablement helper ─────────────────────────────────────

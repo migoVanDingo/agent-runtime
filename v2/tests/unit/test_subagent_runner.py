@@ -269,6 +269,80 @@ def test_spec_params_thread_into_child_provider_config(monkeypatch):
     assert child_cfg.params["vertex_region"] == "us-east1"
 
 
+def test_child_events_bridged_to_parent_as_progress(monkeypatch):
+    """SUBAGENT_PROGRESS events should appear on parent's bus for each
+    interesting child event (tool calls, LLM calls)."""
+    spec = SubAgentSpec(
+        name="echo", description="d", provider="anthropic",
+        model="m", system_prompt="p", tools=(),
+        timeout_s=10.0, max_turns=2,
+    )
+    reg = _registry_with({"echo": spec})
+    parent_reg = HookRegistry(failure_threshold=3, exception_message_max_chars=500)
+    parent_bus = EventBus(parent_reg)
+    captured = _capture_events(parent_bus, parent_reg)
+
+    fake = FakeProvider([
+        LLMResponse(content=[ContentBlock(type="text", text="ok")],
+                    stop_reason="end_turn", input_tokens=100, output_tokens=20, raw={}),
+    ])
+    monkeypatch.setattr("arc.providers.build", lambda cfg: fake)
+
+    runner = SubAgentRunner(
+        registry=reg, parent_bus=parent_bus, parent_tools=ToolRegistry(),
+        parent_config=_parent_config(), arc_home=Path("/tmp"), sessions_dir=Path("/tmp"),
+    )
+    runner.dispatch("echo", "task", parent_session_id="parent_1")
+
+    progress = [e for e in captured if e.type == EventType.SUBAGENT_PROGRESS]
+    assert len(progress) > 0, "expected SUBAGENT_PROGRESS events bridged from child"
+    # Each progress event carries spec_name + child_session_id + message + child_event_type
+    for ev in progress:
+        assert ev.payload["spec_name"] == "echo"
+        assert "child_session_id" in ev.payload
+        assert "message" in ev.payload
+        assert "child_event_type" in ev.payload
+
+    # Should include at least one LLM call message ("calling..." or "LLM done")
+    messages = [e.payload["message"] for e in progress]
+    assert any("LLM" in m or "calling" in m for m in messages)
+
+
+def test_child_events_bridged_filters_uninteresting(monkeypatch):
+    """The bridge should NOT forward every child event — only the ones
+    that matter for user-facing visibility (tool calls, LLM calls, turn
+    started). Hook fires, plugin lifecycle, etc. should be dropped."""
+    spec = SubAgentSpec(
+        name="echo", description="d", provider="anthropic",
+        model="m", system_prompt="p", tools=(),
+        timeout_s=10.0, max_turns=2,
+    )
+    reg = _registry_with({"echo": spec})
+    parent_reg = HookRegistry(failure_threshold=3, exception_message_max_chars=500)
+    parent_bus = EventBus(parent_reg)
+    captured = _capture_events(parent_bus, parent_reg)
+
+    fake = FakeProvider([
+        LLMResponse(content=[ContentBlock(type="text", text="ok")],
+                    stop_reason="end_turn", input_tokens=1, output_tokens=1, raw={}),
+    ])
+    monkeypatch.setattr("arc.providers.build", lambda cfg: fake)
+
+    runner = SubAgentRunner(
+        registry=reg, parent_bus=parent_bus, parent_tools=ToolRegistry(),
+        parent_config=_parent_config(), arc_home=Path("/tmp"), sessions_dir=Path("/tmp"),
+    )
+    runner.dispatch("echo", "task", parent_session_id="parent_1")
+
+    # The session also emits session.started and session.ended events from
+    # the child. These should NOT show up as SUBAGENT_PROGRESS on the
+    # parent (we don't want spam).
+    progress = [e for e in captured if e.type == EventType.SUBAGENT_PROGRESS]
+    progress_event_types = [e.payload.get("child_event_type") for e in progress]
+    assert EventType.SESSION_STARTED not in progress_event_types
+    assert EventType.SESSION_ENDED not in progress_event_types
+
+
 def test_quota_denied_returns_error_without_running(monkeypatch):
     """Once quota is exhausted, dispatch returns error and does NOT call provider."""
     spec = SubAgentSpec(

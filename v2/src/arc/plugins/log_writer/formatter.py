@@ -440,6 +440,14 @@ def _fmt_subagent_retry_attempted(e: RuntimeEvent, n: int) -> list[tuple[str, in
     ]
 
 
+def _fmt_subagent_progress(e: RuntimeEvent, n: int) -> list[tuple[str, int, str]]:
+    p = e.payload
+    return [
+        ("arc.subagent", logging.DEBUG,
+         f"    [{p.get('spec_name', '?')}] {p.get('message', '?')}"),
+    ]
+
+
 # ── Dispatch table ─────────────────────────────────────────────────────────
 
 
@@ -472,4 +480,5 @@ _DISPATCH = {
     EventType.SUBAGENT_QUOTA_EXCEEDED: _fmt_subagent_quota_exceeded,
     EventType.SUBAGENT_CIRCUIT_TRIPPED: _fmt_subagent_circuit_tripped,
     EventType.SUBAGENT_RETRY_ATTEMPTED: _fmt_subagent_retry_attempted,
+    EventType.SUBAGENT_PROGRESS: _fmt_subagent_progress,
 }

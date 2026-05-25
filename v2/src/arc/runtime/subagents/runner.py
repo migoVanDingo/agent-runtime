@@ -319,9 +319,16 @@ class SubAgentRunner:
         cancel_flag = threading.Event()
         timeout_flag = threading.Event()  # distinguishes timeout vs. external cancel
 
-        # Single observer that handles both pause_check (cancellation) and
-        # on_event (metrics). The HookRegistry tracks instances by `name`,
-        # so combining them keeps the registration clean.
+        # Single observer that handles pause_check (cancellation), on_event
+        # (metrics collection), AND bridges interesting child events back to
+        # the PARENT's bus as SUBAGENT_PROGRESS events. The bridging gives
+        # the TUI + log_writer visibility into what the child is doing in
+        # real time without breaking context isolation — the parent's LLM
+        # still only sees the dispatched/returned pair as a single tool call.
+        parent_bus_ref = self._parent_bus
+        spec_name_ref = spec.name
+        child_sid_ref = child_session_id
+
         class _ChildObserver:
             name = "_subagent_runner_observer"
 
@@ -334,6 +341,7 @@ class SubAgentRunner:
 
             def on_event(self, ctx, event: RuntimeEvent) -> None:
                 self._metrics.on_event(ctx, event)
+                _bridge_progress(event, parent_bus_ref, spec_name_ref, child_sid_ref)
 
         metrics = _ChildMetricsObserver()
         child_registry.register(
@@ -523,6 +531,61 @@ class _TransientError(Exception):
     def __init__(self, original: BaseException) -> None:
         self.original = original
         super().__init__(repr(original))
+
+
+def _bridge_progress(
+    event: RuntimeEvent,
+    parent_bus: EventBus,
+    spec_name: str,
+    child_session_id: str,
+) -> None:
+    """Forward a SUMMARY of certain child events to the parent's bus as
+    SUBAGENT_PROGRESS. Lets the parent's TUI + log_writer show the user
+    what the sub-agent is actually doing during dispatch.
+
+    Only forwards events the user would want to see (tool starts/ends,
+    LLM calls). Filters out internal events (hook fires, plugin
+    discovery, etc.) that would just clutter the UI.
+
+    Bus emission is sync — happens on the dispatch thread. Receivers on
+    the parent's bus (TUI status spinner, log_writer) see it immediately.
+    """
+    t = event.type
+    if t == EventType.TOOL_CALL_STARTED:
+        tool_name = event.payload.get("tool_name", "?")
+        message = f"calling {tool_name}"
+    elif t == EventType.TOOL_CALL_COMPLETED:
+        tool_name = event.payload.get("tool_name", "?")
+        message = f"{tool_name} done"
+    elif t == EventType.TOOL_CALL_FAILED:
+        tool_name = event.payload.get("tool_name", "?")
+        err = event.payload.get("error_message", "")
+        message = f"{tool_name} failed: {err[:80]}"
+    elif t == EventType.LLM_CALL_STARTED:
+        model = event.payload.get("model", "?")
+        message = f"calling {model}"
+    elif t == EventType.LLM_CALL_COMPLETED:
+        in_t = event.payload.get("input_tokens", 0) or 0
+        out_t = event.payload.get("output_tokens", 0) or 0
+        message = f"LLM done ({in_t}→{out_t} tokens)"
+    elif t == EventType.LLM_CALL_FAILED:
+        err = event.payload.get("exception_message", "")
+        message = f"LLM failed: {err[:80]}"
+    elif t == EventType.TURN_STARTED:
+        message = "turn started"
+    else:
+        return
+
+    parent_bus.emit(RuntimeEvent(
+        type=EventType.SUBAGENT_PROGRESS,
+        stage="SubAgentRunner",
+        payload={
+            "spec_name": spec_name,
+            "child_session_id": child_session_id,
+            "message": message,
+            "child_event_type": t,
+        },
+    ))
 
 
 class _ChildMetricsObserver:

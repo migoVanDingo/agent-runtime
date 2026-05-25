@@ -269,6 +269,48 @@ def test_spec_params_thread_into_child_provider_config(monkeypatch):
     assert child_cfg.params["vertex_region"] == "us-east1"
 
 
+def test_metrics_observer_computes_cost_from_pricing_table():
+    """_ChildMetricsObserver multiplies tokens by PricingTable rates."""
+    from arc.runtime.subagents.runner import _ChildMetricsObserver
+    from arc.runtime.events import EventType, RuntimeEvent
+
+    class FakePricingTable:
+        def lookup_for(self, *, provider, model):
+            assert provider == "anthropic"
+            assert model == "claude-haiku-4-5"
+            return {
+                "input_cost_per_token": 1e-6,
+                "output_cost_per_token": 5e-6,
+            }
+
+    obs = _ChildMetricsObserver(
+        provider="anthropic",
+        model="claude-haiku-4-5",
+        pricing_table=FakePricingTable(),
+    )
+    obs.on_bus_event(RuntimeEvent(
+        type=EventType.LLM_CALL_COMPLETED,
+        payload={"input_tokens": 1000, "output_tokens": 500},
+    ))
+    # 1000 * 1e-6 + 500 * 5e-6 = 0.001 + 0.0025 = 0.0035
+    assert obs.cost_usd == pytest.approx(0.0035)
+
+
+def test_metrics_observer_no_pricing_leaves_cost_zero():
+    """Missing PricingTable → cost stays 0.0 (no crash)."""
+    from arc.runtime.subagents.runner import _ChildMetricsObserver
+    from arc.runtime.events import EventType, RuntimeEvent
+
+    obs = _ChildMetricsObserver(provider="x", model="y", pricing_table=None)
+    obs.on_bus_event(RuntimeEvent(
+        type=EventType.LLM_CALL_COMPLETED,
+        payload={"input_tokens": 100, "output_tokens": 50},
+    ))
+    assert obs.cost_usd == 0.0
+    assert obs.input_tokens == 100
+    assert obs.output_tokens == 50
+
+
 def test_child_events_bridged_to_parent_as_progress(monkeypatch):
     """SUBAGENT_PROGRESS events should appear on parent's bus for each
     interesting child event (tool calls, LLM calls)."""

@@ -343,7 +343,23 @@ class SubAgentRunner:
                 self._metrics.on_event(ctx, event)
                 _bridge_progress(event, parent_bus_ref, spec_name_ref, child_sid_ref)
 
-        metrics = _ChildMetricsObserver()
+        # Lazy-load PricingTable so cost lookup on subagent.returned shows
+        # real numbers instead of a 0.0 placeholder. Failures (no network,
+        # no cache) leave cost at 0.0 — same as max_cost's behavior.
+        pricing_table = None
+        try:
+            from arc.tui.pricing import PricingTable
+            from arc.bootstrap import paths_for
+            cache_path = paths_for(self._arc_home).home / "pricing_cache.json"
+            pricing_table = PricingTable(cache_path=cache_path)
+        except Exception:
+            pricing_table = None
+
+        metrics = _ChildMetricsObserver(
+            provider=spec.provider,
+            model=spec.model,
+            pricing_table=pricing_table,
+        )
         child_registry.register(
             _ChildObserver(metrics),
             hooks_order={"pause_check": 1, "on_event": 100},
@@ -589,14 +605,46 @@ def _bridge_progress(
 
 
 class _ChildMetricsObserver:
-    """Subscribes to the child's bus + on_event hook; sums tokens/cost/turns."""
+    """Subscribes to the child's bus + on_event hook; sums tokens/cost/turns.
 
-    def __init__(self) -> None:
+    Cost is computed on-the-fly using PricingTable so `subagent.returned`
+    events carry real numbers, not placeholders. Looks up the rate per
+    (provider, model) once and caches it. Misses (unknown model in the
+    pricing table) leave cost as 0.0 — same behavior as max_cost plugin.
+    """
+
+    def __init__(
+        self,
+        *,
+        provider: str = "",
+        model: str = "",
+        pricing_table=None,
+    ) -> None:
         self.turns = 0
         self.tool_calls = 0
         self.input_tokens = 0
         self.output_tokens = 0
-        self.cost_usd = 0.0  # left at 0.0 for v0.1; future: PricingTable lookup
+        self.cost_usd = 0.0
+        self._provider = provider
+        self._model = model
+        self._pricing = pricing_table
+        self._rates_cache: dict | None = None
+        self._rate_lookup_attempted = False
+
+    def _lookup_rates(self) -> dict | None:
+        """Resolve per-token rates lazily; cache result (incl. None for misses)."""
+        if self._rate_lookup_attempted:
+            return self._rates_cache
+        self._rate_lookup_attempted = True
+        if self._pricing is None or not self._provider or not self._model:
+            return None
+        try:
+            self._rates_cache = self._pricing.lookup_for(
+                provider=self._provider, model=self._model,
+            )
+        except Exception:
+            self._rates_cache = None
+        return self._rates_cache
 
     def on_bus_event(self, event: RuntimeEvent) -> None:
         """Bus subscription — catches every emitted event on the child's bus."""
@@ -606,8 +654,16 @@ class _ChildMetricsObserver:
         elif t == EventType.TOOL_CALL_COMPLETED:
             self.tool_calls += 1
         elif t == EventType.LLM_CALL_COMPLETED:
-            self.input_tokens += int(event.payload.get("input_tokens", 0) or 0)
-            self.output_tokens += int(event.payload.get("output_tokens", 0) or 0)
+            in_t = int(event.payload.get("input_tokens", 0) or 0)
+            out_t = int(event.payload.get("output_tokens", 0) or 0)
+            self.input_tokens += in_t
+            self.output_tokens += out_t
+            rates = self._lookup_rates()
+            if rates:
+                self.cost_usd += (
+                    in_t * float(rates.get("input_cost_per_token", 0.0))
+                    + out_t * float(rates.get("output_cost_per_token", 0.0))
+                )
 
     def on_event(self, ctx, event: RuntimeEvent) -> None:
         """Hook contract — same as on_bus_event but signature matches OnEvent protocol."""

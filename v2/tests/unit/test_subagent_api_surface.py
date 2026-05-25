@@ -21,9 +21,10 @@ def test_v01_surface_complete():
     assert set(api.__all__) == expected
 
 
-def test_api_version_is_0_1():
+def test_api_version_is_0_2():
+    """v0.2 added SubAgentSpec.params (additive). v0.1 specs still work."""
     from arc.subagent_api import __api_version__
-    assert __api_version__ == (0, 1)
+    assert __api_version__ == (0, 2)
 
 
 def test_runner_and_registry_not_public():

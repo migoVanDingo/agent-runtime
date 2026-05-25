@@ -29,7 +29,12 @@ from __future__ import annotations
 #   - patch / minor: additive (new symbols, new optional fields on Spec)
 #   - major:         breaking (rename, removed field, signature change)
 # Sub-agent packages can assert >= (X, Y) to gate on feature availability.
-__api_version__: tuple[int, int] = (0, 1)
+#
+# 0.2 (2026-05-24) — added SubAgentSpec.params dict field for provider-
+#                    specific config (vertex_gemini's project_id + region,
+#                    future providers' equivalents). Additive — existing
+#                    0.1 specs still work (default factory = empty dict).
+__api_version__: tuple[int, int] = (0, 2)
 
 
 from arc.runtime.subagents.errors import (

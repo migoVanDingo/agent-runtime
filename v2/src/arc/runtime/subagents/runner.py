@@ -567,16 +567,20 @@ def _bridge_progress(
     the parent's bus (TUI status spinner, log_writer) see it immediately.
     """
     t = event.type
+    extra: dict[str, Any] = {}
     if t == EventType.TOOL_CALL_STARTED:
         tool_name = event.payload.get("tool_name", "?")
         message = f"calling {tool_name}"
+        extra = {"tool_name": tool_name, "tool_input": (event.content or {}).get("input", {})}
     elif t == EventType.TOOL_CALL_COMPLETED:
         tool_name = event.payload.get("tool_name", "?")
         message = f"{tool_name} done"
+        extra = {"tool_name": tool_name}
     elif t == EventType.TOOL_CALL_FAILED:
         tool_name = event.payload.get("tool_name", "?")
         err = event.payload.get("error_message", "")
         message = f"{tool_name} failed: {err[:80]}"
+        extra = {"tool_name": tool_name, "error": err}
     elif t == EventType.LLM_CALL_STARTED:
         model = event.payload.get("model", "?")
         message = f"calling {model}"
@@ -587,6 +591,7 @@ def _bridge_progress(
     elif t == EventType.LLM_CALL_FAILED:
         err = event.payload.get("exception_message", "")
         message = f"LLM failed: {err[:80]}"
+        extra = {"error": err}
     elif t == EventType.TURN_STARTED:
         message = "turn started"
     else:
@@ -600,6 +605,7 @@ def _bridge_progress(
             "child_session_id": child_session_id,
             "message": message,
             "child_event_type": t,
+            **extra,
         },
     ))
 

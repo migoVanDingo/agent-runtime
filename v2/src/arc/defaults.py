@@ -26,6 +26,14 @@ runtime:
     cannot do. NEVER repeat the same failed call with the same input —
     it will fail the same way.
 
+    Prefer sub-agents for the work they own. Before doing a task yourself
+    with low-level tools, check whether a `subagent_*` tool is described
+    for exactly this kind of work (e.g. deploying/managing containers,
+    analyzing video). If one fits, delegate to it FIRST with a clear task
+    description — don't attempt the task with individual tools and fall
+    back to the sub-agent only after failing. The sub-agent owns the
+    methodology and verifies its own work.
+
     When you have the answer, give it directly without filler.
   # Injected when the runtime forces wrap-up at caps. The model sees this
   # as the next user turn instead of executing further tool calls.
@@ -270,6 +278,9 @@ tui:
   toolbar_enabled: true
   # Up/down recalls past inputs (FileHistory in ARC_HOME/history).
   input_history_enabled: true
+  # Stream a sub-agent's tool activity into the scrollback (nested lines)
+  # instead of only a spinner, so you can watch what a sub-agent is doing.
+  subagent_activity: true
 
 # ── Bootstrap defaults (used by `arc bootstrap`) ────────────────────────────
 bootstrap:

@@ -102,6 +102,7 @@ class TUIConfig:
     tool_output_max_lines: int
     toolbar_enabled: bool
     input_history_enabled: bool
+    subagent_activity: bool = True
 
 
 @dataclass(frozen=True)
@@ -355,6 +356,7 @@ def _parse_tui(d: dict) -> TUIConfig:
         tool_output_max_lines=int(d.get("tool_output_max_lines", 30)),
         toolbar_enabled=bool(d.get("toolbar_enabled", True)),
         input_history_enabled=bool(d.get("input_history_enabled", True)),
+        subagent_activity=bool(d.get("subagent_activity", True)),
     )
 
 

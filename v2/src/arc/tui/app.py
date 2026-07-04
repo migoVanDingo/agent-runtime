@@ -269,15 +269,32 @@ class TUIApp:
             )
 
         elif t == EventType.SUBAGENT_PROGRESS:
-            # Update the spinner text in place. Keeps the user informed
-            # about what the child is doing right now (uploading, calling
-            # LLM, etc.) without flooding the transcript.
             import time as _t
             p = event.payload
             spec = p.get("spec_name", "?")
             msg = p.get("message", "...")
+            cet = p.get("child_event_type", "")
+            # Stream the child's tool activity into the scrollback (opt-out via
+            # tui.subagent_activity) so the user sees what a sub-agent is doing,
+            # not just a spinner. Tool starts + failures make a clean trace;
+            # LLM/turn events stay ephemeral in the spinner only.
+            if self._cfg.tui.subagent_activity and cet in (
+                EventType.TOOL_CALL_STARTED, EventType.TOOL_CALL_FAILED,
+                EventType.LLM_CALL_FAILED,
+            ):
+                failed = cet in (EventType.TOOL_CALL_FAILED, EventType.LLM_CALL_FAILED)
+                self._stop_status()
+                self._console.print(render.render_subagent_activity(
+                    message=msg,
+                    tool_name=p.get("tool_name"),
+                    tool_input=p.get("tool_input"),
+                    failed=failed,
+                ))
             elapsed = _t.monotonic() - getattr(self, "_sub_dispatch_start", _t.monotonic())
-            if self._status is not None:
+            if self._status is None:
+                self._start_status(
+                    f"subagent {spec}: {msg} ({elapsed:.0f}s)", style="arc.subagent.name")
+            else:
                 self._status.update(
                     f"[arc.subagent.name]subagent {spec}: {msg} ({elapsed:.0f}s)[/arc.subagent.name]"
                 )

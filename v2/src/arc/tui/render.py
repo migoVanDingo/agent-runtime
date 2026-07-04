@@ -262,6 +262,29 @@ def render_subagent_dispatched(
     )
 
 
+def render_subagent_activity(
+    *, message: str, tool_name: str | None = None, tool_input: dict | None = None,
+    failed: bool = False,
+) -> Text:
+    """One nested line of a sub-agent's live activity (a child tool call).
+
+    Indented under the dispatch header so the child's trace reads as a
+    sub-level of the main transcript, not as the parent's own tool calls.
+    """
+    glyph_style = "arc.subagent.fail.glyph" if failed else "arc.subagent"
+    if tool_name:
+        args = ", ".join(f"{k}={v!r}" for k, v in (tool_input or {}).items())
+        if len(args) > 72:
+            args = args[:69] + "..."
+        body = f"{tool_name}({args})" if not failed else message
+    else:
+        body = message
+    return Text.assemble(
+        ("   ↳ ", glyph_style),
+        (body, "arc.dim" if not failed else "arc.subagent.fail"),
+    )
+
+
 def render_subagent_done(
     *,
     spec_name: str,

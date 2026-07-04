@@ -360,3 +360,31 @@ def test_tui_registers_itself_as_event_plugin():
     chain = app._session.registry._chains.get("on_event", [])
     plugin_names = [p[1] for p in chain]
     assert "tui-app" in plugin_names
+
+
+# ── Sub-agent activity streaming ─────────────────────────────────────────────
+
+
+def test_render_subagent_activity_shows_tool_call():
+    from arc.tui import render
+
+    out = io.StringIO()
+    Console(file=out, force_terminal=False, width=100).print(
+        render.render_subagent_activity(
+            message="calling container_ensure", tool_name="container_ensure",
+            tool_input={"name": "web", "image": "nginx"}))
+    text = out.getvalue()
+    assert "↳" in text
+    assert "container_ensure(" in text
+    assert "name='web'" in text
+
+
+def test_render_subagent_activity_failure():
+    from arc.tui import render
+
+    out = io.StringIO()
+    Console(file=out, force_terminal=False, width=100).print(
+        render.render_subagent_activity(
+            message="container_ensure failed: boom", tool_name="container_ensure",
+            failed=True))
+    assert "failed: boom" in out.getvalue()

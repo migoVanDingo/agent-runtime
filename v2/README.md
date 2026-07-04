@@ -128,8 +128,9 @@ detection, and cooperatively yields to `pause_check` between iterations.
 | `log-writer` | `on_session_start`, `on_event`, `on_session_end` | Writes human-readable `session.log` per session, v1-style format. |
 | `sliding-window-context` | `pack_context` | Drops oldest user-turn fragments when message budget is exceeded. Keeps the system prompt and recent context intact. |
 | `max-cost` | `after_llm_call` | Cost-cap enforcement (0019). Tallies cost via the pricing table; raises `MaxCostExceeded` past the cap. Used by `arc replay --max-cost-usd`. |
+| `mcp` | `on_session_start`, `on_session_end` | MCP client bridge (0025). Connects configured MCP servers and surfaces their tools into the registry as first-class, gated, observable arc tools. Empty server list = no-op. Needs `pip install "arc[mcp]"`. |
 
-All seven are plugins. All seven are optional. Disabling any one is a
+All eight are plugins. All are optional. Disabling any one is a
 single config-line edit; nothing else breaks.
 
 ### Layer 3 — supporting code
@@ -288,6 +289,14 @@ arc llm <action>                     local llama-server lifecycle (0018)
   stop                                 SIGTERM → SIGKILL after 10s
   restart <model-id>                   stop + start (model-swap)
   logs [--tail N]                      tail current.log
+arc plugins [list]                   enable/disable plugins (no arg → hub menu)
+arc subagents [list|show|enable|disable]  manage sub-agent specs (0020)
+arc mcp <action>                     MCP servers consumed by the `mcp` plugin (0025)
+  (no action)                          hub on the MCP Servers section (per-server toggle)
+  list                                 configured servers (non-interactive)
+  status                               connect + report live state + tool counts
+  add <name> --transport http|stdio …  register/update a server (programmatic)
+  remove <name>                        remove a server
 arc wipe [flags]                     clean state under ARC_HOME
   (no flags)                           sessions/ only — the dev-cycle default
   --all                                un-bootstrap: nuke ARC_HOME entirely
@@ -349,6 +358,34 @@ round-trip mode.  Hand-editing the file continues to work as before.
 
 ---
 
+## MCP servers (0025)
+
+arc can consume external [MCP](https://modelcontextprotocol.io) servers. The
+built-in `mcp` plugin connects each configured server, discovers its tools, and
+surfaces them into the registry as **first-class arc tools** — so MCP tool calls
+inherit the guard/safety gates, `tool.call.*` events, and replay, plus
+`mcp.*`-specific events for full observability. This complements in-process
+plugins; it doesn't replace them (a server per lightweight tool is a real tax).
+Use it for standalone/third-party services (e.g. the future container
+orchestrator, a proxmox server).
+
+```bash
+pip install "arc[mcp]"                # the SDK is an optional extra
+
+# register a server (programmatic — also callable via arc.setup.writer)
+arc mcp add container --transport http --url http://127.0.0.1:8770/mcp
+arc mcp add proxmox --transport stdio --command "uvx proxmox-mcp" --env PVE_URL=…
+
+arc mcp status                        # connect + report live state and tools
+arc mcp list                          # config-level view
+arc setup  → MCP Servers              # per-server enable/disable, like plugins
+```
+
+Config lives under the plugin's block (`plugins.enabled[mcp].config.servers`).
+Transports: **stdio** (subprocess, spawned only for a session that uses it) and
+**streamable-HTTP** (a standing service). One flaky server is quarantined on its
+own; the rest keep serving. Absent the `mcp` extra, the plugin graceful-disables.
+
 ## What's intentionally NOT in v2 yet
 
 The whole point of v2 was to NOT carry forward v1's orchestration mistakes.
@@ -359,11 +396,13 @@ The following are deliberate omissions, each a future capability plugin:
 - **No council/critic** (the model decides)
 - **No skills** (no fixed step expansions)
 - **No RAG** (no semantic retrieval)
-- **No artifact store** (just files in the workspace)
-- **No sub-agents** (single-agent)
-- **No sandbox isolation** (host backend; `guard` and `safety_gate` are the only safety layers)
-- **No async runtime** (sync; concurrency added deliberately when needed)
+- **No artifact store** (just files in the workspace; GCS spillover via `arc-plugin-gcs`)
+- **No sandbox isolation** (host backend; `guard` and `safety_gate` are the only safety layers — container orchestration is designed in `_design/0024`, not yet built)
+- **No async runtime** (sync core; the `mcp` plugin bridges its async SDK on a background loop)
 - **No workspace snapshotting** for branch/replay (filesystem is forward-only)
+
+Sub-agents (single-agent no longer) landed in 0020 — scoped child agents the
+parent dispatches as a tool; see `arc subagents`.
 
 Each of these is a capability plugin waiting to be built when there's a real need.
 
@@ -390,7 +429,11 @@ Each of these is a capability plugin waiting to be built when there's a real nee
 | 4.2 — Provider picker | ✅ | `arc setup` interactive flow, `catalog.yml` user-editable model menu (`_design/0017`) |
 | 4.3 — `arc llm` lifecycle | ✅ | Native llama-server start/stop/restart/swap, no sudo required (`_design/0018`) |
 | 4.4 — Cross-provider replay | ✅ | `--override-provider`, batch fan-out, `max_cost` plugin, `arc compare`, `/replay` menu (`_design/0019`) |
-| 5.x — Capability plugins | future | sub-agents, sandbox isolation, planner, RAG |
+| 5.0 — Sub-agents | ✅ | Dispatch as a tool, per-spec guards, GCS spillover + video sub-agent (`_design/0020`–`0022`) |
+| 5.1 — Setup hub | ✅ | Sidebar+content `arc setup`, themes (`_design/0023`) |
+| 5.2 — MCP client | ✅ | `mcp` plugin bridges external MCP servers (stdio + HTTP) into the registry; `arc mcp` (`_design/0025`) |
+| 5.3 — Container orchestration | design | Job-dispatch engine backends over a Docker service (`_design/0024`) |
+| 6.x — Capability plugins | future | sandbox isolation, planner, RAG |
 
 Per-phase design docs live in [`_design/`](_design/) — start with
 [`0001-foundation-phase0-design.md`](_design/0001-foundation-phase0-design.md)

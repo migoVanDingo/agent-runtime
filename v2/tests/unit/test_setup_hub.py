@@ -34,7 +34,7 @@ def test_hub_builds_with_expected_sections(hub_ctx):
     hub = Hub(hub_ctx)
     names = [s.name for s in hub._sections]
     assert names == [
-        "provider", "plugins", "subagents", "replay", "llm",
+        "provider", "plugins", "mcp", "subagents", "replay", "llm",
         "themes", "status", "wipe", "config",
     ]
 

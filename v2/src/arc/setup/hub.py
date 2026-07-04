@@ -116,6 +116,7 @@ class Hub:
         from arc.setup.sections import (
             config_viewer,
             llm_server,
+            mcp as _mcp,
             plugins as _plugins,
             provider_model,
             replay as _replay,
@@ -127,6 +128,7 @@ class Hub:
         builders = [
             provider_model.build,
             _plugins.build,
+            _mcp.build,
             _subagents.build,
             _replay.build,
             llm_server.build,

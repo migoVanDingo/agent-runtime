@@ -144,6 +144,18 @@ def _build_max_cost(cfg: dict, build_ctx: PluginBuildContext) -> Any:
     return p
 
 
+def _build_mcp(cfg: dict, build_ctx: PluginBuildContext) -> Any:
+    # MCP client bridge (0025). Parses its own config block; a config syntax
+    # error fails fast (like max-cost) — connection failures are per-server
+    # isolated at runtime by the manager, not here.
+    from arc.mcp.bridge import McpBridge
+    from arc.mcp.config import parse_mcp_config
+    bridge = McpBridge(parse_mcp_config(cfg))
+    if build_ctx.bus is not None:
+        bridge.bind_bus(build_ctx.bus)
+    return bridge
+
+
 _BUILTIN_BUILDERS: dict[str, Any] = {
     "jsonl-recorder": _build_jsonl_recorder,
     "guard": _build_guard,
@@ -152,6 +164,7 @@ _BUILTIN_BUILDERS: dict[str, Any] = {
     "log-writer": _build_log_writer,
     "sliding-window-context": _build_sliding_window_context,
     "max-cost": _build_max_cost,
+    "mcp": _build_mcp,
 }
 
 # Backwards-compatible alias — existing code (and tests) reference `_BUILDERS`.

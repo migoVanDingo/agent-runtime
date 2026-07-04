@@ -448,6 +448,60 @@ def _fmt_subagent_progress(e: RuntimeEvent, n: int) -> list[tuple[str, int, str]
     ]
 
 
+# ── MCP client (0025) ──────────────────────────────────────────────────────
+
+
+def _fmt_mcp_servers_configured(e: RuntimeEvent, n: int) -> list[tuple[str, int, str]]:
+    p = e.payload
+    return [("arc.mcp", logging.INFO,
+             f"  mcp: {p.get('enabled_count', '?')} of {p.get('total', '?')} servers enabled")]
+
+
+def _fmt_mcp_server_connected(e: RuntimeEvent, n: int) -> list[tuple[str, int, str]]:
+    p = e.payload
+    return [("arc.mcp", logging.INFO,
+             f"  {ARROW_IN} mcp server {p.get('server', '?')} connected "
+             f"({p.get('transport', '?')}, {p.get('tool_count', 0)} tools)")]
+
+
+def _fmt_mcp_server_disconnected(e: RuntimeEvent, n: int) -> list[tuple[str, int, str]]:
+    return [("arc.mcp", logging.INFO,
+             f"  {ARROW_OUT} mcp server {e.payload.get('server', '?')} disconnected")]
+
+
+def _fmt_mcp_tools_discovered(e: RuntimeEvent, n: int) -> list[tuple[str, int, str]]:
+    p = e.payload
+    return [("arc.mcp", logging.DEBUG,
+             f"    mcp {p.get('server', '?')} tools: {truncate(', '.join(p.get('tools', [])), 200)}")]
+
+
+def _fmt_mcp_tool_called(e: RuntimeEvent, n: int) -> list[tuple[str, int, str]]:
+    p = e.payload
+    return [("arc.mcp", logging.DEBUG,
+             f"    {ARROW_IN} mcp call {p.get('tool', '?')} @ {p.get('server', '?')}")]
+
+
+def _fmt_mcp_tool_result(e: RuntimeEvent, n: int) -> list[tuple[str, int, str]]:
+    p = e.payload
+    mark = FAILED if p.get("is_error") else ARROW_OUT
+    return [("arc.mcp", logging.DEBUG,
+             f"    {mark} mcp result {p.get('tool', '?')} ({p.get('bytes', 0)} bytes)")]
+
+
+def _fmt_mcp_server_error(e: RuntimeEvent, n: int) -> list[tuple[str, int, str]]:
+    p = e.payload
+    return [("arc.mcp", logging.WARNING,
+             f"  {WARN_GLYPH} mcp server {p.get('server', '?')} error: "
+             f"{truncate(p.get('error', ''), 200)}")]
+
+
+def _fmt_mcp_server_quarantined(e: RuntimeEvent, n: int) -> list[tuple[str, int, str]]:
+    p = e.payload
+    return [("arc.mcp", logging.WARNING,
+             f"  {DENIED} mcp server {p.get('server', '?')} quarantined after "
+             f"{p.get('strikes', '?')} strikes")]
+
+
 # ── Dispatch table ─────────────────────────────────────────────────────────
 
 
@@ -481,4 +535,12 @@ _DISPATCH = {
     EventType.SUBAGENT_CIRCUIT_TRIPPED: _fmt_subagent_circuit_tripped,
     EventType.SUBAGENT_RETRY_ATTEMPTED: _fmt_subagent_retry_attempted,
     EventType.SUBAGENT_PROGRESS: _fmt_subagent_progress,
+    EventType.MCP_SERVERS_CONFIGURED: _fmt_mcp_servers_configured,
+    EventType.MCP_SERVER_CONNECTED: _fmt_mcp_server_connected,
+    EventType.MCP_SERVER_DISCONNECTED: _fmt_mcp_server_disconnected,
+    EventType.MCP_TOOLS_DISCOVERED: _fmt_mcp_tools_discovered,
+    EventType.MCP_TOOL_CALLED: _fmt_mcp_tool_called,
+    EventType.MCP_TOOL_RESULT: _fmt_mcp_tool_result,
+    EventType.MCP_SERVER_ERROR: _fmt_mcp_server_error,
+    EventType.MCP_SERVER_QUARANTINED: _fmt_mcp_server_quarantined,
 }

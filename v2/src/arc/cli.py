@@ -123,6 +123,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"unknown config action: {args.config_action}")
     if args.command == "plugins":
         return _cmd_plugins(home_override, action=getattr(args, "plugins_action", None))
+    if args.command == "mcp":
+        return _cmd_mcp(home_override, args)
     if args.command == "subagents":
         return _cmd_subagents(
             home_override,
@@ -355,6 +357,44 @@ def _build_parser() -> argparse.ArgumentParser:
         help="print plugin status as a plain-text table (non-interactive)",
     )
     # No subcommand → interactive menu
+
+    mcp = sub.add_parser(
+        "mcp",
+        help="manage MCP servers (enable/disable per server)",
+        description=(
+            "Manage external MCP servers consumed by the built-in `mcp` plugin.\n"
+            "\n"
+            "With no subcommand, opens the setup hub on the MCP Servers section —\n"
+            "a checkbox toggle over each configured server. `list` prints the\n"
+            "config-level status; `status` probes live connections. Servers live\n"
+            "under plugins.enabled[mcp].config.servers in config.yml.\n"
+            "See _design/0025-mcp-client-integration.md."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    mcp_sub = mcp.add_subparsers(
+        dest="mcp_action", metavar="{list,status,add,remove}", title="subcommands")
+    mcp_sub.add_parser("list", help="print configured MCP servers (non-interactive)")
+    mcp_sub.add_parser("status", help="connect and report live server status + tools")
+
+    m_add = mcp_sub.add_parser("add", help="add or update an MCP server in config.yml")
+    m_add.add_argument("name", help="server name (also the default tool prefix)")
+    m_add.add_argument("--transport", choices=["http", "stdio"], required=True)
+    m_add.add_argument("--url", help="http: server URL, e.g. http://127.0.0.1:8770/mcp")
+    # dest must NOT be `command` — that's the top-level subcommand dest.
+    m_add.add_argument("--command", dest="mcp_command",
+                       help="stdio: command line, e.g. 'uvx proxmox-mcp'")
+    m_add.add_argument("--env", action="append", default=[], metavar="K=V",
+                       help="stdio: env var (repeatable)")
+    m_add.add_argument("--cwd", help="stdio: working directory")
+    m_add.add_argument("--tool-prefix", dest="tool_prefix",
+                       help="tool name prefix (default: server name)")
+    m_add.add_argument("--tools-allow", dest="tools_allow", help="comma-separated allowlist")
+    m_add.add_argument("--tools-deny", dest="tools_deny", help="comma-separated denylist")
+    m_add.add_argument("--disabled", action="store_true", help="add but leave disabled")
+
+    m_rm = mcp_sub.add_parser("remove", help="remove an MCP server from config.yml")
+    m_rm.add_argument("name", help="server name to remove")
 
     subagents = sub.add_parser(
         "subagents",
@@ -1380,6 +1420,101 @@ def _cmd_plugins(home_override: str | None, *, action: str | None) -> int:
     if action == "list":
         return list_plugins(paths.config_file)
     result = run_hub(home, initial_section="plugins")
+    if result.launch_session:
+        return _cmd_interactive(home_override)
+    return result.rc
+
+
+def _mcp_add(config_path, args) -> int:
+    """Parse `arc mcp add` args and register the server via the writer."""
+    import shlex
+    import sys
+
+    from arc.mcp.config import McpConfigError
+    from arc.setup.writer import render_changes, write_mcp_server_add
+
+    command = shlex.split(args.mcp_command) if args.mcp_command else None
+    env: dict[str, str] = {}
+    for kv in args.env or []:
+        if "=" not in kv:
+            sys.stderr.write(f"error: --env expects K=V, got {kv!r}\n")
+            return 1
+        k, v = kv.split("=", 1)
+        env[k] = v
+    allow = [x.strip() for x in args.tools_allow.split(",")] if args.tools_allow else None
+    deny = [x.strip() for x in args.tools_deny.split(",")] if args.tools_deny else None
+    try:
+        changes = write_mcp_server_add(
+            config_path, name=args.name, transport=args.transport, url=args.url,
+            command=command, env=env or None, cwd=args.cwd, tool_prefix=args.tool_prefix,
+            tools_allow=allow, tools_deny=deny, enabled=not args.disabled,
+        )
+    except (McpConfigError, ValueError) as exc:
+        sys.stderr.write(f"error: {exc}\n")
+        return 1
+    sys.stdout.write(render_changes(changes) + "\n")
+    sys.stdout.write("(takes effect next session)\n")
+    return 0
+
+
+def _cmd_mcp(home_override: str | None, args) -> int:
+    """`arc mcp` — manage MCP servers.
+
+    No action  → setup hub on the MCP Servers section.
+    list       → config-level server table (non-interactive).
+    status     → connect and report live state + tool counts.
+    add        → add/update a server in config.yml (programmatic registration).
+    remove     → remove a server from config.yml.
+    """
+    import sys
+
+    from arc.bootstrap import bootstrap, paths_for, resolve_home
+    from arc.setup.hub import run_hub
+    from arc.setup.mcp_menu import list_mcp
+
+    action = getattr(args, "mcp_action", None)
+    home = resolve_home(home_override)
+    bootstrap(home)
+    paths = paths_for(home)
+
+    if action == "add":
+        return _mcp_add(paths.config_file, args)
+    if action == "remove":
+        from arc.setup.writer import render_changes, write_mcp_server_remove
+        try:
+            changes = write_mcp_server_remove(paths.config_file, name=args.name)
+        except ValueError as exc:
+            sys.stderr.write(f"error: {exc}\n")
+            return 1
+        sys.stdout.write(render_changes(changes) + "\n")
+        return 0
+
+    if action == "list":
+        return list_mcp(paths.config_file)
+    if action == "status":
+        from arc.mcp.bridge import McpBridge
+        from arc.mcp.config import parse_mcp_config
+        from arc.setup.mcp_menu import _mcp_config_dict
+
+        cfg = parse_mcp_config(_mcp_config_dict(paths.config_file))
+        if not cfg.servers:
+            sys.stdout.write("(no MCP servers configured)\n")
+            return 0
+        bridge = McpBridge(cfg)
+        bridge.on_session_start(ctx=None)  # connects
+        try:
+            for row in bridge.status():
+                mark = "●" if row["state"] == "connected" else "○"
+                line = (f"  {mark} {row['name']:<20} {row['transport']:<6} "
+                        f"{row['state']:<12} {row['tool_count']} tools")
+                if row["error"]:
+                    line += f"  ({row['error']})"
+                sys.stdout.write(line + "\n")
+        finally:
+            bridge.on_session_end(ctx=None)
+        return 0
+
+    result = run_hub(home, initial_section="mcp")
     if result.launch_session:
         return _cmd_interactive(home_override)
     return result.rc

@@ -10,6 +10,8 @@ subdir has its own `CLAUDE.md` that's authoritative for work inside it.
 | `arc-plugin-template/`   | Template repo for building **external** arc plugins. Forked when a new plugin starts. |
 | `arc-plugin-briefbot/`   | External plugin: read-only tools over a local Briefbot SQLite corpus. |
 | `arc-plugin-websearch/`  | External plugin: `web_search` / `read_url` / `http_request` / `extract_html`. |
+| `arc-plugin-ghidra/`     | External plugin: interactive control of a **running Ghidra UI** via a Java extension (embedded HTTP, normal launcher). |
+| `arc-plugin-angr/`       | External plugin: symbolic execution (static) via angr. `angr_describe`/`angr_solve`/`angr_reachable`. angr is optional/lazy. |
 
 `v1/` and `v2/` are separate Python projects with independent CLAUDE.md
 files. The plugin repos are independent pip-installable packages.
@@ -47,6 +49,18 @@ Two plugin **shapes**:
   the tools; `provides_tools()` returns them.
 
 Full design + breakage policy in `arc-plugin-template/docs/PLUGIN_API.md`.
+
+## MCP servers (v2, 0025)
+
+Besides in-process plugins, arc v2 can now **consume external MCP servers** via
+the built-in `mcp` plugin — their tools are adapted into the registry as
+first-class, gated, observable arc tools (stdio + streamable-HTTP transports).
+This is the integration path for **standalone/third-party services** (e.g. the
+planned container-orchestration service in `v2/_design/0024`), not a replacement
+for in-process plugins. Manage with `arc mcp [list|status|add|remove]`; servers
+live under `plugins.enabled[mcp].config.servers`. Needs `pip install "arc[mcp]"`.
+Design: `v2/_design/0025-mcp-client-integration.md`; deviations:
+`v2/_deviations/0001-mcp-client-integration.md`.
 
 ## When the user references something cross-repo
 

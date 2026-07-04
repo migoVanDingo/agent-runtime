@@ -187,6 +187,216 @@ def write_plugin_enablement(
     return changes
 
 
+def write_mcp_server_enablement(
+    config_path: Path,
+    *,
+    server: str,
+    enabled: bool,
+) -> list[WriteChange]:
+    """Toggle `plugins.enabled[mcp].config.servers[<server>].enabled` in place.
+
+    MCP is a built-in plugin (see _deviations/0001); its servers are nested in
+    the plugin's config block. This flips one server's flag, preserving comments
+    and everything else (ruamel round-trip). Used by `arc mcp` and the setup hub
+    MCP section.
+    """
+    from ruamel.yaml import YAML
+
+    yaml = YAML(typ="rt")
+    yaml.preserve_quotes = True
+    yaml.width = 4096
+
+    with config_path.open("r", encoding="utf-8") as f:
+        data = yaml.load(f)
+
+    enabled_list = (data or {}).get("plugins", {}).get("enabled")
+    mcp_entry = None
+    for entry in enabled_list or []:
+        if isinstance(entry, dict) and entry.get("name") == "mcp":
+            mcp_entry = entry
+            break
+    if mcp_entry is None:
+        raise ValueError(
+            "no `mcp` plugin entry in config.yml; enable it via `arc plugins` first"
+        )
+    servers = (mcp_entry.get("config") or {}).get("servers")
+    srv = None
+    for s in servers or []:
+        if isinstance(s, dict) and s.get("name") == server:
+            srv = s
+            break
+    if srv is None:
+        raise ValueError(f"no mcp server named {server!r} under plugins.enabled[mcp].config.servers")
+
+    old = bool(srv.get("enabled", True))
+    srv["enabled"] = enabled
+    buf = StringIO()
+    yaml.dump(data, buf)
+    config_path.write_text(buf.getvalue(), encoding="utf-8")
+    return [WriteChange(
+        key=f"plugins.enabled[mcp].config.servers[{server}].enabled",
+        old=str(old),
+        new=str(enabled),
+    )]
+
+
+def write_mcp_server_add(
+    config_path: Path,
+    *,
+    name: str,
+    transport: str,
+    url: str | None = None,
+    command: list[str] | None = None,
+    env: dict[str, str] | None = None,
+    cwd: str | None = None,
+    tool_prefix: str | None = None,
+    tools_allow: list[str] | None = None,
+    tools_deny: list[str] | None = None,
+    enabled: bool = True,
+) -> list[WriteChange]:
+    """Add (or update) an MCP server under `plugins.enabled[mcp].config.servers`.
+
+    The programmatic entry point for registering an MCP server — used by
+    `arc mcp add` and callable directly (e.g. a service self-registering after
+    it starts). Upsert semantics: an existing server with `name` is replaced.
+    Creates the `mcp` plugin entry itself if the config doesn't have one yet
+    (older configs). Comment-preserving (ruamel round-trip).
+
+    Validates the resulting server spec before writing; raises McpConfigError on
+    a bad shape (unknown transport, http without url, stdio without command).
+    """
+    from ruamel.yaml import YAML
+    from ruamel.yaml.comments import CommentedMap, CommentedSeq
+
+    from arc.mcp.config import parse_mcp_config
+
+    # Validate the spec up front so we never write a broken server entry.
+    spec: dict = {"name": name, "transport": transport, "enabled": enabled}
+    if url is not None:
+        spec["url"] = url
+    if command is not None:
+        spec["command"] = list(command)
+    if env:
+        spec["env"] = dict(env)
+    if cwd is not None:
+        spec["cwd"] = cwd
+    if tool_prefix:
+        spec["tool_prefix"] = tool_prefix
+    if tools_allow:
+        spec["tools_allow"] = list(tools_allow)
+    if tools_deny:
+        spec["tools_deny"] = list(tools_deny)
+    parse_mcp_config({"servers": [spec]})  # raises McpConfigError if invalid
+
+    yaml = YAML(typ="rt")
+    yaml.preserve_quotes = True
+    yaml.width = 4096
+    with config_path.open("r", encoding="utf-8") as f:
+        data = yaml.load(f)
+    if data is None or "plugins" not in data:
+        raise ValueError(
+            f"config at {config_path} has no `plugins:` block; run `arc bootstrap --force`"
+        )
+
+    plugins_block = data["plugins"]
+    if not plugins_block.get("enabled"):
+        plugins_block["enabled"] = CommentedSeq()
+    enabled_list = plugins_block["enabled"]
+
+    changes: list[WriteChange] = []
+    mcp_entry = None
+    for entry in enabled_list:
+        if isinstance(entry, dict) and entry.get("name") == "mcp":
+            mcp_entry = entry
+            break
+    if mcp_entry is None:
+        mcp_entry = CommentedMap()
+        mcp_entry["name"] = "mcp"
+        cfg_map = CommentedMap()
+        cfg_map["failure_threshold"] = 3
+        cfg_map["call_timeout_s"] = 30
+        cfg_map["servers"] = CommentedSeq()
+        mcp_entry["config"] = cfg_map
+        ho = CommentedMap()
+        ho["on_session_start"] = 8
+        ho["on_session_end"] = 8
+        mcp_entry["hooks_order"] = ho
+        enabled_list.append(mcp_entry)
+        changes.append(WriteChange(key="plugins.enabled[mcp]", old=None, new="created"))
+
+    cfg_block = mcp_entry.get("config")
+    if cfg_block is None:
+        cfg_block = mcp_entry["config"] = CommentedMap()
+    if cfg_block.get("servers") is None:
+        cfg_block["servers"] = CommentedSeq()
+    servers = cfg_block["servers"]
+
+    srv = CommentedMap()
+    srv["name"] = name
+    srv["transport"] = transport
+    srv["enabled"] = enabled
+    if transport == "http":
+        srv["url"] = url
+    if transport == "stdio":
+        srv["command"] = CommentedSeq(command or [])
+        if env:
+            srv["env"] = CommentedMap(env)
+        if cwd:
+            srv["cwd"] = cwd
+    if tool_prefix:
+        srv["tool_prefix"] = tool_prefix
+    if tools_allow:
+        srv["tools_allow"] = CommentedSeq(tools_allow)
+    if tools_deny:
+        srv["tools_deny"] = CommentedSeq(tools_deny)
+
+    idx = next((i for i, s in enumerate(servers)
+                if isinstance(s, dict) and s.get("name") == name), None)
+    if idx is None:
+        servers.append(srv)
+        changes.append(WriteChange(
+            key=f"plugins.enabled[mcp].config.servers[{name}]", old=None, new=transport))
+    else:
+        servers[idx] = srv
+        changes.append(WriteChange(
+            key=f"plugins.enabled[mcp].config.servers[{name}]",
+            old="(existing)", new=f"{transport} (updated)"))
+
+    buf = StringIO()
+    yaml.dump(data, buf)
+    config_path.write_text(buf.getvalue(), encoding="utf-8")
+    return changes
+
+
+def write_mcp_server_remove(config_path: Path, *, name: str) -> list[WriteChange]:
+    """Remove an MCP server from `plugins.enabled[mcp].config.servers`."""
+    from ruamel.yaml import YAML
+
+    yaml = YAML(typ="rt")
+    yaml.preserve_quotes = True
+    yaml.width = 4096
+    with config_path.open("r", encoding="utf-8") as f:
+        data = yaml.load(f)
+
+    enabled_list = (data or {}).get("plugins", {}).get("enabled") or []
+    mcp_entry = next((e for e in enabled_list
+                      if isinstance(e, dict) and e.get("name") == "mcp"), None)
+    if mcp_entry is None:
+        raise ValueError("no `mcp` plugin entry in config.yml")
+    servers = (mcp_entry.get("config") or {}).get("servers") or []
+    idx = next((i for i, s in enumerate(servers)
+                if isinstance(s, dict) and s.get("name") == name), None)
+    if idx is None:
+        raise ValueError(f"no mcp server named {name!r}")
+    del servers[idx]
+
+    buf = StringIO()
+    yaml.dump(data, buf)
+    config_path.write_text(buf.getvalue(), encoding="utf-8")
+    return [WriteChange(
+        key=f"plugins.enabled[mcp].config.servers[{name}]", old="present", new="removed")]
+
+
 def write_subagent_enablement(
     config_path: Path,
     *,

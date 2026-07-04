@@ -43,6 +43,9 @@ src/arc/
     pause_resume/             pause checkpoint + signal file
     log_writer/               human-readable session.log
     sliding_window_context/   pack_context — drops oldest user-turn fragments
+  mcp/                      MCP client subsystem (0025) — config, transport,
+                            manager (bg asyncio loop + per-server actors),
+                            adapter (MCP tool → arc Tool), bridge (the `mcp` plugin)
   providers/                Layer 3 — supporting code
     base.py / gemini.py / anthropic.py
   tools/                    ls, bash_exec
@@ -83,6 +86,7 @@ arc log <id> [--tail N]      human-readable session.log
 arc config show / path       inspect resolved config
 arc plugins [list]           list (non-interactive); no args → hub on Plugins
 arc subagents [list|show|enable|disable] no args → hub on Sub-agents
+arc mcp [list|status|add|remove]  MCP servers; no args → hub on MCP Servers (0025)
 arc llm [list|status|start|stop|restart|logs] no args → hub on LLM Server
 arc replay <id> [--live-llm] mode 2 (deterministic) / mode 3 (live LLM)
 arc replay                   no id → hub on Replay
@@ -187,6 +191,20 @@ interactive print. Both use the comment-preserving writer at
 - **prompt_toolkit's bottom_toolbar updates only between prompts.** It does
   not push updates mid-input. This is fine for our use case; don't try to
   work around it.
+- **MCP is a built-in *plugin* (`mcp`), not a top-level config section.** Its
+  servers live in the plugin's config block (`plugins.enabled[mcp].config.servers`)
+  — chosen because `build_plugins` runs at 6+ sites and `PluginBuildContext` has
+  no `Config` handle. See `_deviations/0001-mcp-client-integration.md`.
+- **The `mcp` SDK is async; arc is sync.** The manager runs a background asyncio
+  loop with one **actor coroutine per server** (open/use/close in a single task —
+  anyio cancel-scope safe) + `run_coroutine_threadsafe` bridges. Don't try to
+  `await` MCP calls from the runtime; go through `McpManager.call_tool` (sync).
+  The `mcp` SDK is an optional extra (`arc[mcp]`); the plugin graceful-disables
+  if it's absent.
+- **Register MCP servers programmatically** via `arc.setup.writer.write_mcp_server_add`
+  (comment-preserving, upsert, validates) — the same core `arc mcp add` uses. A
+  CLI `--command` option must NOT use the default dest (`command` collides with
+  the top-level subcommand dest); the mcp one is pinned to `mcp_command`.
 - **Don't escalate to the user mid-task** when working autonomously. The
   user's standing instruction is "knock it out, I'll review later." Make
   defensible judgment calls and document them in the design doc.
@@ -205,6 +223,10 @@ interactive print. Both use the comment-preserving writer at
 
 | Phase | Doc | What landed |
 |---|---|---|
+| 5.2 | `_design/0025-mcp-client-integration.md` | `mcp` plugin: consume external MCP servers (stdio + streamable-HTTP), tools→registry, `arc mcp add/remove/list/status`, setup section. Impl notes below. |
+| 5.1 | `_design/0023-setup-hub-and-themes.md` | `arc setup` sidebar+content hub, themes |
+| 5.0 | `_design/0020-subagent-dispatch.md` (+0021 gcs, 0022 video) | sub-agent dispatch as a tool, GCS spillover |
+| (design) | `_design/0024-container-orchestration-and-job-dispatch.md` | Job-dispatch engine backends over a Docker service — NOT built yet |
 | 3.4 | `_design/0012-destructive-action-gate.md` | `safety_gate` plugin, 12 default patterns, per-session remember cache |
 | 3.3 | (this CLAUDE.md + `_architecture/`) | Doc pass — 5 authoring/reference guides |
 | 3.2 | `_design/0011-tui-polish.md` | Slash commands, tab complete, history, bottom toolbar with cost, thinking blocks |

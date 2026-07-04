@@ -118,6 +118,22 @@ class EventType:
     # sees the dispatched/returned pair as a single tool call).
     SUBAGENT_PROGRESS = "subagent.progress"
 
+    # MCP client integration (0025). arc consuming external MCP servers.
+    #   MCP_SERVERS_CONFIGURED — bridge start: which servers are enabled/known
+    #   MCP_SERVER_CONNECTED / _DISCONNECTED — per-server connection lifecycle
+    #   MCP_TOOLS_DISCOVERED — a server's tool list after connect
+    #   MCP_TOOL_CALLED / _RESULT — a call to an MCP-sourced tool + its outcome
+    #   MCP_SERVER_ERROR — a per-server failure (connect/list/call)
+    #   MCP_SERVER_QUARANTINED — a server disabled after failure_threshold strikes
+    MCP_SERVERS_CONFIGURED = "mcp.servers.configured"
+    MCP_SERVER_CONNECTED = "mcp.server.connected"
+    MCP_SERVER_DISCONNECTED = "mcp.server.disconnected"
+    MCP_TOOLS_DISCOVERED = "mcp.tools.discovered"
+    MCP_TOOL_CALLED = "mcp.tool.called"
+    MCP_TOOL_RESULT = "mcp.tool.result"
+    MCP_SERVER_ERROR = "mcp.server.error"
+    MCP_SERVER_QUARANTINED = "mcp.server.quarantined"
+
     # Catch-all for non-categorized observations
     EVENT_EMITTED = "event.emitted"
 

@@ -191,6 +191,32 @@ plugins:
         token_estimate_chars_per: 4 # chars/N ≈ tokens, ~10-20% accurate
       hooks_order:
         pack_context: 100
+    # MCP client bridge (0025). Consumes external MCP servers and surfaces their
+    # tools into the registry. Empty `servers` = connects to nothing (no cost).
+    # Add servers to integrate a standalone service (e.g. the container
+    # orchestrator) or a third-party MCP server. Needs the `mcp` extra:
+    # `pip install "arc[mcp]"`. Toggle whole-bridge here; per-server in `arc setup`.
+    - name: mcp
+      config:
+        failure_threshold: 3        # per-server strikes before quarantine
+        call_timeout_s: 30          # default per-tool-call timeout
+        servers: []
+        #   - name: container        # -> tools prefixed `container_`
+        #     transport: http        # http | stdio
+        #     url: http://127.0.0.1:8770/mcp
+        #     enabled: true
+        #     tool_prefix: container
+        #     tools_allow: []        # empty = all; else allowlist of tool names
+        #     tools_deny: []
+        #   - name: proxmox
+        #     transport: stdio
+        #     command: ["uvx", "proxmox-mcp"]
+        #     env: {}
+        #     enabled: true
+        #     tool_prefix: proxmox
+      hooks_order:
+        on_session_start: 8         # connect + discover before tools are merged
+        on_session_end: 8           # disconnect cleanly
 
 # ── Sub-agents (0020) ───────────────────────────────────────────────────────
 # Optional. List installed sub-agent specs here to override fields (model,

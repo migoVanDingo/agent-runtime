@@ -280,7 +280,7 @@ def write_mcp_server_add(
         spec["env"] = dict(env)
     if cwd is not None:
         spec["cwd"] = cwd
-    if tool_prefix:
+    if tool_prefix is not None:  # "" is meaningful: no prefix
         spec["tool_prefix"] = tool_prefix
     if tools_allow:
         spec["tools_allow"] = list(tools_allow)
@@ -343,7 +343,7 @@ def write_mcp_server_add(
             srv["env"] = CommentedMap(env)
         if cwd:
             srv["cwd"] = cwd
-    if tool_prefix:
+    if tool_prefix is not None:  # "" is meaningful: no prefix
         srv["tool_prefix"] = tool_prefix
     if tools_allow:
         srv["tools_allow"] = CommentedSeq(tools_allow)

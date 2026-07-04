@@ -205,6 +205,12 @@ interactive print. Both use the comment-preserving writer at
   (comment-preserving, upsert, validates) — the same core `arc mcp add` uses. A
   CLI `--command` option must NOT use the default dest (`command` collides with
   the top-level subcommand dest); the mcp one is pinned to `mcp_command`.
+- **MCP `tool_prefix: ""` means NO prefix; unset means fall back to server name.**
+  `McpServerConfig.tool_prefix` is `str | None` (None = unset). This lets a
+  server like `cos` expose its tools under native names (`container_run`) instead
+  of `container_container_run`. The writer persists an explicit `""` (guards are
+  `if tool_prefix is not None`, not `if tool_prefix`). Needed so out-of-tree
+  sub-agents can reference MCP tools by a stable name in their allowlist.
 - **Don't escalate to the user mid-task** when working autonomously. The
   user's standing instruction is "knock it out, I'll review later." Make
   defensible judgment calls and document them in the design doc.

@@ -20,7 +20,9 @@ class McpServerConfig:
     name: str
     transport: str
     enabled: bool = True
-    tool_prefix: str = ""
+    # None = unset (fall back to the server name). An explicit "" means "no
+    # prefix" — tools keep their native names (e.g. cos's `container_run`).
+    tool_prefix: str | None = None
     tools_allow: tuple[str, ...] = ()
     tools_deny: tuple[str, ...] = ()
     # stdio
@@ -32,7 +34,7 @@ class McpServerConfig:
 
     @property
     def prefix(self) -> str:
-        return self.tool_prefix or self.name
+        return self.name if self.tool_prefix is None else self.tool_prefix
 
 
 @dataclass(frozen=True)
@@ -69,7 +71,8 @@ def parse_mcp_config(d: dict | None) -> McpConfig:
                 name=name,
                 transport=transport,
                 enabled=bool(raw.get("enabled", True)),
-                tool_prefix=str(raw.get("tool_prefix", "") or ""),
+                tool_prefix=(None if raw.get("tool_prefix") is None
+                             else str(raw.get("tool_prefix"))),
                 tools_allow=tuple(raw.get("tools_allow") or ()),
                 tools_deny=tuple(raw.get("tools_deny") or ()),
                 command=tuple(raw.get("command") or ()),

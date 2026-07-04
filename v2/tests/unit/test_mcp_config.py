@@ -25,6 +25,18 @@ def test_http_server_parsed():
     assert s.prefix == "c"
 
 
+def test_explicit_empty_prefix_means_no_prefix():
+    # "" is distinct from unset: it strips the prefix so tools keep native
+    # names (e.g. cos's `container_run` instead of `container_container_run`).
+    cfg = parse_mcp_config({
+        "servers": [
+            {"name": "container", "transport": "http", "url": "http://x/mcp",
+             "tool_prefix": ""},
+        ],
+    })
+    assert cfg.servers[0].prefix == ""
+
+
 def test_stdio_server_parsed():
     cfg = parse_mcp_config({
         "servers": [{"name": "prox", "transport": "stdio", "command": ["uvx", "prox-mcp"]}],

@@ -67,6 +67,50 @@ def messages_to_contents(messages: list[Message]) -> list[dict[str, Any]]:
     return out
 
 
+# JSON Schema keywords Gemini's function-declaration schema rejects outright.
+# `additionalProperties` (free-form dicts) has no Gemini equivalent; the draft
+# metadata keys are noise. Unions (`anyOf`/`oneOf`) are flattened separately.
+_GEMINI_DROP_KEYS = ("additionalProperties", "additional_properties", "$schema")
+_UNION_KEYS = ("anyOf", "any_of", "oneOf", "one_of")
+
+
+def sanitize_gemini_schema(node: Any) -> Any:
+    """Rewrite a JSON Schema into the subset Gemini function-calling accepts.
+
+    MCP tools (via FastMCP/pydantic) emit `anyOf: [X, {type: null}]` for
+    optional fields and `additionalProperties` for dicts — both 400 the Gemini
+    API. This collapses nullable unions to `type + nullable` and strips the
+    unsupported keys, recursively.
+    """
+    if isinstance(node, list):
+        return [sanitize_gemini_schema(x) for x in node]
+    if not isinstance(node, dict):
+        return node
+
+    node = dict(node)
+
+    for uk in _UNION_KEYS:
+        if uk not in node:
+            continue
+        options = node.pop(uk) or []
+        nullable = any(isinstance(o, dict) and o.get("type") == "null" for o in options)
+        non_null = [o for o in options if not (isinstance(o, dict) and o.get("type") == "null")]
+        chosen = non_null[0] if non_null else {}  # best-effort on multi-type unions
+        node = {**node, **chosen}  # chosen's type/items/etc. win
+        if nullable:
+            node["nullable"] = True
+
+    for bad in _GEMINI_DROP_KEYS:
+        node.pop(bad, None)
+
+    if isinstance(node.get("properties"), dict):
+        node["properties"] = {k: sanitize_gemini_schema(v) for k, v in node["properties"].items()}
+    if "items" in node:
+        node["items"] = sanitize_gemini_schema(node["items"])
+
+    return node
+
+
 def tools_to_gemini(tools: list[ToolSpec]) -> list[Any]:
     """Convert arc ToolSpecs to Gemini Tool(function_declarations=...)."""
     from google.genai import types
@@ -75,7 +119,7 @@ def tools_to_gemini(tools: list[ToolSpec]) -> list[Any]:
         types.FunctionDeclaration(
             name=t.name,
             description=t.description,
-            parameters=t.input_schema,
+            parameters=sanitize_gemini_schema(t.input_schema),
         )
         for t in tools
     ]

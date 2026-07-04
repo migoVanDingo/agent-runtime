@@ -244,3 +244,72 @@ def test_chat_exhausts_retries_raises(mock_client_cls, monkeypatch):
     with pytest.raises(RuntimeError, match="failed after 3 attempts"):
         provider.chat(req)
     assert mock_client.models.generate_content.call_count == 3
+
+
+# ── Schema sanitization (Gemini rejects anyOf / additionalProperties) ────────
+
+
+def test_sanitize_flattens_nullable_union():
+    from arc.providers._gemini_translation import sanitize_gemini_schema
+
+    out = sanitize_gemini_schema(
+        {"anyOf": [{"type": "string"}, {"type": "null"}], "default": None})
+    assert out["type"] == "string"
+    assert out["nullable"] is True
+    assert "anyOf" not in out
+
+
+def test_sanitize_strips_additional_properties():
+    from arc.providers._gemini_translation import sanitize_gemini_schema
+
+    out = sanitize_gemini_schema({"type": "object", "additionalProperties": True})
+    assert "additionalProperties" not in out
+    assert out["type"] == "object"
+
+
+def test_sanitize_recurses_into_array_items_and_properties():
+    from arc.providers._gemini_translation import sanitize_gemini_schema
+
+    # The exact shape MCP/FastMCP emits for `mounts: list[dict] | None`.
+    schema = {
+        "type": "object",
+        "properties": {
+            "mounts": {"anyOf": [
+                {"items": {"additionalProperties": True, "type": "object"}, "type": "array"},
+                {"type": "null"}]},
+        },
+    }
+    out = sanitize_gemini_schema(schema)
+    m = out["properties"]["mounts"]
+    assert m["type"] == "array" and m["nullable"] is True
+    assert m["items"]["type"] == "object"
+    assert "additionalProperties" not in m["items"]
+
+
+def test_tools_to_gemini_emits_no_rejected_keywords():
+    import json
+
+    from arc.providers._gemini_translation import tools_to_gemini
+
+    schema = {
+        "type": "object", "required": ["name"],
+        "properties": {
+            "name": {"type": "string"},
+            "env": {"anyOf": [{"additionalProperties": True, "type": "object"},
+                              {"type": "null"}]},
+            "ports": {"anyOf": [{"items": {"type": "string"}, "type": "array"},
+                                {"type": "null"}]},
+        },
+    }
+    gt = tools_to_gemini([ToolSpec(name="container_ensure", description="d",
+                                   input_schema=schema)])
+    params = gt[0].function_declarations[0].parameters
+    # exclude_none: a null field on the Schema proto isn't sent to the API; we
+    # only care that no union/additionalProperties value is actually POPULATED.
+    dumped = params.model_dump(exclude_none=True) if hasattr(params, "model_dump") else params
+    blob = json.dumps(dumped, default=str)
+    assert "any_of" not in blob and "anyOf" not in blob
+    assert "additional_properties" not in blob and "additionalProperties" not in blob
+    # optional fields survived as nullable, and array items are intact
+    assert dumped["properties"]["env"]["nullable"] is True
+    assert dumped["properties"]["ports"]["items"]["type"] in ("STRING", "string")

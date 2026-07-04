@@ -146,6 +146,9 @@ plugins:
           - '\\bchmod\\b\\s+(?:\\+s|[0-7]*7[0-7][0-7])'  # setuid or world-write
       hooks_order:
         before_tool_call: 10
+        # Learns the final tool list so delegate_only_tools can fail open
+        # when an owner sub-agent is absent. Only needed if you use that knob.
+        on_event: 100
     - name: safety-gate
       # Destructive-action confirmation. Pattern-matches commands like
       # `rm <file>`, `git reset --hard`, `git push --force`, etc., and

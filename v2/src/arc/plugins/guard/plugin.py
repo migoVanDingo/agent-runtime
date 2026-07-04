@@ -47,8 +47,17 @@ class GuardPlugin:
         # glob -> owner sub-agent tool name. A parent-session call to a matching
         # tool is denied with a hint to route through `owner`.
         self._delegate_only = dict(delegate_only_tools or {})
+        # Learned from session.started. None = not yet known → we DON'T enforce
+        # the delegate rule (fail open), so a missing owner never bricks a tool.
+        self._known_tools: set[str] | None = None
 
-    # ── Hook ───────────────────────────────────────────────────────────
+    # ── Hooks ──────────────────────────────────────────────────────────
+
+    def on_event(self, ctx, event) -> None:
+        # Capture the FINAL tool list (built-in + plugin + sub-agent tools) so
+        # the delegate rule can tell whether an owner sub-agent still exists.
+        if event.type == "session.started":
+            self._known_tools = set(event.payload.get("tools") or [])
 
     def before_tool_call(self, ctx, call: ToolCall) -> ToolCall | ToolDenial | None:
         # Allowlisted tools always pass through unchanged
@@ -61,8 +70,15 @@ class GuardPlugin:
         # stays correct if child plugins are ever opted in).
         if self._delegate_only and not inside_subagent():
             for glob, owner in self._delegate_only.items():
-                if fnmatch.fnmatchcase(call.name, glob):
-                    return ToolDenial(
+                if not fnmatch.fnmatchcase(call.name, glob):
+                    continue
+                # Fail open unless the owner sub-agent is actually available —
+                # if it's disabled/uninstalled, don't redirect to a tool that
+                # doesn't exist (that would brick the capability entirely).
+                # break (not return) so normal command checks still apply.
+                if self._known_tools is None or owner not in self._known_tools:
+                    break
+                return ToolDenial(
                         tool_call_id=call.tool_call_id,
                         name=call.name,
                         reason=(

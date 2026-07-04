@@ -62,8 +62,22 @@ def test_tools_not_in_allowlist_get_checked():
 # ── Delegate-only tools ─────────────────────────────────────────────────────
 
 
+class _Ev:
+    """Minimal session.started stand-in carrying the final tool list."""
+    def __init__(self, tools):
+        self.type = "session.started"
+        self.payload = {"tools": list(tools)}
+
+
+def _seen(g, *tools):
+    """Feed the guard the tool list it would learn from session.started."""
+    g.on_event(None, _Ev(tools))
+    return g
+
+
 def test_delegate_only_denies_parent_call_with_owner_hint():
-    g = _guard(delegate={"container_*": "subagent_container_expert"})
+    g = _seen(_guard(delegate={"container_*": "subagent_container_expert"}),
+              "container_run", "subagent_container_expert")
     result = g.before_tool_call(None, _call(name="container_run"))
     assert isinstance(result, ToolDenial)
     assert "subagent_container_expert" in result.reason
@@ -72,7 +86,8 @@ def test_delegate_only_denies_parent_call_with_owner_hint():
 def test_delegate_only_glob_matches_double_prefixed_name():
     # Works whether the MCP tool is registered as container_run or
     # container_container_run (unset vs empty tool_prefix).
-    g = _guard(delegate={"container_*": "subagent_container_expert"})
+    g = _seen(_guard(delegate={"container_*": "subagent_container_expert"}),
+              "container_container_run", "subagent_container_expert")
     assert isinstance(
         g.before_tool_call(None, _call(name="container_container_run")), ToolDenial)
 
@@ -80,26 +95,45 @@ def test_delegate_only_glob_matches_double_prefixed_name():
 def test_delegate_only_allows_inside_subagent():
     from arc.runtime.subagents.tripwire import subagent_scope
 
-    g = _guard(delegate={"container_*": "subagent_container_expert"})
+    g = _seen(_guard(delegate={"container_*": "subagent_container_expert"}),
+              "container_run", "subagent_container_expert")
     with subagent_scope():
         assert g.before_tool_call(None, _call(name="container_run")) is None
 
 
 def test_delegate_only_does_not_block_the_dispatch_tool():
     # The main agent must still be able to CALL the sub-agent.
-    g = _guard(delegate={"container_*": "subagent_container_expert"})
+    g = _seen(_guard(delegate={"container_*": "subagent_container_expert"}),
+              "container_run", "subagent_container_expert")
     assert g.before_tool_call(None, _call(name="subagent_container_expert")) is None
 
 
 def test_delegate_only_ignores_unrelated_tools():
-    g = _guard(delegate={"container_*": "subagent_container_expert"})
+    g = _seen(_guard(delegate={"container_*": "subagent_container_expert"}),
+              "container_run", "subagent_container_expert", "ghidra_decompile")
     assert g.before_tool_call(None, _call(name="ghidra_decompile")) is None
 
 
 def test_delegate_only_allowlist_wins():
     # An allowlisted tool bypasses the delegate rule too.
-    g = _guard(allow=["container_run"],
-               delegate={"container_*": "subagent_container_expert"})
+    g = _seen(_guard(allow=["container_run"],
+                     delegate={"container_*": "subagent_container_expert"}),
+              "container_run", "subagent_container_expert")
+    assert g.before_tool_call(None, _call(name="container_run")) is None
+
+
+def test_delegate_only_fails_open_when_owner_absent():
+    # Sub-agent disabled/uninstalled: the owner tool isn't in the registry,
+    # so the rule must NOT brick container_run — it passes through.
+    g = _seen(_guard(delegate={"container_*": "subagent_container_expert"}),
+              "container_run")  # note: owner NOT present
+    assert g.before_tool_call(None, _call(name="container_run")) is None
+
+
+def test_delegate_only_fails_open_before_tools_are_known():
+    # Before session.started is observed, we don't know the tool set, so we
+    # don't enforce (never brick on a misconfigured/missing on_event wiring).
+    g = _guard(delegate={"container_*": "subagent_container_expert"})
     assert g.before_tool_call(None, _call(name="container_run")) is None
 
 

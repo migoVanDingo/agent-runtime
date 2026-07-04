@@ -117,6 +117,13 @@ plugins:
         # Tools in this list bypass all guard checks. The runtime built-in
         # `ls` is safe by construction (read-only directory listing).
         allowlist_tools: [ls]
+        # Tool-name globs the MAIN session may not call directly — allowed
+        # only inside the owning sub-agent's session. Forces orchestration
+        # through a sub-agent that verifies before reporting. Maps glob ->
+        # the sub-agent tool to redirect to. Empty by default.
+        delegate_only_tools: {}
+        #   container_*: subagent_container_expert
+        #   network_*: subagent_container_expert
         # Regex patterns checked against the `command` input of any tool.
         # A match → hard deny via ToolDenial.
         blocklist_patterns:

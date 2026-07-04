@@ -74,6 +74,7 @@ def _build_guard(cfg: dict, build_ctx: PluginBuildContext) -> Any:
         allowlist_tools=list(cfg.get("allowlist_tools", [])),
         blocklist_patterns=list(cfg.get("blocklist_patterns", [])),
         escalation_required_patterns=list(cfg.get("escalation_required_patterns", [])),
+        delegate_only_tools=dict(cfg.get("delegate_only_tools", {})),
         user_gate=gate,
     )
 

@@ -1,21 +1,27 @@
 """Guard plugin — before_tool_call policy enforcement.
 
-Three buckets in config:
+Four buckets in config:
   allowlist_tools                tools that bypass all checks
+  delegate_only_tools            tool-name globs a PARENT session may not call
+                                 directly — allowed only inside a sub-agent
+                                 (forces orchestration through its verifying
+                                 owner). Denied with a hint naming the owner.
   blocklist_patterns             regex against command string → hard deny
   escalation_required_patterns   regex → prompt the gate (auto-denied
                                  if the gate is a NoOpGate)
 
 Patterns are only checked against `tool_input["command"]`. For tools
 without a command field (everything except bash_exec in phase 2.1),
-the pattern checks don't fire — only the allowlist matters.
+the pattern checks don't fire — only the allowlist + delegate rules matter.
 """
 from __future__ import annotations
 
+import fnmatch
 import re
 from typing import Any
 
 from arc.runtime.hooks import ToolCall, ToolDenial
+from arc.runtime.subagents.tripwire import inside_subagent
 from arc.user_gate import EscalationRequest, UserGate
 
 
@@ -32,11 +38,15 @@ class GuardPlugin:
         blocklist_patterns: list[str],
         escalation_required_patterns: list[str],
         user_gate: UserGate,
+        delegate_only_tools: dict[str, str] | None = None,
     ) -> None:
         self._allowlist = set(allowlist_tools)
         self._block_res = [re.compile(p) for p in blocklist_patterns]
         self._escalate_res = [re.compile(p) for p in escalation_required_patterns]
         self._gate = user_gate
+        # glob -> owner sub-agent tool name. A parent-session call to a matching
+        # tool is denied with a hint to route through `owner`.
+        self._delegate_only = dict(delegate_only_tools or {})
 
     # ── Hook ───────────────────────────────────────────────────────────
 
@@ -44,6 +54,24 @@ class GuardPlugin:
         # Allowlisted tools always pass through unchanged
         if call.name in self._allowlist:
             return None
+
+        # Delegate-only tools: a parent session may not call them directly.
+        # Inside a sub-agent's session the owner runs them freely (the guard
+        # isn't in the child registry today, but gate explicitly so the rule
+        # stays correct if child plugins are ever opted in).
+        if self._delegate_only and not inside_subagent():
+            for glob, owner in self._delegate_only.items():
+                if fnmatch.fnmatchcase(call.name, glob):
+                    return ToolDenial(
+                        tool_call_id=call.tool_call_id,
+                        name=call.name,
+                        reason=(
+                            f"{call.name!r} cannot be called directly from the main "
+                            f"session. Route this work through {owner} — the sub-agent "
+                            f"that owns it and health-checks before reporting. Call "
+                            f"{owner} with a task describing the goal instead."
+                        ),
+                    )
 
         # Pattern checks only apply to inputs with a command field
         command = call.input.get("command")

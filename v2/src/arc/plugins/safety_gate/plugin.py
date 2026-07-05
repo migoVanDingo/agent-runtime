@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from arc.plugins.safety_gate.catalog import DEFAULT_PATTERNS, Pattern, catalog_by_name
+from arc.plugins.safety_gate.catalog import Pattern, catalog_by_name
 from arc.runtime.events import EventType, RuntimeEvent
 from arc.runtime.hooks import ToolCall, ToolDenial
 from arc.user_gate import EscalationRequest, UserGate

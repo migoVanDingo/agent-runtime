@@ -307,6 +307,35 @@ def test_tool_call_cap_stops_dispatch_within_iteration():
     assert outcome.n_tool_calls == 2  # third was capped
 
 
+def test_tool_call_cap_emits_result_for_every_tool_use():
+    """Capping mid-batch must still emit a tool_result per tool_use, or the
+    provider 400s on a tool_use with no matching result (they pair by order)."""
+    multi_tool = LLMResponse(
+        content=[
+            ContentBlock(type="tool_use", tool_use_id="a", tool_name="echo",
+                         tool_input={"text": "1"}),
+            ContentBlock(type="tool_use", tool_use_id="b", tool_name="echo",
+                         tool_input={"text": "2"}),
+            ContentBlock(type="tool_use", tool_use_id="c", tool_name="echo",
+                         tool_input={"text": "3"}),
+        ],
+        stop_reason="tool_use", input_tokens=1, output_tokens=1, raw={},
+    )
+    done = LLMResponse(content=[ContentBlock(type="text", text="done")],
+                       stop_reason="end_turn", input_tokens=1, output_tokens=1, raw={})
+    sess = _build_session(FakeProvider([multi_tool, done]), tools=[EchoTool()],
+                          max_tool_calls_per_turn=2)
+    sess.run_turn("multiple tools")
+
+    msgs = sess._messages
+    asst = next(m for m in msgs if m.role == "assistant" and isinstance(m.content, list)
+                and sum(1 for b in m.content if getattr(b, "type", None) == "tool_use") == 3)
+    tail = msgs[msgs.index(asst) + 1:]
+    tool_msgs = [m for m in tail if m.role == "tool"]
+    assert len(tool_msgs) == 3          # 2 executed + 1 synthetic — none dangling
+    assert any("skipped" in str(m.content) for m in tool_msgs)
+
+
 # ── Hooks ──────────────────────────────────────────────────────────────────
 
 

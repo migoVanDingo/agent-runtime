@@ -38,6 +38,30 @@ _LOCAL_FREE_RATES: dict[str, Any] = {
 }
 
 
+def _per_million(inp: float, out: float) -> dict[str, float]:
+    return {"input_cost_per_token": inp / 1e6, "output_cost_per_token": out / 1e6}
+
+
+# Curated fallback rates ($ per 1M tokens) for arc's known models — consulted
+# when the LiteLLM fetch fails (offline / macOS-SSL) OR the model is too new for
+# LiteLLM's DB (e.g. gemini-3.5-flash). Keep in sync with provider price pages;
+# these are list prices (no cache/batch discounts). Verified 2026-07.
+_STATIC_RATES: dict[str, dict[str, float]] = {
+    # Anthropic
+    "claude-opus-4-8": _per_million(5, 25),
+    "claude-opus-4-7": _per_million(5, 25),
+    "claude-opus-4-6": _per_million(5, 25),
+    "claude-sonnet-5": _per_million(3, 15),
+    "claude-sonnet-4-6": _per_million(3, 15),
+    "claude-haiku-4-5": _per_million(1, 5),
+    "claude-fable-5": _per_million(10, 50),
+    # Google Gemini
+    "gemini-3.5-flash": _per_million(1.5, 9),
+    "gemini-2.5-pro": _per_million(1.25, 10),
+    "gemini-2.5-flash": _per_million(0.30, 2.50),
+}
+
+
 class PricingTable:
     """A lazy, cached, gracefully-failing pricing lookup.
 
@@ -68,25 +92,25 @@ class PricingTable:
             return _LOCAL_FREE_RATES
 
         data = self._get_data()
-        if not data:
-            return None
+        if data:
+            # Tried in order; first hit wins
+            candidates = [
+                f"{provider}/{model}",
+                model,
+                # Some Gemini models in LiteLLM have a leading "gemini/" prefix
+                f"gemini/{model}" if provider == "gemini" else None,
+                # Anthropic sometimes uses "anthropic." prefix in API or "claude-X-Y-latest"
+                f"anthropic.{model}" if provider == "anthropic" else None,
+            ]
+            for c in candidates:
+                if c and c in data:
+                    entry = data[c]
+                    if isinstance(entry, dict) and "input_cost_per_token" in entry:
+                        return entry
 
-        # Tried in order; first hit wins
-        candidates = [
-            f"{provider}/{model}",
-            model,
-            # Some Gemini models in LiteLLM have a leading "gemini/" prefix
-            f"gemini/{model}" if provider == "gemini" else None,
-            # Anthropic sometimes uses "anthropic." prefix in API or "claude-X-Y-latest"
-            f"anthropic.{model}" if provider == "anthropic" else None,
-        ]
-        for c in candidates:
-            if c and c in data:
-                entry = data[c]
-                if isinstance(entry, dict) and "input_cost_per_token" in entry:
-                    return entry
-
-        return None
+        # Static fallback — offline / fetch-failed, or a model newer than
+        # LiteLLM's DB. Keyed by bare model name.
+        return _STATIC_RATES.get(model) or _STATIC_RATES.get(f"{provider}/{model}")
 
     def estimate_cost_usd(self, *, provider: str, model: str,
                          input_tokens: int, output_tokens: int) -> float | None:

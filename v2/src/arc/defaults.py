@@ -142,6 +142,10 @@ plugins:
           - 'mkfs'                           # formatting filesystems
           - 'shutdown'
           - 'reboot'
+          # Force container work through the cos tools / container sub-agent
+          # instead of a raw host shell (bash_exec). Applies in sub-agents too
+          # now that children inherit the guard. Remove to allow raw docker.
+          - '\\bdocker(-compose)?\\b'
         # Regex patterns that require interactive approval.
         # `arc run` (headless) auto-denies these.
         escalation_required_patterns:

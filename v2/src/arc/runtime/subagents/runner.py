@@ -20,15 +20,13 @@ from __future__ import annotations
 
 import threading
 import time
-from dataclasses import replace as dc_replace
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from arc.config import Config, ProviderConfig, RetryConfig, RuntimeConfig
 from arc.runtime.bus import EventBus, HookRegistry
 from arc.runtime.events import EventType, RuntimeEvent, Severity
-from arc.runtime.hooks import Cancelled, Message
+from arc.runtime.hooks import Cancelled
 from arc.runtime.ids import new_session_id
 from arc.runtime.scope import scoped
 from arc.runtime.subagents.errors import (
@@ -56,6 +54,19 @@ _DEFAULT_API_KEY_ENV = {
 # Backoff schedule for transient-error retries (seconds).
 # Three slots so we can retry up to spec.max_transient_retries (default 2).
 _BACKOFF_SCHEDULE = (0.5, 2.0, 8.0)
+
+
+# H1: sub-agent child sessions get a hard-denylist guard built from the parent's
+# guard config — the parent's blocklist (rm -rf, dd, mkfs, the docker block, …)
+# applies inside sub-agents too. Deliberately NOT propagated to the child:
+#   - escalation patterns (curl/wget): they'd prompt the parent's interactive
+#     gate from the child's dispatch thread (hang/corrupt the TUI), and the
+#     container sub-agent legitimately needs curl for health checks.
+#   - safety_gate: its confirm-or-deny model can't run headless (a NoOp gate
+#     would auto-deny the `>` redirect the sub-agent uses to write Dockerfiles).
+#   - delegate_only_tools: that rule is parent-only (inside_subagent()-gated).
+# So the child guard = blocklist only, empty escalation, NoOp gate. Hard denies
+# are enforced; curl / file writes / cos tools stay available.
 
 
 class SubAgentRunner:
@@ -365,6 +376,12 @@ class SubAgentRunner:
             hooks_order={"pause_check": 1, "on_event": 100},
         )
 
+        # H1: police the child's tools with a hard-denylist guard (see the
+        # module comment on why blocklist-only).
+        child_guard = self._child_policy_guard()
+        if child_guard is not None:
+            child_registry.register(child_guard, hooks_order={"before_tool_call": 10})
+
         # Build the child AgentSession.
         from arc.runtime.loop import AgentSession
         child_session = AgentSession(
@@ -390,6 +407,10 @@ class SubAgentRunner:
         outcome_status = "ok"
         error_message: str | None = None
         final_text = ""
+        # Expose this dispatch's cancel_flag so a SIGINT (Ctrl+C) can trip it —
+        # the child observes it at its next iteration boundary. See cancel.py.
+        from arc.runtime.subagents import cancel as _cancel
+        _cancel.register(cancel_flag)
         try:
             with subagent_scope(), scoped(f"subagent:{spec.name}"):
                 child_session.start()
@@ -414,6 +435,7 @@ class SubAgentRunner:
             error_message = f"{type(exc).__name__}: {exc}"
         finally:
             timer.cancel()
+            _cancel.unregister(cancel_flag)
 
         wallclock = time.monotonic() - wall_start
 
@@ -460,7 +482,28 @@ class SubAgentRunner:
             retries_attempted=retries_so_far,
         )
 
-    # ── Child config / tool construction ───────────────────────────────────
+    # ── Child policy / config / tool construction ──────────────────────────
+
+    def _child_policy_guard(self):
+        """A hard-denylist guard for the child, built from the parent's guard
+        config. blocklist only — no escalation, no gate, no delegate rule.
+        Returns None if the parent has no guard blocklist configured."""
+        guard_cfg: dict = {}
+        for entry in self._parent_config.plugins.enabled:
+            if entry.name == "guard" and entry.enabled:
+                guard_cfg = entry.config or {}
+                break
+        if not guard_cfg.get("blocklist_patterns"):
+            return None
+        from arc.plugins.guard import GuardPlugin
+        from arc.user_gate import NoOpGate
+        return GuardPlugin(
+            allowlist_tools=list(guard_cfg.get("allowlist_tools", [])),
+            blocklist_patterns=list(guard_cfg.get("blocklist_patterns", [])),
+            escalation_required_patterns=[],   # no interactive prompts from the child thread
+            delegate_only_tools={},            # delegate rule is parent-only
+            user_gate=NoOpGate(verbose=False),
+        )
 
     def _build_child_tool_registry(self, spec: SubAgentSpec) -> ToolRegistry:
         """Intersect spec.tools with the parent's registry. Missing = error."""

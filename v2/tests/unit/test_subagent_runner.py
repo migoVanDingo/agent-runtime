@@ -143,6 +143,130 @@ def test_dispatch_ok(monkeypatch):
     assert EventType.SUBAGENT_RETURNED in types
 
 
+def test_child_inherits_guard_and_denies_blocked_command(monkeypatch):
+    """H1: a sub-agent's tools are policed by a guard built from the parent's
+    blocklist. A blocked command called INSIDE the child is denied, not run."""
+    import dataclasses
+
+    from arc.config import PluginEntry
+    from arc.tools.base import ToolInputSchema
+
+    class _FakeSh:
+        name = "sh"
+        description = "run a shell command"
+        def __init__(self):
+            self.executed = False
+        def bind_bus(self, bus):
+            pass
+        @property
+        def input_schema(self):
+            return ToolInputSchema(properties={"command": {"type": "string"}},
+                                   required=["command"])
+        def execute(self, input):
+            self.executed = True
+            return "EXECUTED"
+
+    sh = _FakeSh()
+    parent_tools = ToolRegistry()
+    parent_tools.register(sh)
+
+    spec = SubAgentSpec(
+        name="worker", description="d", provider="anthropic", model="m",
+        system_prompt="p", tools=("sh",), timeout_s=10.0, max_turns=3,
+    )
+    reg = _registry_with({"worker": spec})
+
+    # Parent config carries a guard blocklist → the child guard is built from it.
+    base = _parent_config()
+    guard_entry = PluginEntry(name="guard", enabled=True,
+                              config={"blocklist_patterns": [r"rm\s+-rf"]},
+                              hooks_order={"before_tool_call": 10})
+    parent_config = dataclasses.replace(
+        base, plugins=dataclasses.replace(base.plugins, enabled=[guard_entry]))
+
+    parent_bus = EventBus(HookRegistry(failure_threshold=3, exception_message_max_chars=500))
+
+    fake = FakeProvider([
+        LLMResponse(content=[ContentBlock(type="tool_use", tool_use_id="t1",
+                    tool_name="sh", tool_input={"command": "rm -rf /tmp/x"})],
+                    stop_reason="tool_use", input_tokens=1, output_tokens=1, raw={}),
+        LLMResponse(content=[ContentBlock(type="text", text="done")],
+                    stop_reason="end_turn", input_tokens=1, output_tokens=1, raw={}),
+    ])
+    monkeypatch.setattr("arc.providers.build", lambda cfg: fake)
+
+    runner = SubAgentRunner(
+        registry=reg, parent_bus=parent_bus, parent_tools=parent_tools,
+        parent_config=parent_config, arc_home=Path("/tmp"), sessions_dir=Path("/tmp"),
+    )
+    result = runner.dispatch("worker", "go", parent_session_id="parent_1")
+
+    assert result.status == "ok"
+    assert sh.executed is False   # guard denied the blocked command inside the child
+
+
+def test_cancel_module_two_stage_semantics():
+    """cancel_active trips a registered flag once (True), then reports False
+    (second Ctrl+C → escalate)."""
+    import threading
+
+    from arc.runtime.subagents import cancel
+
+    assert cancel.cancel_active() is False       # nothing active
+    flag = threading.Event()
+    cancel.register(flag)
+    try:
+        assert cancel.cancel_active() is True     # stage 1: tripped
+        assert flag.is_set()
+        assert cancel.cancel_active() is False    # stage 2: already set → escalate
+    finally:
+        cancel.unregister(flag)
+    assert cancel.cancel_active() is False
+
+
+def test_active_dispatch_is_cancellable(monkeypatch):
+    """A running dispatch registers its cancel_flag; tripping it (as the SIGINT
+    handler does) cancels the child and dispatch returns status=cancelled."""
+    from arc.runtime.subagents import cancel as _cancel
+    from arc.tools.base import ToolInputSchema
+
+    class _TripTool:
+        name = "trip"
+        description = "trips the active cancel flag (simulates Ctrl+C mid-tool)"
+        def bind_bus(self, bus):
+            pass
+        @property
+        def input_schema(self):
+            return ToolInputSchema(properties={}, required=[])
+        def execute(self, input):
+            _cancel.cancel_active()   # Ctrl+C lands while this tool runs
+            return "tripped"
+
+    parent_tools = ToolRegistry()
+    parent_tools.register(_TripTool())
+    spec = SubAgentSpec(name="worker", description="d", provider="anthropic",
+                        model="m", system_prompt="p", tools=("trip",),
+                        timeout_s=10.0, max_turns=5)
+    reg = _registry_with({"worker": spec})
+    parent_bus = EventBus(HookRegistry(failure_threshold=3, exception_message_max_chars=500))
+
+    fake = FakeProvider([
+        LLMResponse(content=[ContentBlock(type="tool_use", tool_use_id="t1",
+                    tool_name="trip", tool_input={})],
+                    stop_reason="tool_use", input_tokens=1, output_tokens=1, raw={}),
+        LLMResponse(content=[ContentBlock(type="text", text="unreached")],
+                    stop_reason="end_turn", input_tokens=1, output_tokens=1, raw={}),
+    ])
+    monkeypatch.setattr("arc.providers.build", lambda cfg: fake)
+
+    runner = SubAgentRunner(
+        registry=reg, parent_bus=parent_bus, parent_tools=parent_tools,
+        parent_config=_parent_config(), arc_home=Path("/tmp"), sessions_dir=Path("/tmp"),
+    )
+    result = runner.dispatch("worker", "go", parent_session_id="p")
+    assert result.status == "cancelled"
+
+
 def test_parent_bus_does_not_see_child_internals(monkeypatch):
     """Child's llm.call.* and turn.* events stay on the child's bus."""
     spec = SubAgentSpec(

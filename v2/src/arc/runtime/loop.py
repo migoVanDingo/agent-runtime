@@ -468,8 +468,25 @@ class AgentSession:
                     break
 
                 # 3i. Dispatch tools
-                for block in tool_uses:
+                for i, block in enumerate(tool_uses):
                     if n_tool_calls >= cap_tools:
+                        # Cap tripped mid-batch. The assistant message already
+                        # holds ALL tool_use blocks, so every remaining one needs
+                        # a matching tool_result or the provider 400s on a
+                        # tool_use with no result (providers pair by order).
+                        # Emit synthetic "skipped" results for the tail first.
+                        for rem in tool_uses[i:]:
+                            self._messages.append(Message(
+                                role="tool",
+                                content=[{
+                                    "function_response": {
+                                        "name": rem.tool_name or "",
+                                        "response": {"result":
+                                            "skipped: tool-call cap reached for this turn"},
+                                    }
+                                }],
+                                name=rem.tool_name or "",
+                            ))
                         self._messages.append(Message(
                             role="user",
                             content=self.config.runtime.tool_call_cap_message,

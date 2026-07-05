@@ -64,13 +64,27 @@ def test_lookup_unknown_model_returns_none(tmp_path):
     assert info is None
 
 
-def test_lookup_with_no_data_returns_none(tmp_path):
-    """Cache missing AND fetch fails → None forever."""
+def test_lookup_no_data_falls_back_to_static(tmp_path):
+    """Cache missing AND fetch fails → a KNOWN model still resolves via the
+    curated static fallback; an unknown model is still None."""
     cache = tmp_path / "missing.json"
     p = PricingTable(cache_path=cache)
     with patch("arc.tui.pricing.urlopen", side_effect=OSError("no net")):
-        info = p.lookup_for(provider="anthropic", model="claude-haiku-4-5")
-    assert info is None
+        known = p.lookup_for(provider="anthropic", model="claude-haiku-4-5")
+        unknown = p.lookup_for(provider="anthropic", model="model-that-doesnt-exist")
+    assert known is not None and known["input_cost_per_token"] > 0
+    assert unknown is None
+
+
+def test_static_fallback_covers_new_gemini_models(tmp_path):
+    """gemini-3.5-flash (too new for LiteLLM) resolves via the static table —
+    this is what makes sub-agent cost non-zero."""
+    p = PricingTable(cache_path=tmp_path / "missing.json")
+    with patch("arc.tui.pricing.urlopen", side_effect=OSError("no net")):
+        r = p.lookup_for(provider="gemini", model="gemini-3.5-flash")
+    assert r is not None
+    assert r["input_cost_per_token"] == pytest.approx(1.5 / 1e6)
+    assert r["output_cost_per_token"] == pytest.approx(9 / 1e6)
 
 
 # ── estimate_cost_usd ─────────────────────────────────────────────────────

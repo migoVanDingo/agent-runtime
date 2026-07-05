@@ -470,25 +470,36 @@ class TUIApp:
     # ── SIGINT handling ───────────────────────────────────────────────────
 
     def _install_pause_on_sigint(self):
-        """Set a SIGINT handler that pauses the agent (instead of killing it).
+        """Set a two-stage SIGINT (Ctrl+C) handler for when the agent is working.
 
         Returns the previous handler so we can restore it on exit.
+
+        Stage 1 — a sub-agent is running: cancel it (trip its cancel_flag; the
+        child stops at its next iteration boundary and the parent resumes).
+        Stage 2 — no sub-agent (or it's already cancelling): pause the turn.
 
         Only takes effect when prompt_toolkit isn't actively reading input.
         While reading, prompt_toolkit intercepts Ctrl+C as a key and raises
         KeyboardInterrupt — that path already exits the TUI cleanly.
         """
         import signal
-        # Find the pause-resume plugin if registered
         pause_plugin = self._find_pause_plugin()
-        if pause_plugin is None:
-            return None  # nothing to do — no plugin to receive the trigger
 
         def _handler(signum, frame):
             try:
-                pause_plugin.request_pause()
+                from arc.runtime.subagents import cancel as _cancel
+                if _cancel.cancel_active():
+                    return  # stage 1: cancelled the running sub-agent
             except Exception:
-                pass  # last thing we want is a signal handler raising
+                pass
+            # stage 2: bail the turn (pause), or default-bail if no pause plugin.
+            if pause_plugin is not None:
+                try:
+                    pause_plugin.request_pause()
+                except Exception:
+                    pass  # last thing we want is a signal handler raising
+            else:
+                raise KeyboardInterrupt
 
         try:
             return signal.signal(signal.SIGINT, _handler)

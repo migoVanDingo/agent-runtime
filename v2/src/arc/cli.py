@@ -26,7 +26,9 @@ import argparse
 import json
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from arc import __version__
 
@@ -427,6 +429,64 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
+# ── Shared session wiring ──────────────────────────────────────────────────
+
+
+@dataclass
+class BuiltSession:
+    session: Any
+    bus: Any
+    registry: Any
+    plugins: list
+    session_id: str
+
+
+def build_session(cfg, paths, *, provider, tools, subagent_registry,
+                  gate=None, session_id=None, extra_plugins=(),
+                  initial_messages=None) -> BuiltSession:
+    """Wire a fresh AgentSession from its parts — the shared core the run,
+    interactive, replay, resume and rerun commands all need.
+
+    Callers supply provider / tools / subagent_registry (which differ per
+    command) plus an optional gate and command-specific `extra_plugins`
+    (a list of (plugin, hooks_order) pairs, e.g. max_cost). Returns the session
+    plus its bus / registry / built plugins so the caller can start it and, if
+    needed, post-tweak a plugin (e.g. swap the gate for interactive resume).
+    """
+    from arc.plugins import PluginBuildContext, build as build_plugins
+    from arc.runtime.bus import EventBus, HookRegistry
+    from arc.runtime.ids import new_session_id
+    from arc.runtime.loop import AgentSession
+
+    registry = HookRegistry(
+        failure_threshold=cfg.plugins.failure_threshold,
+        exception_message_max_chars=cfg.plugins.exception_message_max_chars,
+    )
+    bus = EventBus(registry)
+    sid = session_id or new_session_id()
+    plugins = build_plugins(cfg.plugins, PluginBuildContext(
+        sessions_dir=paths.sessions_dir,
+        session_id=sid,
+        config_snapshot_yaml=paths.config_file.read_text(),
+        user_gate=gate,
+        bus=bus,
+    ))
+    for built in plugins:
+        registry.register(built.instance, hooks_order=built.hooks_order)
+    for plugin, hooks_order in extra_plugins:
+        registry.register(plugin, hooks_order=hooks_order)
+    kwargs = {}
+    if initial_messages is not None:
+        kwargs["initial_messages"] = initial_messages
+    session = AgentSession(
+        config=cfg, provider=provider, tools=tools,
+        registry=registry, bus=bus, session_id=sid,
+        subagent_registry=subagent_registry, **kwargs,
+    )
+    return BuiltSession(session=session, bus=bus, registry=registry,
+                        plugins=plugins, session_id=sid)
+
+
 # ── Subcommand impls ───────────────────────────────────────────────────────
 
 
@@ -612,7 +672,6 @@ def _cmd_config_path(home_override: str | None) -> int:
 def _cmd_config_show(home_override: str | None) -> int:
     """Print the resolved config (as YAML) for debugging."""
     from arc.bootstrap import paths_for, resolve_home
-    from arc.config import load
     p = paths_for(resolve_home(home_override))
     if not p.config_file.exists():
         print(f"no config at {p.config_file}", file=sys.stderr)
@@ -705,12 +764,9 @@ def _cmd_run(home_override: str | None, *, prompt: str) -> int:
 
     from arc.bootstrap import bootstrap, paths_for, resolve_home
     from arc.config import load
-    from arc.plugins import PluginBuildContext, build as build_plugins
     from arc.providers import build as build_provider
-    from arc.runtime.bus import EventBus, HookRegistry
-    from arc.runtime.ids import new_session_id
-    from arc.runtime.loop import AgentSession
     from arc.tools import build as build_tools
+    from arc.user_gate import NoOpGate
 
     home = resolve_home(home_override)
     bootstrap(home)  # idempotent — creates layout on first run
@@ -725,38 +781,15 @@ def _cmd_run(home_override: str | None, *, prompt: str) -> int:
         paths, cfg, interactive=False,
     )
 
-    # Wire everything together
-    provider = build_provider(cfg.provider)
-    tools = build_tools(cfg.tools)
-    registry = HookRegistry(
-        failure_threshold=cfg.plugins.failure_threshold,
-        exception_message_max_chars=cfg.plugins.exception_message_max_chars,
-    )
-    bus = EventBus(registry)
-
-    session_id = new_session_id()
-    config_snapshot_yaml = paths.config_file.read_text()
-
-    # Headless mode: any guard escalation auto-denies. The NoOpGate logs
-    # to stderr so the user can see why a tool was blocked.
-    from arc.user_gate import NoOpGate
-    gate = NoOpGate()
-
-    plugins = build_plugins(cfg.plugins, PluginBuildContext(
-        sessions_dir=paths.sessions_dir,
-        session_id=session_id,
-        config_snapshot_yaml=config_snapshot_yaml,
-        user_gate=gate,
-        bus=bus,
-    ))
-    for built in plugins:
-        registry.register(built.instance, hooks_order=built.hooks_order)
-
-    sess = AgentSession(
-        config=cfg, provider=provider, tools=tools,
-        registry=registry, bus=bus, session_id=session_id,
+    # Headless mode: any guard escalation auto-denies (NoOpGate logs to stderr).
+    built = build_session(
+        cfg, paths,
+        provider=build_provider(cfg.provider),
+        tools=build_tools(cfg.tools),
         subagent_registry=_make_subagent_registry(cfg, home),
+        gate=NoOpGate(),
     )
+    sess, bus = built.session, built.bus
 
     try:
         sess.start()
@@ -795,9 +828,8 @@ def _cmd_replay(
     if session_id is None:
         return _cmd_replay_menu(home_override)
 
-    from arc.bootstrap import bootstrap, paths_for, resolve_home
+    from arc.bootstrap import paths_for, resolve_home
     from arc.config import load
-    from arc.plugins import PluginBuildContext, build as build_plugins
     from arc.providers import build as build_provider
     from arc.replay import (
         MissingRecordingError,
@@ -808,9 +840,7 @@ def _cmd_replay(
         load as load_replay,
     )
     from arc.replay.override import OverrideError, apply_override
-    from arc.runtime.bus import EventBus, HookRegistry
-    from arc.runtime.ids import new_session_id
-    from arc.runtime.loop import AgentSession
+    from arc.runtime.subagents.registry import SubAgentRegistry
 
     home = resolve_home(home_override)
     paths = paths_for(home)
@@ -861,24 +891,19 @@ def _cmd_replay(
     else:
         provider = ReplayProvider(replay_data.llm_responses)
 
-    registry = HookRegistry(
-        failure_threshold=cfg.plugins.failure_threshold,
-        exception_message_max_chars=cfg.plugins.exception_message_max_chars,
+    # Replay serves recorded tool results (incl. subagent_* tools) from the
+    # ReplayingToolRegistry — do NOT re-merge live sub-agents (empty registry),
+    # or their tool names collide with the recorded ones.
+    built_session = build_session(
+        cfg, paths, provider=provider, tools=tools,
+        subagent_registry=SubAgentRegistry(builtins={}),
     )
-    bus = EventBus(registry)
+    sess, bus, registry = built_session.session, built_session.bus, built_session.registry
+    new_session_id_ = built_session.session_id
 
-    new_session_id_ = new_session_id()
-    plugins = build_plugins(cfg.plugins, PluginBuildContext(
-        sessions_dir=paths.sessions_dir,
-        session_id=new_session_id_,
-        config_snapshot_yaml=paths.config_file.read_text(),
-        bus=bus,
-    ))
-    for built in plugins:
-        registry.register(built.instance, hooks_order=built.hooks_order)
-
-    # 0019: inject max_cost plugin if requested.  Lives outside cfg.plugins
-    # because the cap is a per-invocation flag, not a config-file setting.
+    # 0019: inject max_cost plugin if requested. Lives outside cfg.plugins
+    # (the cap is a per-invocation flag) and needs the bus, so it's registered
+    # after build_session but before start().
     max_cost_plugin = None
     if max_cost_usd is not None and max_cost_usd > 0:
         from arc.plugins.max_cost import MaxCostPlugin
@@ -889,12 +914,6 @@ def _cmd_replay(
         )
         max_cost_plugin.bind_bus(bus)
         registry.register(max_cost_plugin, hooks_order={})
-
-    sess = AgentSession(
-        config=cfg, provider=provider, tools=tools,
-        registry=registry, bus=bus, session_id=new_session_id_,
-        subagent_registry=_make_subagent_registry(cfg, home),
-    )
 
     mode_label = "3 (live LLM)" if live_llm else "2 (strict)"
     if override_provider:
@@ -1056,7 +1075,7 @@ def _cmd_compare(
 
 def _cmd_replay_menu(home_override: str | None) -> int:
     """`arc replay` with no args → opens the setup hub on the Replay section."""
-    from arc.bootstrap import bootstrap, paths_for, resolve_home
+    from arc.bootstrap import bootstrap, resolve_home
     from arc.setup.hub import run_hub
 
     home = resolve_home(home_override)
@@ -1086,14 +1105,10 @@ def _cmd_resume(
     """
     _load_dotenv_into_environ(home_override)
 
-    from arc.bootstrap import bootstrap, paths_for, resolve_home
+    from arc.bootstrap import paths_for, resolve_home
     from arc.config import load
-    from arc.plugins import PluginBuildContext, build as build_plugins
     from arc.providers import build as build_provider
     from arc.resume import count_completed_turns, messages_from_session
-    from arc.runtime.bus import EventBus, HookRegistry
-    from arc.runtime.ids import new_session_id
-    from arc.runtime.loop import AgentSession
     from arc.tools import build as build_tools
 
     home = resolve_home(home_override)
@@ -1135,33 +1150,18 @@ def _cmd_resume(
 
     cfg = load(paths.config_file)
 
-    provider = build_provider(cfg.provider)
-    tools = build_tools(cfg.tools)
-    registry = HookRegistry(
-        failure_threshold=cfg.plugins.failure_threshold,
-        exception_message_max_chars=cfg.plugins.exception_message_max_chars,
-    )
-    bus = EventBus(registry)
-
-    new_sid = new_session_id()
     from arc.user_gate import NoOpGate
-    gate = NoOpGate()
-    plugins = build_plugins(cfg.plugins, PluginBuildContext(
-        sessions_dir=paths.sessions_dir,
-        session_id=new_sid,
-        config_snapshot_yaml=paths.config_file.read_text(),
-        user_gate=gate,
-        bus=bus,
-    ))
-    for built in plugins:
-        registry.register(built.instance, hooks_order=built.hooks_order)
-
-    sess = AgentSession(
-        config=cfg, provider=provider, tools=tools,
-        registry=registry, bus=bus, session_id=new_sid,
+    built_session = build_session(
+        cfg, paths,
+        provider=build_provider(cfg.provider),
+        tools=build_tools(cfg.tools),
         subagent_registry=_make_subagent_registry(cfg, home),
+        gate=NoOpGate(),
         initial_messages=prior_messages,
     )
+    sess, bus, registry = built_session.session, built_session.bus, built_session.registry
+    plugins = built_session.plugins
+    new_sid = built_session.session_id
 
     branch_note = ""
     if at_turn is not None:
@@ -1237,14 +1237,10 @@ def _cmd_rerun(
     """
     _load_dotenv_into_environ(home_override)
 
-    from arc.bootstrap import bootstrap, paths_for, resolve_home
+    from arc.bootstrap import paths_for, resolve_home
     from arc.config import load
-    from arc.plugins import PluginBuildContext, build as build_plugins
     from arc.providers import build as build_provider
     from arc.rerun import user_inputs_from_session
-    from arc.runtime.bus import EventBus, HookRegistry
-    from arc.runtime.ids import new_session_id
-    from arc.runtime.loop import AgentSession
     from arc.tools import build as build_tools
     from arc.user_gate import NoOpGate
 
@@ -1267,30 +1263,15 @@ def _cmd_rerun(
         return 1
 
     cfg = load(paths.config_file)
-    provider = build_provider(cfg.provider)
-    tools = build_tools(cfg.tools)
-    registry = HookRegistry(
-        failure_threshold=cfg.plugins.failure_threshold,
-        exception_message_max_chars=cfg.plugins.exception_message_max_chars,
-    )
-    bus = EventBus(registry)
-
-    new_sid = new_session_id()
-    plugins = build_plugins(cfg.plugins, PluginBuildContext(
-        sessions_dir=paths.sessions_dir,
-        session_id=new_sid,
-        config_snapshot_yaml=paths.config_file.read_text(),
-        user_gate=NoOpGate(),
-        bus=bus,
-    ))
-    for built in plugins:
-        registry.register(built.instance, hooks_order=built.hooks_order)
-
-    sess = AgentSession(
-        config=cfg, provider=provider, tools=tools,
-        registry=registry, bus=bus, session_id=new_sid,
+    built_session = build_session(
+        cfg, paths,
+        provider=build_provider(cfg.provider),
+        tools=build_tools(cfg.tools),
         subagent_registry=_make_subagent_registry(cfg, home),
+        gate=NoOpGate(),
     )
+    sess, bus = built_session.session, built_session.bus
+    new_sid = built_session.session_id
 
     print(f"rerunning {session_id} → {new_sid}  "
           f"({len(inputs)} user input(s))")
@@ -1337,11 +1318,7 @@ def _cmd_interactive(home_override: str | None) -> int:
 
     from arc.bootstrap import bootstrap, paths_for, resolve_home
     from arc.config import load
-    from arc.plugins import PluginBuildContext, build as build_plugins
     from arc.providers import build as build_provider
-    from arc.runtime.bus import EventBus, HookRegistry
-    from arc.runtime.ids import new_session_id
-    from arc.runtime.loop import AgentSession
     from arc.tools import build as build_tools
     from arc.tui.app import TUIApp
 
@@ -1357,39 +1334,22 @@ def _cmd_interactive(home_override: str | None) -> int:
         paths, cfg, interactive=True,
     )
 
-    provider = build_provider(cfg.provider)
-    tools = build_tools(cfg.tools)
-    registry = HookRegistry(
-        failure_threshold=cfg.plugins.failure_threshold,
-        exception_message_max_chars=cfg.plugins.exception_message_max_chars,
-    )
-    bus = EventBus(registry)
-
-    session_id = new_session_id()
-
     # Interactive mode: TUIGate prompts the user via prompt_toolkit when
     # a tool trips an escalation pattern. Construct the gate with a shared
     # console so escalation prompts use the same render pipeline as the rest.
     from rich.console import Console
     from arc.user_gate import TUIGate
     console = Console()
-    gate = TUIGate(console=console)
 
-    plugins = build_plugins(cfg.plugins, PluginBuildContext(
-        sessions_dir=paths.sessions_dir,
-        session_id=session_id,
-        config_snapshot_yaml=paths.config_file.read_text(),
-        user_gate=gate,
-        bus=bus,
-    ))
-    for built in plugins:
-        registry.register(built.instance, hooks_order=built.hooks_order)
-
-    sess = AgentSession(
-        config=cfg, provider=provider, tools=tools,
-        registry=registry, bus=bus, session_id=session_id,
+    built_session = build_session(
+        cfg, paths,
+        provider=build_provider(cfg.provider),
+        tools=build_tools(cfg.tools),
         subagent_registry=_make_subagent_registry(cfg, home),
+        gate=TUIGate(console=console),
     )
+    sess, bus = built_session.session, built_session.bus
+
     # Emit discovery + enablement events onto the session bus so they
     # land in events.jsonl alongside session.started. Done before app.run()
     # so the bus is wired but after AgentSession is built.

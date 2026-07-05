@@ -244,3 +244,54 @@ def test_bare_arc_launches_tui(tmp_path, monkeypatch):
 
     rc = main([])
     assert rc == 0
+
+
+# ── replay / resume / rerun CLI smoke tests (guard-rails for the cli refactor) ──
+
+
+def _fake_provider(*_a, **_k):
+    from arc.runtime.hooks import ContentBlock, LLMResponse
+
+    class _FP:
+        name = "fake"
+        def chat(self, req):
+            return LLMResponse(
+                content=[ContentBlock(type="text", text="fake reply")],
+                stop_reason="end_turn", input_tokens=1, output_tokens=1, raw={})
+    return _FP()
+
+
+def _record_session(monkeypatch, home: Path) -> str:
+    """Run one fake turn to produce a recorded session; return its id."""
+    _set_home(monkeypatch, home)
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-for-bootstrap")
+    import arc.providers as pm
+    monkeypatch.setattr(pm, "build", _fake_provider)
+    assert main(["run", "hello there"]) == 0
+    dirs = [p for p in (home / "sessions").iterdir() if p.is_dir()]
+    assert len(dirs) == 1
+    return dirs[0].name
+
+
+def test_replay_cli_smoke(tmp_path, monkeypatch):
+    # Guard the replay session-wiring: it must construct + run without raising.
+    # (A synthetic session with empty .raw diverges, which is fine — we only
+    # assert the wiring doesn't crash, which is what the refactor could break.
+    # Also locks in the fix for the subagent-tool double-registration crash.)
+    home = tmp_path / "h"
+    sid = _record_session(monkeypatch, home)
+    rc = main(["replay", sid])
+    assert isinstance(rc, int)
+
+
+def test_resume_restore_only_cli_smoke(tmp_path, monkeypatch):
+    home = tmp_path / "h"
+    sid = _record_session(monkeypatch, home)
+    # --no-tui + no --prompt: restore and exit (no interactive loop)
+    assert main(["resume", sid, "--no-tui"]) == 0
+
+
+def test_rerun_cli_smoke(tmp_path, monkeypatch):
+    home = tmp_path / "h"
+    sid = _record_session(monkeypatch, home)
+    assert main(["rerun", sid]) == 0

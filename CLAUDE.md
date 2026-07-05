@@ -3,6 +3,11 @@
 You're at the top of a directory containing several related repos. Each
 subdir has its own `CLAUDE.md` that's authoritative for work inside it.
 
+> **`_code_review/`** holds a 2026-07 ecosystem-wide audit (architecture +
+> security + code-quality + roadmap). Start at `_code_review/00-README.md`.
+> Known-unfixed security gaps (cos trust model, sub-agent policy, websearch SSRF,
+> gcs write confinement) are catalogued in `_code_review/02-security-audit.md`.
+
 | Directory | Purpose |
 |---|---|
 | `v1/`                    | Legacy agent runtime (SQLModel, Textual TUI, Ghidra/Briefbot). Bug-fix mode only. |

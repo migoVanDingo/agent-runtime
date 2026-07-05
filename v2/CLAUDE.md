@@ -6,9 +6,11 @@ of: **the runtime mediates, the model drives, plugins extend.**
 
 | | |
 |---|---|
-| Source | ~6,900 lines Python |
-| Tests | 386 passing (unit + real-API integration) |
-| Providers | Gemini (`google-genai`), Anthropic (`anthropic`) |
+| Source | ~19,600 lines Python |
+| Tests | 768 unit passing (+ real-API integration, auto-skip without keys) |
+| Providers | Gemini + Vertex Gemini (`google-genai`), Anthropic, Ollama, llama.cpp (OpenAI-compat) |
+| Sub-agents | dispatch as a tool (0020); external specs via `arc.subagents` entry-point |
+| MCP | consumes external MCP servers via the built-in `mcp` plugin (0025) |
 | TUI | prompt_toolkit + Rich, inline mode (scrollback works) |
 | Persistence | None — each session is a self-contained dir under `$ARC_HOME/sessions/<sid>/` |
 
@@ -214,6 +216,27 @@ interactive print. Both use the comment-preserving writer at
 - **Don't escalate to the user mid-task** when working autonomously. The
   user's standing instruction is "knock it out, I'll review later." Make
   defensible judgment calls and document them in the design doc.
+- **Gemini tool schemas are sanitized** before the call (`_gemini_translation.
+  sanitize_gemini_schema`): `anyOf`/`additionalProperties` (which MCP/FastMCP
+  emit for optional/dict fields) are stripped/flattened — Gemini 400s on them.
+  Applies to both `gemini` and `vertex_gemini`.
+- **Sub-agents inherit a hard-denylist guard** (`subagents/runner._child_policy_guard`),
+  built from the parent's `guard.blocklist_patterns` — so a sub-agent's tools are
+  policed (rm -rf, dd, **docker**, …). Deliberately NOT the escalation patterns or
+  safety_gate (would prompt the parent gate from the child thread / block the
+  sub-agent's `curl` + file writes). See `_mitigation/07`.
+- **`guard.delegate_only_tools`** (glob → owner sub-agent tool) denies a tool in
+  the MAIN session and routes it through the owner; `inside_subagent()`-gated so
+  it no-ops in the child. Fails open if the owner isn't registered.
+- **Ctrl+C during a sub-agent dispatch is two-stage** (`subagents/cancel.py` +
+  the TUI SIGINT handler): 1st cancels the running sub-agent (trips its
+  `cancel_flag`, observed at the child's next iteration boundary), 2nd pauses the
+  turn. ESC/Ctrl+D can't interrupt a dispatch (input-mode keys). `_mitigation/08`.
+- **`tui.subagent_activity`** (default on) streams a child's tool calls into the
+  scrollback as nested `↳` lines instead of only a spinner.
+- **Sub-agent cost** resolves via a curated static fallback in `tui/pricing.py`
+  (`_STATIC_RATES`) when the LiteLLM fetch fails or the model is too new
+  (gemini-3.5-flash). Keep rates in sync with provider price pages.
 
 ## User preferences (carried across sessions)
 

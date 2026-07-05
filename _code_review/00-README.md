@@ -81,17 +81,17 @@ methods.
 
 | Severity | Count | Where the worst ones live |
 |---|---:|---|
-| **Critical** | 6 | cos (bind mounts ✅, unauth MCP), websearch (SSRF ×3 ✅), gcs (arbitrary write) |
-| **High** | 10 | sub-agent-unguarded ✅, container_expert host shell ⚠️, fail-open policy, cos no-caps ✅, ghidra unauth bridge, angr OOM ×2, websearch denylist ✅/size ✅ |
+| **Critical** | 6 | cos (bind mounts ✅, unauth MCP), websearch (SSRF ×3 ✅), gcs (arbitrary write ✅) |
+| **High** | 10 | sub-agent-unguarded ✅, container_expert host shell ⚠️, fail-open policy ✅, cos no-caps ✅, ghidra unauth bridge, angr OOM ×2, websearch denylist ✅/size ✅, gcs download-gate ✅ |
 | **Medium** | 14 | provider-param bleed, tool-cap 400 bug ✅, TOCTOU, gc-removes-images ✅, `_find` scope ✅, replay `.raw` gaps, MCP collision/hang, budgets |
 | **Low** | ~15 | log/error disclosure, hardcoded tunables, regex false-positives, dup helpers |
 
-> **✅ = mitigated over two passes (2026-07-05), see `_mitigation/` 01–07.**
+> **✅ = mitigated over three passes (2026-07-05/06), see `_mitigation/` 01–10.**
 > Pass 1: C1 bind-mount deny-list, H4 hardening, M2 tool-cap, M4 gc-preserves-images,
-> M5 `_find` scope. Pass 2: C3/C4/C5/H8/H9 websearch SSRF seam, H1 child guard,
-> H2 docker-block (⚠️ partial — `bash_exec` still a shell). Next recommended:
-> C6/H10 (gcs write confinement), H3 (fail-closed policy). C2/H5 (cos/ghidra
-> auth) deprioritized by the owner.
+> M5 `_find` scope. Pass 2: C3/C4/C5/H8/H9 websearch SSRF, H1 child guard,
+> H2 docker-block (⚠️ partial). Pass 3: C6/H10 gcs download confinement, H3
+> fail-closed policy. Still open: C2/H5 (cos/ghidra auth — deprioritized), the H2
+> residual (`bash_exec` → scoped tools), tail of Mediums.
 
 *(Reminder: "Critical/High" here is calibrated to the local-tool threat model —
 prompt injection, local unauthenticated services, and untrusted RE inputs — not

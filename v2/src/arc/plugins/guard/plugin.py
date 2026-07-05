@@ -30,6 +30,7 @@ class GuardPlugin:
 
     name = "guard"
     version = "1.0.0"
+    critical = True  # never auto-quarantined; a throwing before_tool_call fails closed
 
     def __init__(
         self,

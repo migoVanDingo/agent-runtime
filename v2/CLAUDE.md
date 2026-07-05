@@ -220,6 +220,10 @@ interactive print. Both use the comment-preserving writer at
   sanitize_gemini_schema`): `anyOf`/`additionalProperties` (which MCP/FastMCP
   emit for optional/dict fields) are stripped/flattened — Gemini 400s on them.
   Applies to both `gemini` and `vertex_gemini`.
+- **Policy hooks fail CLOSED** (`bus.py`): a throwing `before_tool_call` becomes a
+  `ToolDenial` (deny by default), and plugins with `critical = True` (guard,
+  safety_gate) are never auto-quarantined — disabling a gate would re-open the
+  bypass. Other hooks still pass through on error. `_mitigation/10`.
 - **Sub-agents inherit a hard-denylist guard** (`subagents/runner._child_policy_guard`),
   built from the parent's `guard.blocklist_patterns` — so a sub-agent's tools are
   policed (rm -rf, dd, **docker**, …). Deliberately NOT the escalation patterns or

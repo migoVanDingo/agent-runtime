@@ -329,3 +329,53 @@ def test_before_tool_call_can_return_denial():
     result = reg.fire("before_tool_call", call, ctx=None)
     assert isinstance(result, ToolDenial)
     assert result.reason == "nope"
+
+
+# ── H3: policy hooks fail closed + critical plugins aren't quarantined ────────
+
+
+def test_before_tool_call_fails_closed_on_error():
+    """A throwing before_tool_call must DENY the call, not pass it through."""
+    from arc.runtime.hooks import ToolCall, ToolDenial
+
+    class BrokenGuard:
+        name = "broken-guard"
+        def before_tool_call(self, ctx, call):
+            raise RuntimeError("boom")
+
+    reg = HookRegistry(failure_threshold=3, exception_message_max_chars=500)
+    reg.register(BrokenGuard(), hooks_order={"before_tool_call": 10})
+    call = ToolCall(tool_call_id="t1", name="bash_exec", input={})
+    result = reg.fire("before_tool_call", call, ctx=None)
+    assert isinstance(result, ToolDenial)
+    assert result.tool_call_id == "t1" and result.name == "bash_exec"
+
+
+def test_critical_plugin_not_auto_disabled_and_keeps_denying():
+    from arc.runtime.hooks import ToolCall, ToolDenial
+
+    class BrokenCritical:
+        name = "guard"
+        critical = True
+        def before_tool_call(self, ctx, call):
+            raise RuntimeError("boom")
+
+    emitted = []
+    class Recorder:
+        name = "recorder"
+        def on_event(self, ctx, event):
+            emitted.append(event)
+
+    reg = HookRegistry(failure_threshold=2, exception_message_max_chars=500)
+    bus = EventBus(reg)
+    reg.register(Recorder(), hooks_order={"on_event": 100})
+    reg.register(BrokenCritical(), hooks_order={"before_tool_call": 10})
+
+    call = ToolCall(tool_call_id="t", name="x", input={})
+    for _ in range(4):
+        reg.fire("before_tool_call", call, ctx=None)
+
+    # never quarantined (would re-open the bypass)
+    assert not [e for e in emitted if e.type == EventType.PLUGIN_DISABLED]
+    # and still fails closed on the next call
+    assert isinstance(reg.fire("before_tool_call", call, ctx=None), ToolDenial)

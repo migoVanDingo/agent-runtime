@@ -128,6 +128,11 @@ class HookRegistry:
                 raise
             except Exception as exc:
                 self._record_failure(plugin_name, hook_name, exc)
+                # A gating hook that ERRORS must fail CLOSED — a throwing policy
+                # plugin (guard/safety_gate) would otherwise leave the ToolCall
+                # untouched and the tool would execute (silent policy bypass).
+                if hook_name == "before_tool_call":
+                    current = _fail_closed_denial(current, plugin_name, exc)
         return current
 
     def fire_observer(self, hook_name: str, **kwargs: Any) -> None:
@@ -169,7 +174,11 @@ class HookRegistry:
                 },
                 content={"traceback": traceback.format_exc()},
             ))
-        if self._failures[plugin_name] >= self._threshold:
+        # Policy plugins that declare `critical = True` (guard, safety_gate) are
+        # NEVER auto-quarantined: disabling a gating plugin re-opens the policy
+        # bypass. They keep failing closed on before_tool_call instead.
+        is_critical = getattr(self._plugins.get(plugin_name), "critical", False)
+        if self._failures[plugin_name] >= self._threshold and not is_critical:
             self._disabled.add(plugin_name)
             if can_emit:
                 self._bus.emit(RuntimeEvent(
@@ -199,6 +208,20 @@ _HOOK_VALUE_KWARG = {
 
 def _value_kwarg(hook_name: str) -> str:
     return _HOOK_VALUE_KWARG.get(hook_name, "value")
+
+
+def _fail_closed_denial(value: Any, plugin_name: str, exc: Exception) -> Any:
+    """Turn a threaded before_tool_call value into a ToolDenial when a policy
+    plugin errored — deny by default. If a prior plugin already denied, keep it."""
+    from arc.runtime.hooks import ToolDenial
+    if isinstance(value, ToolDenial):
+        return value
+    return ToolDenial(
+        tool_call_id=getattr(value, "tool_call_id", ""),
+        name=getattr(value, "name", ""),
+        reason=(f"policy plugin {plugin_name!r} errored ({type(exc).__name__}) — "
+                f"denying by default (fail-closed)"),
+    )
 
 
 class EventBus:

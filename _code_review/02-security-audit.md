@@ -14,12 +14,12 @@ component. Line numbers were current at review time.*
 > RE workflow deliberately handles.** Every Critical/High below is exploitable
 > under one of those three.
 
-> **✅ Mitigations applied (2026-07-05), two passes.** Fixed: **C1, C3, C4, C5,
-> H1, H4, H8, H9, M2, M4, M5** and partially **H2** — see the `_mitigation/`
-> directory (files 01–07) and the `MITIGATED` tags inline. Still open and
-> recommended next: **C2/H5** (cos + ghidra unauth services — deprioritized by
-> the owner), **C6/H10** (gcs write confinement), **H3** (fail-closed policy
-> plugins), and the tail of Mediums (M1, M3, M6, M7, M8, M9, M10).
+> **✅ Mitigations applied (2026-07-05/06), three passes.** Fixed: **C1, C3, C4,
+> C5, C6, H1, H3, H4, H8, H9, H10, M2, M4, M5** and partially **H2** — see the
+> `_mitigation/` directory (files 01–10) and the `MITIGATED` tags inline. Still
+> open: **C2/H5** (cos + ghidra unauth services — deprioritized by the owner),
+> the **H2 residual** (replace the sub-agent's `bash_exec` with scoped tools),
+> and the tail of Mediums (M1, M3, M6, M7, M8, M9, M10, M11).
 
 ---
 
@@ -73,7 +73,7 @@ arc session. websearch has no response-size cap → decompression bomb.
 | C3 | websearch | `tools/http_request.py:73-104` | **`http_request` has zero SSRF protection.** — ✅ **MITIGATED, `_mitigation/06`** (routes through `safe_request`/`validate_url`). |
 | C4 | websearch | `tools/extract_html.py:72-82` | **`extract_html` fetches arbitrary URLs unvalidated.** — ✅ **MITIGATED, `_mitigation/06`**. |
 | C5 | websearch | `http.py:35-36` | **Redirects followed, never re-validated.** — ✅ **MITIGATED, `_mitigation/06`** (auto-redirects off; each hop re-validated). Full IP-pinning still open. |
-| C6 | gcs | `tools/file_ops.py:337-340` | **`gcs_download` = unconfined arbitrary host-file write.** Dest is `Path(local_path).expanduser()`, no root confinement, `..`/absolute accepted → write to `~/.ssh/authorized_keys`, `~/Library/LaunchAgents/*.plist`. |
+| C6 | gcs | `tools/file_ops.py:337-340` | **`gcs_download` = unconfined arbitrary host-file write.** — ✅ **MITIGATED, `_mitigation/09`** (confined to `download_dir`; absolute/`..` rejected). |
 
 ## High
 
@@ -81,14 +81,14 @@ arc session. websearch has no response-size cap → decompression bomb.
 |---|---|---|---|
 | H1 | subagents (runtime) | `runtime/subagents/runner.py` (child `plugins.enabled=[]`) | **Sub-agents run tools with no guard/safety_gate.** — ✅ **MITIGATED, `_mitigation/07`** (child inherits a hard-denylist guard). |
 | H2 | sub-agent-container | `spec.py:60-62` | **`container_expert` allowlist includes `bash_exec` + `ls` (raw host shell).** — ⚠️ **PARTIALLY MITIGATED, `_mitigation/07`** (docker + destructive commands now blocked in the child; `bash_exec` is still a general shell — scoped-tool replacement deferred). |
-| H3 | v2 runtime | `runtime/bus.py:129-131,172-173` | **Security plugins fail *open*.** A throwing `before_tool_call` is swallowed and the original `ToolCall` passes through (executes). After 3 throws, guard/safety_gate are quarantined and policy silently disappears session-wide → a reliably-throwing input is a policy bypass. |
+| H3 | v2 runtime | `runtime/bus.py:129-131,172-173` | **Security plugins fail *open*.** A throwing `before_tool_call` is swallowed → executes; 3 throws quarantine the plugin → policy vanishes. — ✅ **MITIGATED, `_mitigation/10`** (before_tool_call fails closed; `critical` plugins never quarantined). |
 | H4 | cos | `core/backend.py` `_create_kwargs` | **No cap-drop / `no-new-privileges` / `pids_limit`; limits optional.** Default-capability container with no pids cap runs a fork bomb; no mem cap → OOM the host. — ✅ **MITIGATED, `_mitigation/04`** (pids/no-new-privs/default caps shipped; `cap_drop`+ro-rootfs `hardened` profile still open). |
 | H5 | ghidra | `ghidra-extension/…/BridgeServer.java:66,123-132` | **Unauthenticated bridge, no Origin/Host check.** Loopback-only (good) but any web page can `fetch()` `POST /rename_function` (CSRF) to mutate the live binary DB; DNS-rebind can read decompiled C. |
 | H6 | angr | `engine.py:135-146` | **No memory bound, in-process.** Symbolic execution allocates GBs inside one `simgr.step()` → OOM kills the whole arc session. No subprocess isolation / RLIMIT. |
 | H7 | angr | `engine.py:135-145,220-222` | **Budget is soft.** Wall-clock/steps checked only *between* steps; a single heavy `step()` or the post-loop `solver.eval`/`posix.dumps` concretization (no timeout) overshoots `max_seconds` arbitrarily. |
 | H8 | websearch | `tools/read_url.py:16-18,73` | **Denylist is exact-string host match.** — ✅ **MITIGATED, `_mitigation/06`** (replaced with resolved-IP `ipaddress` test). |
 | H9 | websearch | `http.py:32-38` | **No response-size cap** (gzip bomb → OOM). — ✅ **MITIGATED, `_mitigation/06`** (streamed 10 MiB cap on decoded bytes). |
-| H10 | gcs | `tools/file_ops.py:364-375` | **New-file download mislabeled operation `"stat"` (a read op)** → never triggers the UserGate at destructive/mutation levels. Writing new host files needs no confirmation. |
+| H10 | gcs | `tools/file_ops.py:364-375` | **New-file download mislabeled operation `"stat"` (a read op)** → never triggers the UserGate. — ✅ **MITIGATED, `_mitigation/09`** (now `download_new`, a gated mutation). |
 
 ## Medium
 

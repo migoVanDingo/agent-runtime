@@ -136,6 +136,9 @@ def test_redirect_overwrite_matches_single_redirect_not_append():
     assert isinstance(p.before_tool_call(None, _call("echo x > file.txt")), ToolDenial)
     # >> append is fine
     assert p.before_tool_call(None, _call("echo x >> file.txt")) is None
+    # `->` operator must NOT false-positive (arrow, not a redirect)
+    assert p.before_tool_call(None, _call("grep -o 'a->b' f")) is None
+    assert p.before_tool_call(None, _call("python -c 'print(s->x)'")) is None
 
 
 def test_drop_table_matches_case_insensitive():

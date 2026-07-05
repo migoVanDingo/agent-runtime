@@ -65,8 +65,9 @@ DEFAULT_PATTERNS: tuple[Pattern, ...] = (
     Pattern(
         name="redirect-overwrite",
         description="> file (single redirect overwrites existing file)",
-        # Single `>` not preceded or followed by another `>`. Avoids matching `>>`.
-        regex=r"(?<![>])>(?![>])\s*[^\s>&]",
+        # Single `>` not preceded by `>` or `-` (avoids `>>` and the `->`
+        # operator) and not followed by `>` or `&`.
+        regex=r"(?<![->])>(?![>])\s*[^\s>&]",
     ),
     Pattern(
         name="drop-table",

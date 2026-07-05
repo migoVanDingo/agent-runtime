@@ -99,7 +99,7 @@ arc session. websearch has no response-size cap → decompression bomb.
 | M3 | v2 runtime | `runtime/bus.py:105-131` + `loop.py:490-500` | **TOCTOU in `before_tool_call`.** A post-policy plugin (priority 50) can mutate `input["command"]` after guard (10)/safety_gate (20) approved it; the loop executes the mutated call without re-validation. |
 | M4 | cos | `core/backend.py` `prune_images(only_unused=True)` | **`gc` deletes reusable build-once images.** An `image_build` tag with no *current* container is treated as unused and force-removed — contradicts build-once-run-many and the tool's "Safe" docstring. — ✅ **MITIGATED, `_mitigation/01`** (named images excluded from `gc`). |
 | M5 | cos | `core/backend.py` `_find` | **`_find`/`_require` match `cos.name` only, not `cos.managed`.** `exec`/`logs`/`stop`/`rm` act on any container carrying a matching `cos.name` label, even one cos didn't create. — ✅ **MITIGATED, `_mitigation/02`** (filter now requires `cos.managed`). |
-| M6 | cos | `core/backend.py` `build`/`build_image` | Build `context` is an unvalidated host path. `context="/"` tars the whole host FS as build context (DoS) and a supplied `dockerfile` `COPY` can pull any host file into an image. |
+| M6 | cos | `core/backend.py` `build`/`build_image` | Build `context` is an unvalidated host path (`context="/"` tars the whole host FS). — ✅ **MITIGATED** (reuses `is_forbidden_host_path`; sensitive-root contexts rejected). |
 | M7 | v2 runtime | `llm/process.py:200-231` | `arc llm stop` SIGKILLs by PID with only existence check → after PID reuse, kills an unrelated process. Verify start-time/cmdline against `PidState`. |
 | M8 | v2 runtime | `providers/openai_compat.py:351-368` | `.raw` fallback `{"_repr": repr(resp)}` is not JSON-reconstructable → **breaks byte-faithful replay** for compat/local servers. |
 | M9 | subagents (runtime) | `mcp/adapter.py:19-22` + `plugins/__init__.py` merge | MCP tool-name sanitization can collapse two server tools to one arc name; the resulting `merge_plugin_tools` `ValueError` is **not** isolated → crashes session startup, defeating per-server isolation. |
@@ -107,7 +107,7 @@ arc session. websearch has no response-size cap → decompression bomb.
 | M11 | gcs | `plugin.py:205-216` | Budget guard is inert by default (`session_budget` unset → all caps `None`). Advertised cost cap does nothing unless configured. |
 | M12 | angr | `spec.py:50-52` | `Budget.validate()` bounds only `max_seconds`; `max_steps`/`max_states` accept `1e12`, defeating two of three brakes. |
 | M13 | angr | `engine.py:65-83` | Arbitrary host binary path into `angr.Project` (CLE parsers on attacker bytes), no workspace confinement. Mitigated by `auto_load_libs=False`. |
-| M14 | briefbot | `dal.py:164,192-195` | `get_top_topics` orders by `last_seen_at`, absent from `REQUIRED_TOPIC_COLUMNS`, so schema-quarantine passes then the tool throws raw `sqlite3.OperationalError` mid-turn. |
+| M14 | briefbot | `dal.py:164,192-195` | `get_top_topics` orders by `last_seen_at`, absent from `REQUIRED_TOPIC_COLUMNS` → raw `sqlite3` error mid-turn. — ✅ **MITIGATED** (added to the required set; schema check now covers it). |
 
 ## Low (abbreviated)
 
@@ -117,7 +117,7 @@ arc session. websearch has no response-size cap → decompression bomb.
 - **gcs** 24h signed URL flows into model context; allowlist-denial ToolError discloses full bucket list.
 - **ghidra** unbounded request-body read (JVM OOM); raw `e.getMessage()` in 500 body discloses local paths.
 - **briefbot** `immutable=1` disables locking vs. the concurrent ingestor (torn reads); DB path in event payloads.
-- **safety_gate** `catalog.py:69` `redirect-overwrite` regex false-positives on `->` (nuisance prompts → blind-approve training).
+- **safety_gate** `catalog.py:69` `redirect-overwrite` regex false-positives on `->` (nuisance prompts → blind-approve training). — ✅ **MITIGATED** (`-` added to the lookbehind).
 
 ---
 

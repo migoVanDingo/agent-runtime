@@ -174,6 +174,8 @@ ignore this section.
 | `tool_output_max_lines` | int | `30` | Collapse tool outputs longer than N lines into a one-line summary. |
 | `toolbar_enabled` | bool | `true` | Persistent bottom toolbar with provider/model/session/turn/tokens/$cost. |
 | `input_history_enabled` | bool | `true` | Up/down recalls past inputs from `$ARC_HOME/history`. |
+| `subagent_activity` | bool | `true` | Stream a sub-agent's tool calls into the scrollback as nested `↳` lines. |
+| `tabs_max` | int | `4` | Max open session tabs (0026 time travel). Branches open in a new tab; each live tab holds its own plugins + MCP connections, so keep this small. |
 
 ---
 

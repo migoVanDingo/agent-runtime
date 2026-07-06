@@ -23,7 +23,9 @@ class BuiltSession:
 
 def build_session(cfg, paths, *, provider, tools, subagent_registry,
                   gate=None, session_id=None, extra_plugins=(),
-                  initial_messages=None) -> BuiltSession:
+                  initial_messages=None,
+                  config_snapshot_yaml=None,
+                  merge_contributed_tools=True) -> BuiltSession:
     """Wire a fresh AgentSession from its parts — the shared core the run,
     interactive, replay, resume and rerun commands all need.
 
@@ -45,10 +47,15 @@ def build_session(cfg, paths, *, provider, tools, subagent_registry,
     )
     bus = EventBus(registry)
     sid = session_id or new_session_id()
+    # `config_snapshot_yaml` override: replay rebuilds from the snapshot, so
+    # a session whose effective config differs from the file (0026 /model)
+    # must snapshot the EFFECTIVE config, not the file.
     plugins = build_plugins(cfg.plugins, PluginBuildContext(
         sessions_dir=paths.sessions_dir,
         session_id=sid,
-        config_snapshot_yaml=paths.config_file.read_text(),
+        config_snapshot_yaml=(config_snapshot_yaml
+                              if config_snapshot_yaml is not None
+                              else paths.config_file.read_text()),
         user_gate=gate,
         bus=bus,
     ))
@@ -62,10 +69,27 @@ def build_session(cfg, paths, *, provider, tools, subagent_registry,
     session = AgentSession(
         config=cfg, provider=provider, tools=tools,
         registry=registry, bus=bus, session_id=sid,
-        subagent_registry=subagent_registry, **kwargs,
+        subagent_registry=subagent_registry,
+        merge_contributed_tools=merge_contributed_tools, **kwargs,
     )
     return BuiltSession(session=session, bus=bus, registry=registry,
                         plugins=plugins, session_id=sid)
+
+
+def stamp_session_meta(sessions_dir: Path, session_id: str, fields: dict) -> None:
+    """Merge lineage/audit fields into a session's meta.json on disk.
+
+    Must run AFTER the session has ended — the recorder rewrites meta.json
+    from its own dict at on_session_end and doesn't merge what's on disk.
+    No-op if meta.json doesn't exist (recorder disabled).
+    """
+    import json
+    meta_path = Path(sessions_dir) / session_id / "meta.json"
+    if not meta_path.exists():
+        return
+    meta = json.loads(meta_path.read_text())
+    meta.update(fields)
+    meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False))
 
 
 # ── Sub-agent registry helper ──────────────────────────────────────────────

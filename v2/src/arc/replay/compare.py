@@ -113,22 +113,26 @@ def extract_turns(session_dir: Path) -> list[Turn]:
     for e in events:
         etype = e.get("type", "")
         payload = e.get("payload", {}) or {}
+        # The runtime writes the big fields in `content`, not `payload` —
+        # same envelope split the replay loader and resume read.
+        content = e.get("content", {}) or {}
 
         if etype == "turn.started":
             if current is not None:
                 turns.append(current)
             current = Turn(
                 index=len(turns) + 1,
-                user_input=str(payload.get("user_input", "")),
+                user_input=str(content.get("user_input")
+                               or payload.get("user_input", "")),
             )
         elif etype == "tool.call.started" and current is not None:
-            tool_name = str(payload.get("name", "?"))
-            tool_input = payload.get("input") or {}
+            tool_name = str(payload.get("tool_name") or payload.get("name", "?"))
+            tool_input = content.get("input") or payload.get("input") or {}
             current.tool_calls.append((tool_name, dict(tool_input) if isinstance(tool_input, dict) else {}))
         elif etype == "llm.call.completed" and current is not None:
-            content = payload.get("content") or []
+            blocks = content.get("response_content") or payload.get("content") or []
             text_parts = []
-            for b in content:
+            for b in blocks:
                 if isinstance(b, dict) and b.get("type") == "text":
                     t = b.get("text")
                     if t:

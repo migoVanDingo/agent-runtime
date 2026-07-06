@@ -90,21 +90,16 @@ def _cmd_resume(
           f"({len(prior_messages)} messages restored)")
 
     def _mark_resume_meta():
-        """Stamp resumed_from + restored_message_count on the new session's meta.
-
-        Run AFTER sess.end() so the recorder's own on_session_end write doesn't
-        clobber our additions. The recorder writes meta from its own dict and
-        doesn't merge what's on disk.
-        """
-        meta_path = paths.sessions_dir / new_sid / "meta.json"
-        if meta_path.exists():
-            import json
-            meta = json.loads(meta_path.read_text())
-            meta["resumed_from"] = session_id
-            meta["restored_message_count"] = len(prior_messages)
-            if at_turn is not None:
-                meta["branched_at_turn"] = effective_at_turn
-            meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False))
+        """Stamp lineage on the new session's meta — after sess.end(), see
+        stamp_session_meta."""
+        from arc.cli.wiring import stamp_session_meta
+        fields = {
+            "resumed_from": session_id,
+            "restored_message_count": len(prior_messages),
+        }
+        if at_turn is not None:
+            fields["branched_at_turn"] = effective_at_turn
+        stamp_session_meta(paths.sessions_dir, new_sid, fields)
 
     # Headless one-shot
     if prompt is not None:
@@ -137,7 +132,7 @@ def _cmd_resume(
     for built in plugins:
         if built.name == "guard":
             built.instance._gate = TUIGate(console=console)
-    app = TUIApp(cfg, sess, home_display=str(home), console=console)
+    app = TUIApp(cfg, sess, home_display=str(home), console=console, paths=paths)
     try:
         return app.run()
     finally:

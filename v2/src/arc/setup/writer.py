@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from io import StringIO
 from pathlib import Path
 
-
 # api_key_env values shipped with the default catalog.  If the existing
 # config has any of these, the picker is free to overwrite — they're not
 # user customizations.
@@ -35,6 +34,46 @@ class WriteChange:
     new: str | None
     skipped: bool = False
     skip_reason: str = ""  # populated when skipped=True
+
+
+def render_provider_override(
+    config_text: str,
+    *,
+    name: str,
+    model: str,
+    base_url: str | None,
+    api_key_env: str,
+) -> str:
+    """Return `config_text` with the provider block rewritten to the given
+    EFFECTIVE values (all four set unconditionally — unlike
+    write_provider_choice's preserve rules).
+
+    Pure string→string; touches no file. Used by the TUI's /model swap
+    (0026) to produce the branched session's config.snapshot.yml: replay
+    reconstructs from the snapshot, so it must describe the provider the
+    session actually ran with, not what config.yml says.
+
+    Raises ValueError if the text has no `provider:` block.
+    """
+    from ruamel.yaml import YAML
+
+    yaml = YAML(typ="rt")
+    yaml.preserve_quotes = True
+    yaml.width = 4096
+
+    data = yaml.load(StringIO(config_text))
+    if data is None or "provider" not in data:
+        raise ValueError("config snapshot has no `provider:` block")
+
+    prov = data["provider"]
+    prov["name"] = name
+    prov["model"] = model
+    prov["base_url"] = base_url
+    prov["api_key_env"] = api_key_env
+
+    buf = StringIO()
+    yaml.dump(data, buf)
+    return buf.getvalue()
 
 
 def write_provider_choice(

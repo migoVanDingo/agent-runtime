@@ -112,7 +112,7 @@ def _fmt_session_started(e: RuntimeEvent, n: int) -> list[tuple[str, int, str]]:
     p = e.payload
     return [
         ("arc.runtime", logging.INFO, "=" * _BANNER_WIDTH),
-        ("arc.runtime", logging.INFO, f"  Session started"),
+        ("arc.runtime", logging.INFO, "  Session started"),
         ("arc.runtime", logging.INFO, f"  session_id: {e.session_id}"),
         ("arc.runtime", logging.INFO, f"  provider:   {p.get('provider')} / {p.get('model')}"),
         ("arc.runtime", logging.INFO, f"  workspace:  {p.get('workspace')}"),
@@ -321,6 +321,28 @@ def _fmt_conversation_cleared(e: RuntimeEvent, n: int) -> list[tuple[str, int, s
     ]
 
 
+def _fmt_session_branched(e: RuntimeEvent, n: int) -> list[tuple[str, int, str]]:
+    p = e.payload
+    retry_note = ""
+    if p.get("retry_of_turn") is not None:
+        retry_note = f" (retry of turn {p['retry_of_turn']})"
+    return [
+        ("arc.runtime", logging.INFO,
+         f"  ⑂ branched from {p.get('source_session_id', '?')} "
+         f"@ turn {p.get('branched_at_turn', '?')} — "
+         f"{p.get('restored_message_count', 0)} messages restored{retry_note}"),
+    ]
+
+
+def _fmt_provider_swapped(e: RuntimeEvent, n: int) -> list[tuple[str, int, str]]:
+    p = e.payload
+    return [
+        ("arc.runtime", logging.INFO,
+         f"  ⑇ model swap: {p.get('from_provider', '?')}/{p.get('from_model', '?')}"
+         f" → {p.get('to_provider', '?')}/{p.get('to_model', '?')}"),
+    ]
+
+
 def _fmt_safety_requested(e: RuntimeEvent, n: int) -> list[tuple[str, int, str]]:
     p = e.payload
     return [
@@ -523,6 +545,8 @@ _DISPATCH = {
     EventType.RUNTIME_CONTEXT_PACKED: _fmt_context_packed,
     EventType.PAUSE_REQUESTED: _fmt_pause_requested,
     EventType.CONVERSATION_CLEARED: _fmt_conversation_cleared,
+    EventType.SESSION_BRANCHED: _fmt_session_branched,
+    EventType.PROVIDER_SWAPPED: _fmt_provider_swapped,
     EventType.SAFETY_CONFIRMATION_REQUESTED: _fmt_safety_requested,
     EventType.SAFETY_CONFIRMATION_ALLOWED: _fmt_safety_allowed,
     EventType.SAFETY_CONFIRMATION_DENIED: _fmt_safety_denied,

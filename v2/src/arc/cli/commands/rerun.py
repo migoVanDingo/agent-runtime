@@ -81,14 +81,12 @@ def _cmd_rerun(
     finally:
         sess.end()
         # Mark rerun_of on meta AFTER end() (same race fix as resume)
-        meta_path = paths.sessions_dir / new_sid / "meta.json"
-        if meta_path.exists():
-            import json
-            meta = json.loads(meta_path.read_text())
-            meta["rerun_of"] = session_id
-            meta["rerun_turns_attempted"] = n_ok + n_failed
-            meta["rerun_turns_succeeded"] = n_ok
-            meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False))
+        from arc.cli.wiring import stamp_session_meta
+        stamp_session_meta(paths.sessions_dir, new_sid, {
+            "rerun_of": session_id,
+            "rerun_turns_attempted": n_ok + n_failed,
+            "rerun_turns_succeeded": n_ok,
+        })
 
     print(f"\nrerun complete: {n_ok} ok, {n_failed} failed, "
           f"{len(inputs) - n_ok - n_failed} skipped")

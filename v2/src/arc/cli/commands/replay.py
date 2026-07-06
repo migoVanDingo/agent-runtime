@@ -101,12 +101,15 @@ def _cmd_replay(
     else:
         provider = ReplayProvider(replay_data.llm_responses)
 
-    # Replay serves recorded tool results (incl. subagent_* tools) from the
-    # ReplayingToolRegistry — do NOT re-merge live sub-agents (empty registry),
-    # or their tool names collide with the recorded ones.
+    # Replay serves recorded tool results (incl. plugin- and subagent-
+    # contributed tools) from the ReplayingToolRegistry. Live contributions
+    # would collide with the recorded names, so tool merges are disabled —
+    # plugins still load and their hooks still run (recorder, context
+    # packing), they just can't add tools over the stubs.
     built_session = build_session(
         cfg, paths, provider=provider, tools=tools,
         subagent_registry=SubAgentRegistry(builtins={}),
+        merge_contributed_tools=False,
     )
     sess, bus, registry = built_session.session, built_session.bus, built_session.registry
     new_session_id_ = built_session.session_id
@@ -151,15 +154,13 @@ def _cmd_replay(
             raise
     finally:
         sess.end()
-
-    # Mark the new session as a replay
-    new_meta_path = paths.sessions_dir / new_session_id_ / "meta.json"
-    if new_meta_path.exists():
-        import json
-        meta = json.loads(new_meta_path.read_text())
-        meta["replay_of"] = session_id
-        meta["replay_mode"] = "by_call" if live_llm else "in_order"
-        new_meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False))
+        # Stamp lineage in the finally so even a crashed replay session is
+        # attributed to its source (the timeline needs the edge either way).
+        from arc.cli.wiring import stamp_session_meta
+        stamp_session_meta(paths.sessions_dir, new_session_id_, {
+            "replay_of": session_id,
+            "replay_mode": "by_call" if live_llm else "in_order",
+        })
 
     if not do_diff or aborted:
         return 1 if (diverged or aborted) else 0

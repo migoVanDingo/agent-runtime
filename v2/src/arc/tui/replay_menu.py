@@ -312,6 +312,13 @@ def _confirm(source: dict, targets: list[BatchTarget], mode: str,
 # ── Step: launch ──────────────────────────────────────────────────────────
 
 
+def _error_tail(error: str, max_lines: int = 3) -> str:
+    """Last few meaningful lines of a failed child's output — enough to see
+    the exception without dumping the whole traceback into the menu."""
+    lines = [ln.strip() for ln in error.strip().splitlines() if ln.strip()]
+    return "  ".join(lines[-max_lines:])
+
+
 def _launch(
     home: Path,
     sessions_dir: Path,
@@ -342,7 +349,8 @@ def _launch(
         on_target_start=lambda t: print(f"  → {t.short()}", file=sys.stderr),
         on_target_done=lambda r: print(
             f"    {r.target.short()}: rc={r.return_code} session={r.target_session_id or '—'} "
-            f"({r.elapsed_seconds:.1f}s)",
+            f"({r.elapsed_seconds:.1f}s)"
+            + (f"\n      └ {_error_tail(r.error)}" if r.return_code != 0 and r.error else ""),
             file=sys.stderr,
         ),
     )

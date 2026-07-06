@@ -56,5 +56,5 @@ def _cmd_interactive(home_override: str | None) -> int:
     _emit_discovery_report(bus)
     _emit_enablement_outcomes(bus, enablement_outcomes)
 
-    app = TUIApp(cfg, sess, home_display=str(home), console=console)
+    app = TUIApp(cfg, sess, home_display=str(home), console=console, paths=paths)
     return app.run()

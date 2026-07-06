@@ -105,6 +105,33 @@ class _FakeProvider:
 # ── Tests ─────────────────────────────────────────────────────────────────
 
 
+def test_merge_disabled_keeps_preregistered_tools(cfg):
+    # Replay's shape: the registry is pre-seeded with recorded-tool stubs
+    # whose names collide with what live plugins contribute. With
+    # merge_contributed_tools=False, start() must not raise and the
+    # pre-registered tool must win.
+    tools = ToolRegistry()
+    stub = _QuietTool()
+    stub.name = "alpha"  # collides with _PluginWithTools's first tool
+    tools.register(stub)
+
+    registry = HookRegistry(failure_threshold=3, exception_message_max_chars=500)
+    bus = EventBus(registry)
+    plugin = _PluginWithTools()
+    registry.register(plugin, hooks_order={"on_session_start": 10})
+
+    sess = AgentSession(
+        config=cfg, provider=_FakeProvider(), tools=tools,
+        registry=registry, bus=bus, session_id="SES_test",
+        merge_contributed_tools=False,
+    )
+    sess.start()  # would raise "already registered" with merges on
+
+    assert tools.get("alpha") is stub          # stub won
+    assert "beta" not in tools                 # nothing else merged either
+    assert plugin.session_started_at == "SES_test"  # hooks still ran
+
+
 def test_provides_tools_merged_into_registry_at_session_start(cfg):
     tools = ToolRegistry()  # starts empty
     registry = HookRegistry(failure_threshold=3, exception_message_max_chars=500)

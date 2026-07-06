@@ -19,6 +19,7 @@ from arc.config import PluginsConfig
 from arc.plugins.guard import GuardPlugin
 from arc.plugins.jsonl_recorder import JSONLRecorder
 from arc.plugins.log_writer import LogWriterPlugin
+from arc.plugins.timeline import TimelinePlugin
 from arc.plugins.max_cost import MaxCostPlugin
 from arc.plugins.pause_resume import PauseResumePlugin
 from arc.plugins.safety_gate import Pattern as SafetyPattern
@@ -83,6 +84,15 @@ def _build_pause_resume(cfg: dict, build_ctx: PluginBuildContext) -> Any:
     return PauseResumePlugin(
         sessions_dir=build_ctx.sessions_dir,
         session_id=build_ctx.session_id,
+    )
+
+
+def _build_timeline(cfg: dict, build_ctx: PluginBuildContext) -> Any:
+    return TimelinePlugin(
+        sessions_dir=build_ctx.sessions_dir,
+        session_id=build_ctx.session_id,
+        summary_max_chars=int(cfg.get("summary_max_chars", 400)),
+        full_output_max_chars=int(cfg.get("full_output_max_chars", 20000)),
     )
 
 
@@ -163,6 +173,7 @@ _BUILTIN_BUILDERS: dict[str, Any] = {
     "safety-gate": _build_safety_gate,
     "pause-resume": _build_pause_resume,
     "log-writer": _build_log_writer,
+    "timeline": _build_timeline,
     "sliding-window-context": _build_sliding_window_context,
     "max-cost": _build_max_cost,
     "mcp": _build_mcp,

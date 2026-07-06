@@ -57,6 +57,7 @@ from arc.cli.commands.rerun import _cmd_rerun as _cmd_rerun
 from arc.cli.commands.resume import _cmd_resume as _cmd_resume
 from arc.cli.commands.run import _cmd_run as _cmd_run
 from arc.cli.commands.sessions import _cmd_sessions as _cmd_sessions
+from arc.cli.commands.timeline import _cmd_timeline as _cmd_timeline
 from arc.cli.commands.setup import _cmd_setup as _cmd_setup
 from arc.cli.commands.show import _cmd_show as _cmd_show
 from arc.cli.commands.subagents import _cmd_subagents as _cmd_subagents
@@ -137,6 +138,12 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_run(home_override, prompt=args.prompt)
     if args.command == "sessions":
         return _cmd_sessions(home_override)
+    if args.command == "timeline":
+        return _cmd_timeline(
+            home_override,
+            open_browser=args.open_browser,
+            rebuild=args.rebuild,
+        )
     if args.command == "show":
         return _cmd_show(home_override, session_id=args.session_id)
     if args.command == "log":

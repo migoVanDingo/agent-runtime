@@ -205,6 +205,14 @@ plugins:
         on_session_start: 5
         on_event: 50
         on_session_end: 5
+    - name: timeline
+      config:
+        # Visual session timeline (0027). Regenerates sessions/timeline.html
+        # + per-session session.html on session end. Open with `arc timeline`.
+        summary_max_chars: 400        # per-field truncation in the forest view
+        full_output_max_chars: 20000  # per tool output in session.html
+      hooks_order:
+        on_session_end: 60            # after the recorder stamps meta (10)
     - name: sliding-window-context
       config:
         keep_first_turns: 2         # always preserve original goals/setup

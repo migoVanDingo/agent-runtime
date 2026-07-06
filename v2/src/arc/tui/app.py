@@ -12,7 +12,7 @@ Design (per phase 0 spec §11 + the conversation that led to it):
   - Rich.Console drives all rendering; prompt_toolkit handles input only.
 
 Slash commands (matched first; not sent to the model):
-    /help, /exit, /quit, /clear, /sessions, /replay, /rewind, /retry
+    /help, /exit, /quit, /clear, /sessions, /replay, /rewind, /retry, /model
 """
 from __future__ import annotations
 
@@ -397,6 +397,9 @@ class TUIApp:
         if cmd == "/retry":
             self._handle_retry()
             return False
+        if cmd == "/model":
+            self._handle_model(text)
+            return False
         self._console.print(f"[arc.error]unknown command: {cmd}  (try /help)[/arc.error]")
         return False
 
@@ -505,7 +508,80 @@ class TUIApp:
         if self._rebuild_session(total - 1, retry_of_turn=total):
             self._run_one_turn(last_input)
 
-    def _rebuild_session(self, max_turns: int, *, retry_of_turn: int | None = None) -> bool:
+    def _handle_model(self, text: str) -> None:
+        """`/model` — show current provider/model. `/model X` — continue this
+        conversation on model X (same provider) or `/model prov/X` to switch
+        providers. Session-scoped: config.yml is not touched.
+        """
+        from dataclasses import replace
+
+        cur = self._cfg.provider
+        parts = text.split()
+        if len(parts) == 1:
+            from arc.setup.picker import _PROVIDER_DEFAULTS
+            self._console.print(
+                f"current: [arc.info]{cur.name}/{cur.model}[/arc.info]\n"
+                f"[arc.dim]usage: /model <model>  (same provider)   "
+                f"/model <provider>/<model>\n"
+                f"providers: {', '.join(sorted(_PROVIDER_DEFAULTS))}[/arc.dim]"
+            )
+            return
+        if self._paths is None:
+            self._console.print(
+                "[arc.dim]/model unavailable — session has no home paths "
+                "(headless/test wiring)[/arc.dim]"
+            )
+            return
+
+        arg = parts[1]
+        if "/" in arg:
+            pname, _, model = arg.partition("/")
+        else:
+            pname, model = cur.name, arg
+        if not model:
+            self._console.print("[arc.error]/model: missing model name[/arc.error]")
+            return
+
+        if pname == cur.name:
+            new_pcfg = replace(cur, model=model)
+        else:
+            from arc.setup.picker import _PROVIDER_DEFAULTS
+            d = _PROVIDER_DEFAULTS.get(pname)
+            if d is None:
+                self._console.print(
+                    f"[arc.error]/model: unknown provider {pname!r} "
+                    f"(known: {', '.join(sorted(_PROVIDER_DEFAULTS))})[/arc.error]"
+                )
+                return
+            new_pcfg = replace(
+                cur, name=pname, model=model,
+                api_key_env=d["api_key_env"], base_url=d["base_url"],
+            )
+
+        if new_pcfg.name == cur.name and new_pcfg.model == cur.model:
+            self._console.print(f"[arc.dim]already on {cur.name}/{cur.model}[/arc.dim]")
+            return
+
+        # Construct the new provider BEFORE touching the running session so a
+        # bad name / missing API key aborts cleanly with the session intact.
+        try:
+            from arc.providers import build as build_provider
+            new_provider = build_provider(new_pcfg)
+        except Exception as exc:
+            self._console.print(
+                f"[arc.error]/model: could not construct {new_pcfg.name}/"
+                f"{new_pcfg.model}: {exc} — session unchanged[/arc.error]"
+            )
+            return
+
+        from arc.resume import count_completed_turns
+        total = count_completed_turns(
+            self._paths.sessions_dir / self._session.session_id)
+        self._rewind_target = None
+        self._rebuild_session(total, provider=new_provider, provider_cfg=new_pcfg)
+
+    def _rebuild_session(self, max_turns: int, *, retry_of_turn: int | None = None,
+                         provider=None, provider_cfg=None) -> bool:
         """The 0026 core primitive: end the current session, start a new one
         seeded with the first `max_turns` turns of its recording, stamp
         lineage. The TUI process (and this app instance) keep running.
@@ -542,17 +618,42 @@ class TUIApp:
         # session-local: /rewind 0 in a branch = back to its branch point.
         messages = list(self._session.initial_messages or []) + own_messages
 
+        # /model swap: effective config diverges from config.yml, so the new
+        # session's snapshot must carry the override — replay reconstructs
+        # from the snapshot (see render_provider_override).
+        old_pcfg = self._cfg.provider
+        snapshot_override = None
+        if provider_cfg is not None:
+            from dataclasses import replace
+
+            from arc.setup.writer import render_provider_override
+            self._cfg = replace(self._cfg, provider=provider_cfg)
+            try:
+                snapshot_override = render_provider_override(
+                    self._paths.config_file.read_text(),
+                    name=provider_cfg.name, model=provider_cfg.model,
+                    base_url=provider_cfg.base_url,
+                    api_key_env=provider_cfg.api_key_env,
+                )
+            except ValueError:
+                self._console.print(
+                    "[arc.dim]warning: config has no provider block; snapshot "
+                    "keeps the file config — replay of this branch will use "
+                    "the wrong model[/arc.dim]"
+                )
+
         # Fresh tools + plugins per session (plugin lifecycle contract:
         # provides_tools re-merges on start). The provider instance carries
-        # no session state — reuse it. Sub-agent specs are static config —
-        # rediscovery would be redundant.
+        # no session state — reuse it unless /model swapped it. Sub-agent
+        # specs are static config — rediscovery would be redundant.
         built = build_session(
             self._cfg, self._paths,
-            provider=self._session.provider,
+            provider=provider if provider is not None else self._session.provider,
             tools=build_tools(self._cfg.tools),
             subagent_registry=self._session.subagent_registry,
             gate=TUIGate(console=self._console),
             initial_messages=messages,
+            config_snapshot_yaml=snapshot_override,
         )
         self._session = built.session
         self._session.registry.register(self, hooks_order={"on_event": 200})
@@ -571,6 +672,16 @@ class TUIApp:
             payload=payload,
             session_id=self._session.session_id,
         ))
+        if provider_cfg is not None:
+            self._session.bus.emit(RuntimeEvent(
+                type=EventType.PROVIDER_SWAPPED,
+                stage="TUIApp",
+                payload={
+                    "from_provider": old_pcfg.name, "from_model": old_pcfg.model,
+                    "to_provider": provider_cfg.name, "to_model": provider_cfg.model,
+                },
+                session_id=self._session.session_id,
+            ))
 
         # Lineage stamps land on meta.json after THIS session ends (the
         # recorder rewrites meta at on_session_end; see stamp_session_meta).
@@ -581,6 +692,10 @@ class TUIApp:
         }
         if retry_of_turn is not None:
             self._pending_meta["retry_of_turn"] = retry_of_turn
+        if provider_cfg is not None:
+            self._pending_meta["provider_override"] = {
+                "name": provider_cfg.name, "model": provider_cfg.model,
+            }
 
         # Per-session TUI counters restart with the new session
         self._last_tokens_in = 0
@@ -592,6 +707,12 @@ class TUIApp:
         self._console.print(render.render_branch_notice(
             old_sid, n, self._session.session_id, len(messages),
         ))
+        if provider_cfg is not None:
+            self._console.print(
+                f"[arc.brand]⑇[/arc.brand] model swap: "
+                f"[arc.dim]{old_pcfg.name}/{old_pcfg.model} →[/arc.dim] "
+                f"[arc.info]{provider_cfg.name}/{provider_cfg.model}[/arc.info]"
+            )
         return True
 
     def _end_session_and_stamp(self) -> None:
@@ -815,7 +936,7 @@ class TUIApp:
         # Tab-completion for slash commands
         slash_completer = WordCompleter(
             ["/help", "/exit", "/quit", "/clear", "/sessions", "/replay",
-             "/rewind", "/retry"],
+             "/rewind", "/retry", "/model"],
             ignore_case=True,
         )
 

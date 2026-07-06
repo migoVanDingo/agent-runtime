@@ -193,6 +193,8 @@ def render_help() -> Group:
              "forks the conversation there (empty input cancels)"),
         Text("  /retry                re-ask the last prompt on a fresh branch "
              "(same question, new roll)"),
+        Text("  /model X | prov/X     continue this conversation on another "
+             "model — session-scoped, config.yml untouched"),
         Text("  note: branching starts a new session; the original stays "
              "recorded and resumable"),
         Text(),

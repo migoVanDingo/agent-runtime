@@ -23,7 +23,8 @@ class BuiltSession:
 
 def build_session(cfg, paths, *, provider, tools, subagent_registry,
                   gate=None, session_id=None, extra_plugins=(),
-                  initial_messages=None) -> BuiltSession:
+                  initial_messages=None,
+                  config_snapshot_yaml=None) -> BuiltSession:
     """Wire a fresh AgentSession from its parts — the shared core the run,
     interactive, replay, resume and rerun commands all need.
 
@@ -45,10 +46,15 @@ def build_session(cfg, paths, *, provider, tools, subagent_registry,
     )
     bus = EventBus(registry)
     sid = session_id or new_session_id()
+    # `config_snapshot_yaml` override: replay rebuilds from the snapshot, so
+    # a session whose effective config differs from the file (0026 /model)
+    # must snapshot the EFFECTIVE config, not the file.
     plugins = build_plugins(cfg.plugins, PluginBuildContext(
         sessions_dir=paths.sessions_dir,
         session_id=sid,
-        config_snapshot_yaml=paths.config_file.read_text(),
+        config_snapshot_yaml=(config_snapshot_yaml
+                              if config_snapshot_yaml is not None
+                              else paths.config_file.read_text()),
         user_gate=gate,
         bus=bus,
     ))

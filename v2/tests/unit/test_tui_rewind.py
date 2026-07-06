@@ -85,7 +85,14 @@ def _build_app(tmp_path: Path, inputs: list[str], provider):
     """TUIApp over a real tmp ARC_HOME with the recorder enabled."""
     home = tmp_path / "arc_home"
     home.mkdir()
-    (home / "config.yml").write_text("# test config snapshot\n")
+    # Real provider block: the /model snapshot transform rewrites it
+    (home / "config.yml").write_text(
+        "provider:\n"
+        "  name: fake\n"
+        "  model: fake-1\n"
+        "  api_key_env: FAKE_KEY\n"
+        "  base_url: null\n"
+    )
     paths = paths_for(home)
     paths.sessions_dir.mkdir()
 
@@ -341,6 +348,89 @@ def test_retry_with_no_turns(tmp_path):
     app, out, paths = _build_app(tmp_path, ["/retry"], provider)
     app.run()
     assert "no completed turn to retry" in out.getvalue()
+
+
+# ── /model (phase c) ──────────────────────────────────────────────────────
+
+
+def _patch_provider_build(monkeypatch, shared_provider):
+    """Make arc.providers.build hand back a provider sharing the fake's
+    response queue, so turns after a /model swap keep popping from it."""
+    import arc.providers
+
+    def fake_build(pcfg):
+        p = FakeProvider([])
+        p._q = shared_provider._q
+        p.name = pcfg.name
+        return p
+
+    monkeypatch.setattr(arc.providers, "build", fake_build)
+
+
+def test_model_swap_branches_with_effective_snapshot(tmp_path, monkeypatch):
+    provider = FakeProvider([_resp("a1"), _resp("a2 on new model")])
+    _patch_provider_build(monkeypatch, provider)
+    app, out, paths = _build_app(
+        tmp_path, ["one", "/model anthropic/claude-test", "after swap"], provider)
+    app.run()
+
+    metas = _session_metas(paths)
+    assert len(metas) == 2
+    child_sid, child = _find_child(metas)
+    assert child["provider_override"] == {"name": "anthropic", "model": "claude-test"}
+    assert child["branched_at_turn"] == 1
+    assert child["restored_message_count"] == 2  # whole conversation carried
+
+    snapshot = (paths.sessions_dir / child_sid / "config.snapshot.yml").read_text()
+    assert "anthropic" in snapshot
+    assert "claude-test" in snapshot
+    assert "ANTHROPIC_API_KEY" in snapshot
+
+    events = _events(paths, child_sid)
+    swapped = [e for e in events if e["type"] == EventType.PROVIDER_SWAPPED]
+    assert len(swapped) == 1
+    assert swapped[0]["payload"] == {
+        "from_provider": "fake", "from_model": "fake-1",
+        "to_provider": "anthropic", "to_model": "claude-test",
+    }
+    turns = [e["content"]["user_input"] for e in events
+             if e["type"] == EventType.TURN_STARTED]
+    assert turns == ["after swap"]
+    assert app._cfg.provider.model == "claude-test"  # toolbar follows
+
+
+def test_model_bare_arg_keeps_provider(tmp_path, monkeypatch):
+    provider = FakeProvider([_resp("a1"), _resp("a2")])
+    _patch_provider_build(monkeypatch, provider)
+    app, out, paths = _build_app(tmp_path, ["one", "/model fake-2", "go"], provider)
+    app.run()
+
+    _, child = _find_child(_session_metas(paths))
+    assert child["provider_override"] == {"name": "fake", "model": "fake-2"}
+    assert app._cfg.provider.name == "fake"
+    assert app._cfg.provider.api_key_env == "FAKE_KEY"  # untouched on same provider
+
+
+def test_model_unknown_provider_aborts_clean(tmp_path):
+    provider = FakeProvider([_resp("a1"), _resp("a2")])
+    app, out, paths = _build_app(
+        tmp_path, ["one", "/model nope/xyz", "still here"], provider)
+    app.run()
+
+    assert "unknown provider" in out.getvalue()
+    metas = _session_metas(paths)
+    assert len(metas) == 1  # no branch; session survived and ran the next turn
+    (sid,) = metas
+    turns = [e["content"]["user_input"] for e in _events(paths, sid)
+             if e["type"] == EventType.TURN_STARTED]
+    assert turns == ["one", "still here"]
+
+
+def test_model_no_arg_shows_current(tmp_path):
+    provider = FakeProvider([])
+    app, out, paths = _build_app(tmp_path, ["/model"], provider)
+    app.run()
+    assert "fake/fake-1" in out.getvalue()
 
 
 # ── stamp helper ──────────────────────────────────────────────────────────

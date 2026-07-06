@@ -334,6 +334,15 @@ def _fmt_session_branched(e: RuntimeEvent, n: int) -> list[tuple[str, int, str]]
     ]
 
 
+def _fmt_provider_swapped(e: RuntimeEvent, n: int) -> list[tuple[str, int, str]]:
+    p = e.payload
+    return [
+        ("arc.runtime", logging.INFO,
+         f"  ⑇ model swap: {p.get('from_provider', '?')}/{p.get('from_model', '?')}"
+         f" → {p.get('to_provider', '?')}/{p.get('to_model', '?')}"),
+    ]
+
+
 def _fmt_safety_requested(e: RuntimeEvent, n: int) -> list[tuple[str, int, str]]:
     p = e.payload
     return [
@@ -537,6 +546,7 @@ _DISPATCH = {
     EventType.PAUSE_REQUESTED: _fmt_pause_requested,
     EventType.CONVERSATION_CLEARED: _fmt_conversation_cleared,
     EventType.SESSION_BRANCHED: _fmt_session_branched,
+    EventType.PROVIDER_SWAPPED: _fmt_provider_swapped,
     EventType.SAFETY_CONFIRMATION_REQUESTED: _fmt_safety_requested,
     EventType.SAFETY_CONFIRMATION_ALLOWED: _fmt_safety_allowed,
     EventType.SAFETY_CONFIRMATION_DENIED: _fmt_safety_denied,

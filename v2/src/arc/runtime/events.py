@@ -85,7 +85,9 @@ class EventType:
     # Interactive time travel (0026). Emitted in the NEW session right after
     # start when the TUI branches via /rewind or /retry — the recorded twin
     # of the meta.json lineage stamps (resumed_from / branched_at_turn).
+    # PROVIDER_SWAPPED accompanies it when /model changed the provider.
     SESSION_BRANCHED = "session.branched"
+    PROVIDER_SWAPPED = "provider.swapped"
 
     # Destructive-action gate (0012). Pattern matched a destructive command;
     # plugin asked the user via UserGate. Three terminal states:

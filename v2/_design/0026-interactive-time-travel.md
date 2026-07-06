@@ -270,13 +270,20 @@ rebuild sequence, extracted as `TUIApp._rebuild_session(max_turns, provider_over
    resume, including the guard-gate upgrade to `TUIGate`.
 5. Re-register the TUIApp on the **new** registry (`on_event` at 200) —
    same registration `run()` does at startup.
-6. `session.start()`; stamp lineage meta (the resume pattern: after the
-   recorder's `on_session_end`… here after `on_session_start` has created
-   the new meta — reuse `_mark_resume_meta`'s merge-on-disk approach,
-   hoisted into a shared helper in `cli/wiring.py` since resume, rerun,
-   replay and now the TUI all stamp meta post-hoc).
-7. Reset per-session TUI counters (the `/clear` block: tokens, turn count)
-   and print a fresh banner line with the new session id + lineage note.
+6. `session.start()`; emit `session.branched` (+ `provider.swapped`) — the
+   **authoritative** lineage record, persisted to events.jsonl immediately.
+7. Stamp lineage meta **eagerly** via `stamp_session_meta` (shared helper in
+   `cli/wiring.py`; child's `on_session_start` has already created meta.json,
+   so the merge-on-disk lands). Because tabs keep a branch open indefinitely,
+   the pre-tabs "stamp only after end" approach would lose lineage on a hard
+   kill; eager stamping keeps the derived meta honest while the tab is live.
+   The recorder rewrites meta (without lineage) at its eventual
+   `on_session_end`, so `self._pending_meta` re-stamps after end too
+   (`_end_session_and_stamp`). Events remain the source of truth — 0027's
+   scanner reads `session.branched`, treating the meta stamp as a fast-path.
+8. Print a fresh banner line with the new session id + lineage note. (Tab
+   counters live on the `_Tab`, so no per-session counter reset is needed —
+   a fresh tab starts them at zero.)
 
 Notes:
 

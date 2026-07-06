@@ -177,6 +177,42 @@ def test_rewind_branches_into_new_session(tmp_path):
     assert "branched" in out.getvalue()
 
 
+def test_branch_lineage_stamped_eagerly_before_close(tmp_path):
+    # Lineage must be on the child's meta the moment the branch is born —
+    # not only when the tab closes — so a hard kill can't lose it. We assert
+    # mid-run by snapshotting meta from a prompt_fn callback while the branch
+    # tab is still open.
+    provider = FakeProvider([_resp("a1"), _resp("a2"), _resp("a3")])
+    snapshots = {}
+
+    def make_app():
+        app, out, paths = _build_app(tmp_path, [], provider)
+        return app, out, paths
+
+    app, out, paths = make_app()
+    from collections import deque
+    queue = deque(["one", "/rewind 1", "branch prompt", "SNAPSHOT"])
+
+    def prompt_fn(prefix):
+        if not queue:
+            raise EOFError
+        nxt = queue.popleft()
+        if nxt == "SNAPSHOT":
+            # branch tab is open, its session not yet ended
+            child = [m for sid, m in _session_metas(paths).items()
+                     if m.get("resumed_from")]
+            snapshots["mid"] = child[0] if child else None
+            raise EOFError
+        return nxt
+
+    app._prompt_fn = prompt_fn
+    app.run()
+
+    assert snapshots["mid"] is not None, "branch meta not stamped while tab open"
+    assert snapshots["mid"]["branched_at_turn"] == 1
+    assert snapshots["mid"]["ended_at"] is None  # proves it was stamped live
+
+
 def test_rewind_empty_input_cancels_without_branching(tmp_path):
     provider = FakeProvider([_resp("a1"), _resp("a2")])
     app, out, paths = _build_app(

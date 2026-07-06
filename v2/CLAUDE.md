@@ -98,6 +98,11 @@ arc wipe [--all|--sessions|--llm|--history|--pricing-cache|--dry-run]
 arc --home <path> <cmd>      override ARC_HOME for one invocation
 ```
 
+In-TUI **time travel** (0026): `/rewind` (←/→ turn walker, branch-on-submit),
+`/retry`, `/model` (session-scoped provider swap), `/tab` + alt+1..9 (branches
+open in a live tab beside the parent; `tui.tabs_max` caps them). Lineage lands
+in the child `meta.json` and the `session.branched` event.
+
 ## Out-of-tree plugins
 
 arc supports **external** plugins shipped as pip-installable packages.
@@ -154,6 +159,12 @@ interactive print. Both use the comment-preserving writer at
 - **Don't break replay.** If you change provider translation or event shape,
   run replay tests specifically and update fixtures if needed (intentional)
   or fix the regression (not intentional).
+- **Replay disables plugin/sub-agent tool merges** (`AgentSession.
+  merge_contributed_tools=False`, set by `_cmd_replay`). The stub registry
+  built from the recording already holds every recorded tool name; letting
+  live plugins re-contribute them via `provides_tools()` collides
+  name-for-name and crashes `start()`. Plugin *hooks* still run. If you add a
+  new tool source, gate its merge on this flag too.
 - **New built-in plugin = builder + `_BUILTIN_BUILDERS` entry + `defaults.py` entry + tests.**
   See `_architecture/plugin-authoring.md`. `_BUILDERS` is now a derived dict
   populated by `_refresh_builders()` at import time — don't edit it directly.

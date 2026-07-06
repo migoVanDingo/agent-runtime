@@ -22,10 +22,35 @@ Start the interactive TUI. With no subcommand, this is the default.
 
 - Loads `$ARC_HOME/config.yml`, builds providers/tools/plugins, drops into
   prompt_toolkit input loop.
-- Slash commands: `/help`, `/exit`, `/quit`, `/clear`, `/sessions`.
+- Slash commands: `/help`, `/exit`, `/quit`, `/clear`, `/sessions`,
+  `/replay`, and the time-travel set (0026): `/rewind`, `/retry`, `/model`,
+  `/tab`.
 - Tab-complete on slash commands. ↑/↓ recalls input history.
 - Bottom toolbar shows `provider/model · SES… · turn N · in→out (total) · $cost`
-  when `tui.toolbar_enabled` is true and pricing data is available.
+  when `tui.toolbar_enabled` is true and pricing data is available. Grows a
+  `tabs 1* 2 …` segment once a branch opens a second tab.
+
+**Time travel (0026).** Fork the conversation without leaving the TUI:
+
+- `/rewind` — walk turns with ←/→ (each step prints the turn you land on),
+  Enter arms a branch at that turn; `/rewind N` arms directly. The next
+  prompt you submit forks a new session seeded with turns `1..N` (empty
+  input cancels — branch-on-submit, nothing is created until you commit).
+- `/retry` — re-ask the last prompt verbatim on a fresh branch.
+- `/model X` / `/model prov/X` — continue this conversation on another
+  model. Session-scoped (config.yml untouched); the branched session's
+  `config.snapshot.yml` records the effective provider so replay stays
+  correct.
+- `/tab [N]` — list/switch tabs (also alt+1…9). Branches open in a new tab;
+  the parent stays live. `/exit` closes the focused tab (falling back to the
+  survivor), `/quit` or the last `/exit` ends everything. `tui.tabs_max`
+  (default 4) caps live tabs.
+
+Every branch stamps lineage into the child's `meta.json` (`resumed_from`,
+`branched_at_turn`, `restored_message_count`, plus `retry_of_turn` /
+`provider_override` when applicable) and emits `session.branched`
+(+ `provider.swapped` on a model swap) — the latter is the authoritative
+record. The original session stays recorded and resumable.
 
 ### `arc bootstrap [--force]`
 
@@ -217,6 +242,8 @@ Every event in `events.jsonl` is a `RuntimeEvent` with this shape:
 | `runtime.cycle_detected` | Cycle detector triggered. Payload: tool name, repeated input. |
 | `runtime.context_packed` | Context manager filtered messages. Payload: counts before/after, fragments dropped. |
 | `runtime.conversation_cleared` | User ran `/clear` in the TUI. Payload: number of messages cleared. |
+| `session.branched` | TUI branched via `/rewind` or `/retry` (0026). Emitted in the NEW session. Payload: `source_session_id`, `branched_at_turn`, `restored_message_count`, optional `retry_of_turn`. Authoritative lineage record. |
+| `provider.swapped` | `/model` changed the provider mid-conversation (0026). Payload: `from_provider`, `from_model`, `to_provider`, `to_model`. |
 
 Causation chains: every event has a `parent_event_id` pointing at the event
 that caused it (`tool.call.started` is parented to the `llm.call.completed`

@@ -775,19 +775,26 @@ class TUIApp:
                 session_id=self._session.session_id,
             ))
 
-        # Lineage stamps land on meta.json after THIS session ends (the
-        # recorder rewrites meta at on_session_end; see stamp_session_meta).
-        self._pending_meta = {
+        lineage = {
             "resumed_from": old_sid,
             "branched_at_turn": n,
             "restored_message_count": len(messages),
         }
         if retry_of_turn is not None:
-            self._pending_meta["retry_of_turn"] = retry_of_turn
+            lineage["retry_of_turn"] = retry_of_turn
         if provider_cfg is not None:
-            self._pending_meta["provider_override"] = {
+            lineage["provider_override"] = {
                 "name": provider_cfg.name, "model": provider_cfg.model,
             }
+        # Stamp meta.json NOW (child's on_session_start already wrote it), so
+        # a tab that stays open — or a hard kill — still preserves lineage.
+        # The recorder rewrites meta at on_session_end without these fields,
+        # so re-stamp then too (self._pending_meta, applied by
+        # _end_session_and_stamp). The session.branched EVENT is the true
+        # record either way; this keeps the derived meta honest live.
+        from arc.cli.wiring import stamp_session_meta
+        stamp_session_meta(self._paths.sessions_dir, self._session.session_id, lineage)
+        self._pending_meta = dict(lineage)
 
         self._console.print(render.render_branch_notice(
             old_sid, n, self._session.session_id, len(messages),

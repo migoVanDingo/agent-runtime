@@ -1,6 +1,8 @@
 # 0027 — Visual session timeline (the forest, rendered)
 
-## Status: Design (not yet implemented). Companion to 0026 (interactive time travel).
+## Status: IMPLEMENTED (2026-07-06, feature/0027-visual-timeline — phases a–d).
+## Phase e (diff panel + replay-divergence badges + richer filters) pending.
+## Companion to 0026 (interactive time travel, merged).
 
 ## Motivation
 

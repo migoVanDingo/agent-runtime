@@ -83,6 +83,7 @@ arc setup --picker           classic provider/model picker only (0017)
 arc setup --section NAME     open hub focused on a specific section
 arc run "<prompt>"           one-shot non-interactive turn
 arc sessions                 list recorded sessions
+arc timeline [--open|--rebuild]  visual session forest → sessions/timeline.html (0027)
 arc show <id>                pretty-print events
 arc log <id> [--tail N]      human-readable session.log
 arc config show / path       inspect resolved config

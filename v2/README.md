@@ -21,7 +21,7 @@ optional plugin that can be toggled in `config.yml`.
 | **Source** | ~11,900 lines Python |
 | **Tests** | 553 unit tests + real-API integration suites |
 | **Providers** | Gemini, Anthropic, Ollama, llama.cpp (compat + GBNF grammar mode) |
-| **TUI** | prompt_toolkit + Rich, inline mode, slash commands (`/replay`, `/sessions`, …), bottom toolbar with live cost |
+| **TUI** | prompt_toolkit + Rich, inline mode, slash commands (`/rewind`, `/model`, `/tab`, `/replay`, `/sessions`, …), in-session time travel + tabs, bottom toolbar with live cost |
 
 ---
 
@@ -126,11 +126,12 @@ detection, and cooperatively yields to `pause_check` between iterations.
 | `safety-gate` | `before_tool_call` | Per-pattern destructive-action confirmation (0012). 12 default patterns + custom regex. |
 | `pause-resume` | `pause_check` | Watches signal file + in-process flag. Raises PauseRequested at next checkpoint. |
 | `log-writer` | `on_session_start`, `on_event`, `on_session_end` | Writes human-readable `session.log` per session, v1-style format. |
+| `timeline` | `on_session_end` | Regenerates the visual session forest (0027) — `sessions/timeline.html` + the ended session's `session.html`. Cheap: only the ended session reparses events. |
 | `sliding-window-context` | `pack_context` | Drops oldest user-turn fragments when message budget is exceeded. Keeps the system prompt and recent context intact. |
 | `max-cost` | `after_llm_call` | Cost-cap enforcement (0019). Tallies cost via the pricing table; raises `MaxCostExceeded` past the cap. Used by `arc replay --max-cost-usd`. |
 | `mcp` | `on_session_start`, `on_session_end` | MCP client bridge (0025). Connects configured MCP servers and surfaces their tools into the registry as first-class, gated, observable arc tools. Empty server list = no-op. Needs `pip install "arc[mcp]"`. |
 
-All eight are plugins. All are optional. Disabling any one is a
+All nine are plugins. All are optional. Disabling any one is a
 single config-line edit; nothing else breaks.
 
 ### Layer 3 — supporting code
@@ -179,12 +180,14 @@ src/arc/
     compare.py          summary + turn-by-turn render (0019)
   resume/               message reconstruction for resume + branch
   rerun/                user-input extraction for mode 5
+  timeline/             session forest → static HTML (0027): scan/summarize/detail/render
   plugins/
     jsonl_recorder/
     guard/
     safety_gate/
     pause_resume/
     log_writer/
+    timeline/           regenerates the visual timeline on session end (0027)
     sliding_window_context/
     max_cost/           cost-cap plugin (0019)
 ```
@@ -249,12 +252,26 @@ Returns `Error: exit code N\n...` on failure.
 | 2 — Deterministic replay | `arc replay <id>` | Stubbed LLM + stubbed tools; asserts byte-identical event log |
 | 3 — Test prompt change | `arc replay <id> --live-llm` | Live LLM, stubbed tools — see if prompt/model change breaks the scenario |
 | 3.5 — Cross-provider replay | `arc replay <id> --live-llm --override-provider X --override-model Y` | Re-run against any provider/model (0019). Live tools. Optional `--max-cost-usd` cap, optional `--against P:M,P:M,…` to fan out to many models in parallel. |
-| 4 — Branch | `arc resume <id> --at-turn N --prompt "..."` | Fork after turn N, take a different path |
+| 4 — Branch | `arc resume <id> --at-turn N --prompt "..."` or `/rewind` in the TUI | Fork after turn N, take a different path |
 | 5 — Rerun | `arc rerun <id>` | Replay user inputs against fresh agent; regression test |
 | Compare | `arc compare <id1> <id2> [<id3> …]` | Side-by-side summary metrics + (for N=2) turn-by-turn diff (0019) |
 
+**Interactive time travel (0026).** Modes 1 and 4 are usable without leaving
+the TUI: `/rewind` walks turns with ←/→ and forks on your next prompt,
+`/retry` re-asks the last prompt on a fresh branch, `/model` continues the
+conversation on another provider/model (session-scoped), and `/tab` (alt+1…9)
+holds parallel branches side by side — the parent stays live.
+
+**Visual timeline (0027).** `arc timeline --open` renders the whole session
+forest as a self-contained HTML page in the sessions dir: lanes per session,
+fork edges dropping from a parent turn to the child, click a node for detail
+and a copyable branch command. The `timeline` builtin plugin keeps it fresh
+on every session end.
+
 Sessions carry chain metadata (`replay_of`, `resumed_from`, `branched_at_turn`,
-`rerun_of`) so you can follow any session back through its lineage.
+`rerun_of`, `retry_of_turn`, `provider_override`) so you — and the timeline —
+can follow any session back through its lineage. The `session.branched` event
+is the authoritative fork record.
 
 ---
 
@@ -270,6 +287,7 @@ arc setup [--provider X --model Y]   interactive provider/model picker (0017)
   --print                              run picker, print resulting YAML, exit
 arc run "<prompt>"                   one-shot turn, prints reply
 arc sessions                         list recorded sessions
+arc timeline [--open] [--rebuild]    generate/open the visual session forest (0027)
 arc show <id>                        pretty-print events
 arc log <id> [--tail N]              human-readable session.log
 arc config show / arc config path    inspect resolved config

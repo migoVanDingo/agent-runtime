@@ -143,6 +143,16 @@ Human-readable session.log writer.
 | `include_events` | list[str] | `[]` | If non-empty, ONLY log these event types. |
 | `exclude_events` | list[str] | `[]` | Event types to skip. |
 
+### `timeline`
+
+Regenerates the visual session timeline (0027) on session end — see
+`arc timeline`.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `summary_max_chars` | int | `400` | Per-field truncation in the forest view (`timeline.html`). |
+| `full_output_max_chars` | int | `20000` | Per tool output cap in `session.html`. |
+
 ### `sliding-window-context`
 
 Drops oldest user-turn fragments when over budget.

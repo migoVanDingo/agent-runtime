@@ -79,6 +79,23 @@ List recorded sessions from `$ARC_HOME/sessions/index.jsonl`.
 - Columns: `session_id`, `started_at`, `provider/model`, chain markers
   (`resumed_from`, `replay_of`, `rerun_of`, `branched_at_turn`).
 
+### `arc timeline [--open] [--rebuild]`
+
+Generate / open the **visual session timeline** (0027) — the session forest
+rendered as a self-contained static HTML page in the sessions dir.
+
+- No args: ensure `sessions/timeline.html` is current (generate if missing),
+  print its path.
+- `--open`: also open it in a browser (`webbrowser.open`).
+- `--rebuild`: force full regeneration, including every per-session
+  `session.html` and node cache (recovery after a format change).
+- Normally you don't run this: the `timeline` builtin plugin regenerates the
+  page on every session end. Lanes = sessions, nodes = turns, fork edges drop
+  from a parent turn to the child (branch/retry solid, resume/replay/rerun
+  dashed). Click a node → detail panel with a copyable `/rewind` command;
+  each node links to `<sid>/session.html`. Files live at
+  `sessions/timeline.html` + `sessions/<sid>/session.html`.
+
 ### `arc show <id>`
 
 Pretty-print every event in `<sid>/events.jsonl`. Useful for debugging

@@ -83,6 +83,7 @@ arc setup --picker           classic provider/model picker only (0017)
 arc setup --section NAME     open hub focused on a specific section
 arc run "<prompt>"           one-shot non-interactive turn
 arc sessions                 list recorded sessions
+arc timeline [--open|--rebuild]  visual session forest → sessions/timeline.html (0027)
 arc show <id>                pretty-print events
 arc log <id> [--tail N]      human-readable session.log
 arc config show / path       inspect resolved config
@@ -267,7 +268,8 @@ interactive print. Both use the comment-preserving writer at
 
 | Phase | Doc | What landed |
 |---|---|---|
-| 5.3 | `_design/0026-interactive-time-travel.md` | In-TUI time travel: `/rewind` (arrow-key turn walker, branch-on-submit), `/retry`, `/model` (session-scoped provider swap, effective-config snapshot), tabs (`/tab`, alt+1..9, `tui.tabs_max`). Lineage via `stamp_session_meta` + `session.branched`/`provider.swapped` events. 0027 (visual timeline) not built yet. |
+| 5.4 | `_design/0027-visual-timeline.md` | Visual session timeline: `arc.timeline` package (scan/summarize/detail/render) projects the session forest into self-contained static HTML (`sessions/timeline.html` + per-session `session.html`); `timeline` builtin plugin regenerates on session end; `arc timeline [--open] [--rebuild]`. Lineage meta-first with `session.branched` event fallback. Phase e (diff panel + divergence badges) pending. |
+| 5.3 | `_design/0026-interactive-time-travel.md` | In-TUI time travel: `/rewind` (arrow-key turn walker, branch-on-submit), `/retry`, `/model` (session-scoped provider swap, effective-config snapshot), tabs (`/tab`, alt+1..9, `tui.tabs_max`). Lineage via `stamp_session_meta` + `session.branched`/`provider.swapped` events. |
 | 5.2 | `_design/0025-mcp-client-integration.md` | `mcp` plugin: consume external MCP servers (stdio + streamable-HTTP), tools→registry, `arc mcp add/remove/list/status`, setup section. Impl notes below. |
 | 5.1 | `_design/0023-setup-hub-and-themes.md` | `arc setup` sidebar+content hub, themes |
 | 5.0 | `_design/0020-subagent-dispatch.md` (+0021 gcs, 0022 video) | sub-agent dispatch as a tool, GCS spillover |

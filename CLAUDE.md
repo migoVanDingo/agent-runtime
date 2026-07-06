@@ -11,7 +11,7 @@ subdir has its own `CLAUDE.md` that's authoritative for work inside it.
 | Directory | Purpose |
 |---|---|
 | `v1/`                    | Legacy agent runtime (SQLModel, Textual TUI, Ghidra/Briefbot). Bug-fix mode only. |
-| `v2/`                    | Active rewrite. Plugin runtime, replay, two providers. Read `v2/CLAUDE.md`. |
+| `v2/`                    | Active rewrite. Plugin runtime, replay + in-TUI time travel (0026), visual session timeline (0027), multiple providers. Read `v2/CLAUDE.md`. |
 | `arc-plugin-template/`   | Template repo for building **external** arc plugins. Forked when a new plugin starts. |
 | `arc-plugin-briefbot/`   | External plugin: read-only tools over a local Briefbot SQLite corpus. |
 | `arc-plugin-websearch/`  | External plugin: `web_search` / `read_url` / `http_request` / `extract_html`. |

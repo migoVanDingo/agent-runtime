@@ -111,6 +111,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("sessions", help="list known sessions")
 
+    timeline = sub.add_parser(
+        "timeline", help="generate/open the visual session timeline (0027)")
+    timeline.add_argument("--open", dest="open_browser", action="store_true",
+                          help="open timeline.html in a browser")
+    timeline.add_argument("--rebuild", action="store_true",
+                          help="force full regeneration (all per-session pages too)")
+
     show = sub.add_parser("show", help="pretty-print a recorded session")
     show.add_argument("session_id", help="session id (e.g., SES01HXYZ...)")
 

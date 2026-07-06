@@ -1,6 +1,7 @@
 # 0026 — Interactive time travel (`/rewind`, `/retry`, `/model`)
 
-## Status: Design (not yet implemented). Companion to 0027 (visual timeline).
+## Status: IMPLEMENTED (2026-07-06, feature/0026-time-travel — phases a–e).
+## Companion to 0027 (visual timeline, not yet built).
 
 ## Motivation
 

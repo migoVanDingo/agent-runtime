@@ -295,3 +295,15 @@ def test_rerun_cli_smoke(tmp_path, monkeypatch):
     home = tmp_path / "h"
     sid = _record_session(monkeypatch, home)
     assert main(["rerun", sid]) == 0
+
+
+def test_python_dash_m_arc_cli_still_works():
+    # The TUI /replay menu + batch replay spawn `python -m arc.cli` — the
+    # cli.py → cli/ package split must keep __main__ importable.
+    import subprocess
+    import sys
+    res = subprocess.run(
+        [sys.executable, "-m", "arc.cli", "config", "path"],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert res.returncode == 0, res.stderr

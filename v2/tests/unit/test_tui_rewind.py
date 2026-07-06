@@ -244,6 +244,51 @@ def test_rewind_unavailable_without_paths():
     assert "/rewind unavailable" in out.getvalue()
 
 
+# ── rewind walker (phase b) ───────────────────────────────────────────────
+
+
+def _build_app_with_walker(tmp_path, inputs, provider, walker):
+    app, out, paths = _build_app(tmp_path, inputs, provider)
+    app._turn_walker = walker
+    return app, out, paths
+
+
+def test_walker_selection_arms_the_branch(tmp_path):
+    seen = {}
+
+    def walker(turns):
+        seen["turns"] = turns
+        return 1
+
+    provider = FakeProvider([_resp("a1"), _resp("a2"), _resp("a3")])
+    app, out, paths = _build_app_with_walker(
+        tmp_path, ["one", "two", "/rewind", "branch prompt"], provider, walker)
+    app.run()
+
+    assert [t.index for t in seen["turns"]] == [1, 2]
+    assert seen["turns"][0].user_input == "one"
+
+    metas = _session_metas(paths)
+    assert len(metas) == 2
+    _, child = _find_child(metas)
+    assert child["branched_at_turn"] == 1
+
+
+def test_walker_cancel_arms_nothing(tmp_path):
+    provider = FakeProvider([_resp("a1"), _resp("a2")])
+    app, out, paths = _build_app_with_walker(
+        tmp_path, ["one", "/rewind", "still same session"], provider,
+        lambda turns: None)
+    app.run()
+
+    metas = _session_metas(paths)
+    assert len(metas) == 1
+    (sid,) = metas
+    turns = [e["content"]["user_input"] for e in _events(paths, sid)
+             if e["type"] == EventType.TURN_STARTED]
+    assert turns == ["one", "still same session"]
+
+
 # ── /retry ────────────────────────────────────────────────────────────────
 
 

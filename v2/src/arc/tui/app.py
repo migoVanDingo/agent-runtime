@@ -52,11 +52,13 @@ class TUIApp:
         prompt_fn: PromptFn | None = None,
         console: Console | None = None,
         paths: Any = None,  # bootstrap.HomePaths | None — enables /rewind + /retry
+        turn_walker: Callable[[list], int | None] | None = None,  # test seam for rewind mode
     ) -> None:
         self._cfg = config
         self._session = session
         self._home_display = home_display
         self._paths = paths
+        self._turn_walker = turn_walker
         # Time travel (0026): armed rewind target (turn number) + lineage
         # stamps for the current session, applied to meta.json after end().
         self._rewind_target: int | None = None
@@ -423,7 +425,14 @@ class TUIApp:
         parts = text.split()
         if len(parts) == 1:
             from arc.replay.compare import extract_turns
-            self._console.print(render.render_turn_map(extract_turns(source_dir)))
+            turns = extract_turns(source_dir)
+            self._console.print(render.render_turn_map(turns))
+            walker_available = self._turn_walker is not None or self._prompt_fn is None
+            n = self._run_turn_walker(turns)
+            if n is not None:
+                self._arm_rewind(n, total)
+            elif walker_available:
+                self._console.print("[arc.dim]rewind cancelled — still at the tip[/arc.dim]")
             return
 
         try:
@@ -440,6 +449,31 @@ class TUIApp:
             )
             n = total
 
+        self._arm_rewind(n, total)
+
+    def _run_turn_walker(self, turns: list) -> int | None:
+        """Run the ←/→ rewind walker; returns the selected turn or None.
+
+        Test seam first; the real prompt_toolkit walker only when the main
+        prompt is real prompt_toolkit too (injected prompt_fn = no TTY —
+        the printed map + `/rewind N` remain the non-interactive path).
+        """
+        if not turns:
+            return None
+        if self._turn_walker is not None:
+            return self._turn_walker(turns)
+        if self._prompt_fn is not None:
+            return None
+        from arc.tui.rewind_mode import walk_turns
+        total = len(turns)
+        return walk_turns(
+            turns,
+            print_card=lambda i: self._console.print(
+                render.render_turn_card(turns[i - 1], total)
+            ),
+        )
+
+    def _arm_rewind(self, n: int, total: int) -> None:
         self._rewind_target = n
         self._console.print(
             f"[arc.brand]⑂[/arc.brand] rewound to turn {n}/{total} — "

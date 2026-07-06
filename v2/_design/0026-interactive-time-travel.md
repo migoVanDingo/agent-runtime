@@ -118,8 +118,10 @@ the main prompt's history or typing behavior.
   TUI is append-only, so stepping back literally re-reads the conversation
   in reverse — navigation and "scrolling to find the spot" are the same
   gesture. The toolbar mirrors position (`⏪ turn 3/7`).
-- **Enter (or just starting to type) selects the current turn.** The mode
-  exits and the prompt becomes the branch point:
+- **Enter selects the current turn.** (Type-to-select was considered and
+  dropped: exiting the mode on a printable key would swallow that first
+  character of the prompt.) The mode exits and the prompt becomes the
+  branch point:
 
 ```
 arc(3)❯ actually, disassemble it with radare2 instead

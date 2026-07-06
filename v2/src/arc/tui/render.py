@@ -266,6 +266,26 @@ def render_turn_map(turns: list[Any]) -> Group:
     return Group(*lines)
 
 
+def render_turn_card(turn: Any, total: int) -> Group:
+    """Two-line card for one turn — printed by rewind mode on each ←/→ step."""
+    def _short(s: str, n: int = 70) -> str:
+        s = " ".join((s or "").split())
+        return s if len(s) <= n else s[: n - 1] + "…"
+
+    return Group(
+        Text.assemble(
+            ("┌ ", "arc.dim"),
+            (f"turn {turn.index}/{total}", "arc.brand"),
+            (" ── you: ", "arc.dim"),
+            (_short(turn.user_input), "arc.user.prefix"),
+        ),
+        Text.assemble(
+            ("└ arc: ", "arc.dim"),
+            (_short(turn.assistant_text), "arc.dim"),
+        ),
+    )
+
+
 def render_branch_notice(source_sid: str, at_turn: int, new_sid: str,
                          n_messages: int) -> Group:
     """Divider printed after a /rewind or /retry branch lands."""

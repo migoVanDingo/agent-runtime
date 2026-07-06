@@ -69,6 +69,10 @@ class AgentSession:
     # after plugin tools are merged. None disables sub-agent dispatch for
     # this session.
     subagent_registry: Any = None  # SubAgentRegistry | None — Any to avoid runtime import
+    # False = skip plugin/sub-agent tool merges at start (replay: the stub
+    # registry from the recording is the tool surface; live contributions
+    # would collide with it name-for-name).
+    merge_contributed_tools: bool = True
     _messages: list[Message] = None  # type: ignore[assignment]
     _session_ctx: SessionContext | None = None
     _started: bool = False
@@ -113,12 +117,17 @@ class AgentSession:
 
             # Merge plugin-contributed tools (no-op if no plugin defines
             # provides_tools). Collisions raise — this is loud on purpose.
-            self._merge_plugin_tools()
+            # Replay disables the merges: its stub registry (built from the
+            # recording) already carries every recorded tool name, including
+            # plugin- and subagent-contributed ones, and the recording is the
+            # authoritative tool-output source during replay.
+            if self.merge_contributed_tools:
+                self._merge_plugin_tools()
 
-            # Merge sub-agent tools (0020). MUST run after plugin tools so
-            # specs can reference plugin-contributed tools in their allowlist.
-            # Skipped when inside a sub-agent (recursion prohibition layer 1).
-            self._merge_subagent_tools()
+                # Merge sub-agent tools (0020). MUST run after plugin tools so
+                # specs can reference plugin-contributed tools in their
+                # allowlist. Skipped inside a sub-agent (recursion layer 1).
+                self._merge_subagent_tools()
 
             # Bind the bus to tools that need it (optional contract).
             self._bind_bus_to_tools()

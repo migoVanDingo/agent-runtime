@@ -24,7 +24,8 @@ class BuiltSession:
 def build_session(cfg, paths, *, provider, tools, subagent_registry,
                   gate=None, session_id=None, extra_plugins=(),
                   initial_messages=None,
-                  config_snapshot_yaml=None) -> BuiltSession:
+                  config_snapshot_yaml=None,
+                  merge_contributed_tools=True) -> BuiltSession:
     """Wire a fresh AgentSession from its parts — the shared core the run,
     interactive, replay, resume and rerun commands all need.
 
@@ -68,7 +69,8 @@ def build_session(cfg, paths, *, provider, tools, subagent_registry,
     session = AgentSession(
         config=cfg, provider=provider, tools=tools,
         registry=registry, bus=bus, session_id=sid,
-        subagent_registry=subagent_registry, **kwargs,
+        subagent_registry=subagent_registry,
+        merge_contributed_tools=merge_contributed_tools, **kwargs,
     )
     return BuiltSession(session=session, bus=bus, registry=registry,
                         plugins=plugins, session_id=sid)

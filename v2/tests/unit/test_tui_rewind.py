@@ -350,6 +350,58 @@ def test_retry_with_no_turns(tmp_path):
     assert "no completed turn to retry" in out.getvalue()
 
 
+# ── tabs (phase d) ────────────────────────────────────────────────────────
+
+
+def test_branch_opens_tab_and_exit_returns_to_parent(tmp_path):
+    provider = FakeProvider([_resp("r1"), _resp("r2"), _resp("r3")])
+    app, out, paths = _build_app(
+        tmp_path,
+        ["one", "/rewind 1", "branch prompt", "/exit", "back in parent"],
+        provider)
+    app.run()
+
+    metas = _session_metas(paths)
+    assert len(metas) == 2
+    child_sid, child = _find_child(metas)
+    parent_sid = child["resumed_from"]
+
+    parent_turns = [e["content"]["user_input"] for e in _events(paths, parent_sid)
+                    if e["type"] == EventType.TURN_STARTED]
+    assert parent_turns == ["one", "back in parent"]  # parent survived the branch
+    child_turns = [e["content"]["user_input"] for e in _events(paths, child_sid)
+                   if e["type"] == EventType.TURN_STARTED]
+    assert child_turns == ["branch prompt"]
+    assert "tab closed" in out.getvalue()
+
+
+def test_tab_switch_runs_turn_in_target_tab(tmp_path):
+    provider = FakeProvider([_resp("r1"), _resp("r2"), _resp("r3")])
+    app, out, paths = _build_app(
+        tmp_path,
+        ["one", "/rewind 1", "branch prompt", "/tab 1", "again in parent"],
+        provider)
+    app.run()
+
+    metas = _session_metas(paths)
+    child_sid, child = _find_child(metas)
+    parent_sid = child["resumed_from"]
+    parent_turns = [e["content"]["user_input"] for e in _events(paths, parent_sid)
+                    if e["type"] == EventType.TURN_STARTED]
+    assert parent_turns == ["one", "again in parent"]
+
+
+def test_tab_cap_blocks_branch(tmp_path):
+    from dataclasses import replace
+    provider = FakeProvider([_resp("r1")])
+    app, out, paths = _build_app(tmp_path, ["one", "/rewind 0", "x"], provider)
+    app._cfg = replace(app._cfg, tui=replace(app._cfg.tui, tabs_max=1))
+    app.run()
+
+    assert "tab cap reached" in out.getvalue()
+    assert len(_session_metas(paths)) == 1
+
+
 # ── /model (phase c) ──────────────────────────────────────────────────────
 
 

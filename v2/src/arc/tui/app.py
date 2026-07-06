@@ -12,7 +12,8 @@ Design (per phase 0 spec §11 + the conversation that led to it):
   - Rich.Console drives all rendering; prompt_toolkit handles input only.
 
 Slash commands (matched first; not sent to the model):
-    /help, /exit, /quit, /clear, /sessions, /replay, /rewind, /retry, /model
+    /help, /exit, /quit, /clear, /sessions, /replay, /rewind, /retry,
+    /model, /tab
 """
 from __future__ import annotations
 
@@ -32,6 +33,25 @@ from arc.tui.themes import resolve_from_config
 
 # Type alias for the prompt function (injectable for tests)
 PromptFn = Callable[[str], str]
+
+
+class _Tab:
+    """One live session owned by the TUI (0026 phase d).
+
+    A background tab is a live-but-idle session parked between turns —
+    the TUI is single-threaded, so only the focused tab ever runs a turn
+    and only it emits events. Token/turn counters are per-tab so the
+    toolbar restarts with each branch.
+    """
+
+    def __init__(self, session: AgentSession) -> None:
+        self.session = session
+        self.pending_meta: dict | None = None
+        self.last_tokens_in = 0
+        self.last_tokens_out = 0
+        self.tokens_in = 0
+        self.tokens_out = 0
+        self.turn_count = 0
 
 
 class TUIApp:
@@ -55,14 +75,15 @@ class TUIApp:
         turn_walker: Callable[[list], int | None] | None = None,  # test seam for rewind mode
     ) -> None:
         self._cfg = config
-        self._session = session
         self._home_display = home_display
         self._paths = paths
         self._turn_walker = turn_walker
-        # Time travel (0026): armed rewind target (turn number) + lineage
-        # stamps for the current session, applied to meta.json after end().
+        # Time travel (0026): tabs (each a live session; branch opens one)
+        # + the armed rewind target (turn number). Session-scoped state —
+        # counters, pending meta stamps — lives on the tab.
+        self._tabs: list[_Tab] = [_Tab(session)]
+        self._focus = 0
         self._rewind_target: int | None = None
-        self._pending_meta: dict | None = None
         # Resolve & cache the active theme so render.py + dialogs see it.
         # If the caller injected its own Console (tests), push our theme
         # onto it so the arc.* named styles resolve there too.
@@ -77,15 +98,64 @@ class TUIApp:
                 pass
         self._prompt_fn = prompt_fn  # None → use prompt_toolkit at .run() time
         self._status: Status | None = None
-        self._last_tokens_in = 0
-        self._last_tokens_out = 0
         self._event_count = 0
-        # Session-level running totals (for the bottom toolbar)
-        self._session_tokens_in = 0
-        self._session_tokens_out = 0
-        self._session_turn_count = 0
         # Pricing lookup — built lazily on first toolbar evaluation
         self._pricing = None
+
+    # ── Focused-tab state (kept as properties so the rest of the app reads
+    #    like the single-session TUI it used to be) ─────────────────────────
+
+    @property
+    def _session(self) -> AgentSession:
+        return self._tabs[self._focus].session
+
+    @property
+    def _pending_meta(self) -> dict | None:
+        return self._tabs[self._focus].pending_meta
+
+    @_pending_meta.setter
+    def _pending_meta(self, v: dict | None) -> None:
+        self._tabs[self._focus].pending_meta = v
+
+    @property
+    def _last_tokens_in(self) -> int:
+        return self._tabs[self._focus].last_tokens_in
+
+    @_last_tokens_in.setter
+    def _last_tokens_in(self, v: int) -> None:
+        self._tabs[self._focus].last_tokens_in = v
+
+    @property
+    def _last_tokens_out(self) -> int:
+        return self._tabs[self._focus].last_tokens_out
+
+    @_last_tokens_out.setter
+    def _last_tokens_out(self, v: int) -> None:
+        self._tabs[self._focus].last_tokens_out = v
+
+    @property
+    def _session_tokens_in(self) -> int:
+        return self._tabs[self._focus].tokens_in
+
+    @_session_tokens_in.setter
+    def _session_tokens_in(self, v: int) -> None:
+        self._tabs[self._focus].tokens_in = v
+
+    @property
+    def _session_tokens_out(self) -> int:
+        return self._tabs[self._focus].tokens_out
+
+    @_session_tokens_out.setter
+    def _session_tokens_out(self, v: int) -> None:
+        self._tabs[self._focus].tokens_out = v
+
+    @property
+    def _session_turn_count(self) -> int:
+        return self._tabs[self._focus].turn_count
+
+    @_session_turn_count.setter
+    def _session_turn_count(self, v: int) -> None:
+        self._tabs[self._focus].turn_count = v
 
     # ── Entry point ────────────────────────────────────────────────────────
 
@@ -126,6 +196,9 @@ class TUIApp:
                     text = prompt(self._prompt_prefix())
                 except (EOFError, KeyboardInterrupt):
                     self._console.print()
+                    if len(self._tabs) > 1:
+                        self._close_focused_tab()  # Ctrl+D = close tab, like /exit
+                        continue
                     break
 
                 text = text.strip()
@@ -153,7 +226,10 @@ class TUIApp:
                 self._run_one_turn(text)
         finally:
             self._stop_status()
-            self._end_session_and_stamp()
+            for tab in list(self._tabs):  # /quit or fatal exit: end every tab
+                self._end_session_and_stamp(tab)
+            self._tabs = [self._tabs[0]]  # keep list non-empty for property access
+            self._focus = 0
             self._restore_sigint(prev_sigint)
 
         return 0
@@ -376,8 +452,16 @@ class TUIApp:
     def _handle_slash(self, text: str) -> bool:
         """Return True if the command should end the session."""
         cmd = text.split()[0].lower()
-        if cmd in ("/exit", "/quit"):
+        if cmd == "/quit":
+            return True  # closes every tab (run()'s finally ends them all)
+        if cmd == "/exit":
+            if len(self._tabs) > 1:
+                self._close_focused_tab()
+                return False
             return True
+        if cmd == "/tab":
+            self._handle_tab(text)
+            return False
         if cmd == "/help":
             self._console.print(render.render_help())
             return False
@@ -594,14 +678,21 @@ class TUIApp:
         from arc.tools import build as build_tools
         from arc.user_gate import TUIGate
 
+        if len(self._tabs) >= self._cfg.tui.tabs_max:
+            self._console.print(
+                f"[arc.error]tab cap reached ({len(self._tabs)}/"
+                f"{self._cfg.tui.tabs_max}) — /exit a tab first "
+                f"(tui.tabs_max in config)[/arc.error]"
+            )
+            return False
+
         old_sid = self._session.session_id
         source_dir = self._paths.sessions_dir / old_sid
 
-        # Finalize the parent first so its recording is complete, then
-        # truncate from the recording — the same code path as
-        # `arc resume --at-turn`, so branch semantics match exactly.
-        self._end_session_and_stamp()
-
+        # The parent stays live in its tab. Its recording is still safe to
+        # truncate from: the recorder appends per event, and a tab between
+        # turns is complete through its last turn.ended — the same
+        # between-turns invariant pause relies on.
         n = max(0, min(max_turns, count_completed_turns(source_dir)))
         try:
             own_messages = messages_from_session(source_dir, max_turns=n)
@@ -655,7 +746,8 @@ class TUIApp:
             initial_messages=messages,
             config_snapshot_yaml=snapshot_override,
         )
-        self._session = built.session
+        self._tabs.append(_Tab(built.session))
+        self._focus = len(self._tabs) - 1
         self._session.registry.register(self, hooks_order={"on_event": 200})
         self._session.start()
 
@@ -697,13 +789,6 @@ class TUIApp:
                 "name": provider_cfg.name, "model": provider_cfg.model,
             }
 
-        # Per-session TUI counters restart with the new session
-        self._last_tokens_in = 0
-        self._last_tokens_out = 0
-        self._session_tokens_in = 0
-        self._session_tokens_out = 0
-        self._session_turn_count = 0
-
         self._console.print(render.render_branch_notice(
             old_sid, n, self._session.session_id, len(messages),
         ))
@@ -715,15 +800,69 @@ class TUIApp:
             )
         return True
 
-    def _end_session_and_stamp(self) -> None:
-        """End the current session, then apply any pending lineage stamps
+    def _end_session_and_stamp(self, tab: _Tab | None = None) -> None:
+        """End a tab's session, then apply its pending lineage stamps
         (must come after end — the recorder rewrites meta.json there)."""
-        sid = self._session.session_id
-        self._session.end()
-        if self._pending_meta and self._paths is not None:
+        tab = tab if tab is not None else self._tabs[self._focus]
+        sid = tab.session.session_id
+        tab.session.end()
+        if tab.pending_meta and self._paths is not None:
             from arc.cli.wiring import stamp_session_meta
-            stamp_session_meta(self._paths.sessions_dir, sid, self._pending_meta)
-        self._pending_meta = None
+            stamp_session_meta(self._paths.sessions_dir, sid, tab.pending_meta)
+        tab.pending_meta = None
+
+    def _close_focused_tab(self) -> None:
+        """End the focused tab's session; focus falls to the last remaining
+        tab (the parent, in the common branch-then-close flow)."""
+        closing = self._tabs[self._focus]
+        self._end_session_and_stamp(closing)
+        self._tabs.remove(closing)
+        self._focus = len(self._tabs) - 1
+        self._console.print(
+            f"[arc.dim]tab closed ({closing.session.session_id}) — back to "
+            f"{self._session.session_id}[/arc.dim]"
+        )
+
+    def _handle_tab(self, text: str) -> None:
+        """`/tab` — list tabs. `/tab N` — focus tab N (1-based)."""
+        parts = text.split()
+        if len(parts) == 1:
+            for i, tab in enumerate(self._tabs):
+                marker = "*" if i == self._focus else " "
+                branch = ""
+                if tab.pending_meta and "branched_at_turn" in tab.pending_meta:
+                    branch = f"  ⑂{tab.pending_meta['branched_at_turn']}"
+                self._console.print(
+                    f"[arc.dim]{marker}[/arc.dim] {i + 1}: "
+                    f"[arc.info]{tab.session.session_id}[/arc.info]"
+                    f"[arc.dim]{branch}  turn {tab.turn_count}[/arc.dim]"
+                )
+            return
+        try:
+            i = int(parts[1]) - 1
+        except ValueError:
+            self._console.print(f"[arc.error]/tab: not a tab number: {parts[1]}[/arc.error]")
+            return
+        if not 0 <= i < len(self._tabs):
+            self._console.print(
+                f"[arc.error]/tab: no tab {parts[1]} (1-{len(self._tabs)})[/arc.error]")
+            return
+        if i == self._focus:
+            self._console.print("[arc.dim]already on that tab[/arc.dim]")
+            return
+        self._rewind_target = None  # an armed rewind is tab-local intent
+        self._focus = i
+        self._console.print(
+            f"[arc.dim]── tab {i + 1}:[/arc.dim] "
+            f"[arc.info]{self._session.session_id}[/arc.info]"
+        )
+        # Re-orient: print the tail of this tab's conversation (its own
+        # recording; inherited prefix turns live in the parent's tab).
+        if self._paths is not None:
+            from arc.replay.compare import extract_turns
+            turns = extract_turns(self._paths.sessions_dir / self._session.session_id)
+            for t in turns[-2:]:
+                self._console.print(render.render_turn_card(t, len(turns)))
 
     def _recorded_user_input(self, source_dir, turn_n: int) -> str | None:
         """The user input of completed turn `turn_n` (1-based), from events."""
@@ -936,9 +1075,19 @@ class TUIApp:
         # Tab-completion for slash commands
         slash_completer = WordCompleter(
             ["/help", "/exit", "/quit", "/clear", "/sessions", "/replay",
-             "/rewind", "/retry", "/model"],
+             "/rewind", "/retry", "/model", "/tab"],
             ignore_case=True,
         )
+
+        # alt+1..9 → switch tabs (0026 phase d). Submitting "/tab N" through
+        # the normal input path keeps one switching code path.
+        from prompt_toolkit.key_binding import KeyBindings
+        kb = KeyBindings()
+        for _i in range(1, 10):
+            @kb.add("escape", str(_i))
+            def _switch(event, _n=_i):
+                event.app.current_buffer.text = f"/tab {_n}"
+                event.app.current_buffer.validate_and_handle()
 
         # History: persisted to ARC_HOME/history when enabled, in-memory otherwise
         if self._cfg.tui.input_history_enabled:
@@ -964,6 +1113,7 @@ class TUIApp:
             complete_while_typing=False,  # only on Tab; avoids interrupting input
             bottom_toolbar=bottom_toolbar,
             style=toolbar_style,
+            key_bindings=kb,
         )
         patch_ctx = patch_stdout(raw=True)
         patch_ctx.__enter__()
@@ -1041,6 +1191,15 @@ class TUIApp:
         # armed rewind target (0026)
         if self._rewind_target is not None:
             yield ("class:toolbar.turn", f"⑂ branch@{self._rewind_target} ")
+            yield ("class:toolbar.sep", "· ")
+
+        # tab strip (0026 phase d) — only once a branch opened a second tab
+        if len(self._tabs) > 1:
+            strip = " ".join(
+                f"{i + 1}{'*' if i == self._focus else ''}"
+                for i in range(len(self._tabs))
+            )
+            yield ("class:toolbar.turn", f"tabs {strip} ")
             yield ("class:toolbar.sep", "· ")
 
         # tokens (last turn / cumulative session)

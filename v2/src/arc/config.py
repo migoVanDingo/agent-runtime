@@ -103,6 +103,7 @@ class TUIConfig:
     toolbar_enabled: bool
     input_history_enabled: bool
     subagent_activity: bool = True
+    tabs_max: int = 4
 
 
 @dataclass(frozen=True)
@@ -357,6 +358,7 @@ def _parse_tui(d: dict) -> TUIConfig:
         toolbar_enabled=bool(d.get("toolbar_enabled", True)),
         input_history_enabled=bool(d.get("input_history_enabled", True)),
         subagent_activity=bool(d.get("subagent_activity", True)),
+        tabs_max=int(d.get("tabs_max", 4)),
     )
 
 

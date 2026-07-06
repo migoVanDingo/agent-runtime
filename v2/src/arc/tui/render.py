@@ -195,6 +195,8 @@ def render_help() -> Group:
              "(same question, new roll)"),
         Text("  /model X | prov/X     continue this conversation on another "
              "model — session-scoped, config.yml untouched"),
+        Text("  /tab [N]              list open tabs / switch (also alt+1…9); "
+             "branches open in a new tab, /exit closes one"),
         Text("  note: branching starts a new session; the original stays "
              "recorded and resumable"),
         Text(),

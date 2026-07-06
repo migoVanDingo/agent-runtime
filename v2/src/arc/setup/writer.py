@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from io import StringIO
 from pathlib import Path
 
-
 # api_key_env values shipped with the default catalog.  If the existing
 # config has any of these, the picker is free to overwrite — they're not
 # user customizations.

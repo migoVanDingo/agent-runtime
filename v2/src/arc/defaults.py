@@ -285,6 +285,10 @@ tui:
   # Stream a sub-agent's tool activity into the scrollback (nested lines)
   # instead of only a spinner, so you can watch what a sub-agent is doing.
   subagent_activity: true
+  # Max open session tabs (0026 time travel: /rewind, /retry and /model
+  # open the branch in a new tab). Each live tab holds its own plugins and
+  # MCP connections — keep small.
+  tabs_max: 4
 
 # ── Bootstrap defaults (used by `arc bootstrap`) ────────────────────────────
 bootstrap:

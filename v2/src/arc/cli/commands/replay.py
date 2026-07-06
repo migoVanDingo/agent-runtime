@@ -153,13 +153,11 @@ def _cmd_replay(
         sess.end()
 
     # Mark the new session as a replay
-    new_meta_path = paths.sessions_dir / new_session_id_ / "meta.json"
-    if new_meta_path.exists():
-        import json
-        meta = json.loads(new_meta_path.read_text())
-        meta["replay_of"] = session_id
-        meta["replay_mode"] = "by_call" if live_llm else "in_order"
-        new_meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False))
+    from arc.cli.wiring import stamp_session_meta
+    stamp_session_meta(paths.sessions_dir, new_session_id_, {
+        "replay_of": session_id,
+        "replay_mode": "by_call" if live_llm else "in_order",
+    })
 
     if not do_diff or aborted:
         return 1 if (diverged or aborted) else 0

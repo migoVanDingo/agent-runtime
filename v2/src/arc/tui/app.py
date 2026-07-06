@@ -12,12 +12,13 @@ Design (per phase 0 spec §11 + the conversation that led to it):
   - Rich.Console drives all rendering; prompt_toolkit handles input only.
 
 Slash commands (matched first; not sent to the model):
-    /help, /exit, /quit, /clear, /sessions
+    /help, /exit, /quit, /clear, /sessions, /replay, /rewind, /retry
 """
 from __future__ import annotations
 
 import sys
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from rich.console import Console
 from rich.status import Status
@@ -26,8 +27,8 @@ from arc.config import Config
 from arc.runtime.events import EventType, RuntimeEvent
 from arc.runtime.loop import AgentSession
 from arc.tui import render
-from arc.tui.themes import active as _active_theme, resolve_from_config
-
+from arc.tui.themes import active as _active_theme
+from arc.tui.themes import resolve_from_config
 
 # Type alias for the prompt function (injectable for tests)
 PromptFn = Callable[[str], str]
@@ -50,10 +51,16 @@ class TUIApp:
         home_display: str,
         prompt_fn: PromptFn | None = None,
         console: Console | None = None,
+        paths: Any = None,  # bootstrap.HomePaths | None — enables /rewind + /retry
     ) -> None:
         self._cfg = config
         self._session = session
         self._home_display = home_display
+        self._paths = paths
+        # Time travel (0026): armed rewind target (turn number) + lineage
+        # stamps for the current session, applied to meta.json after end().
+        self._rewind_target: int | None = None
+        self._pending_meta: dict | None = None
         # Resolve & cache the active theme so render.py + dialogs see it.
         # If the caller injected its own Console (tests), push our theme
         # onto it so the arc.* named styles resolve there too.
@@ -114,13 +121,18 @@ class TUIApp:
         try:
             while True:
                 try:
-                    text = prompt(self._cfg.tui.prompt_prefix)
+                    text = prompt(self._prompt_prefix())
                 except (EOFError, KeyboardInterrupt):
                     self._console.print()
                     break
 
                 text = text.strip()
                 if not text:
+                    if self._rewind_target is not None:
+                        self._rewind_target = None
+                        self._console.print(
+                            "[arc.dim]rewind cancelled — back at the tip[/arc.dim]"
+                        )
                     continue
 
                 if text.startswith("/"):
@@ -128,33 +140,47 @@ class TUIApp:
                         break  # /exit or /quit returned True
                     continue
 
-                # Echo the user input into scrollback (above the live prompt area)
-                self._console.print(
-                    render.render_user_message(text, self._cfg.tui.prompt_prefix)
-                )
+                # Armed rewind: branch-on-submit — the session is only
+                # created now that the user committed a prompt (0026).
+                if self._rewind_target is not None:
+                    n = self._rewind_target
+                    self._rewind_target = None
+                    if not self._rebuild_session(n):
+                        continue
 
-                # Run the turn synchronously. Real-time updates come from on_event.
-                outcome = self._session.run_turn(text)
-
-                # Footer line after each turn
-                self._console.print(render.render_footer_line(
-                    tokens_in=self._last_tokens_in,
-                    tokens_out=self._last_tokens_out,
-                    n_events=self._event_count,
-                    show_events=self._cfg.tui.show_event_count,
-                ))
-
-                # Visual separator between turns (skip after the very first one)
-                self._console.print(render.render_turn_separator())
-
-                if not outcome.success and outcome.error:
-                    self._console.print(f"[arc.error]turn error: {outcome.error}[/arc.error]")
+                self._run_one_turn(text)
         finally:
             self._stop_status()
-            self._session.end()
+            self._end_session_and_stamp()
             self._restore_sigint(prev_sigint)
 
         return 0
+
+    def _run_one_turn(self, text: str) -> None:
+        """Echo the prompt, run the turn, print footer + separator."""
+        self._console.print(
+            render.render_user_message(text, self._cfg.tui.prompt_prefix)
+        )
+
+        # Run the turn synchronously. Real-time updates come from on_event.
+        outcome = self._session.run_turn(text)
+
+        self._console.print(render.render_footer_line(
+            tokens_in=self._last_tokens_in,
+            tokens_out=self._last_tokens_out,
+            n_events=self._event_count,
+            show_events=self._cfg.tui.show_event_count,
+        ))
+        self._console.print(render.render_turn_separator())
+
+        if not outcome.success and outcome.error:
+            self._console.print(f"[arc.error]turn error: {outcome.error}[/arc.error]")
+
+    def _prompt_prefix(self) -> str:
+        """Normal prefix, or the armed-rewind variant (⑂N …)."""
+        if self._rewind_target is not None:
+            return f"⑂{self._rewind_target} {self._cfg.tui.prompt_prefix}"
+        return self._cfg.tui.prompt_prefix
 
     # ── on_event hook (real-time rendering) ────────────────────────────────
 
@@ -245,7 +271,7 @@ class TUIApp:
         elif t == EventType.RUNTIME_CYCLE_DETECTED:
             self._stop_status()
             self._console.print(
-                f"[arc.warning]⚠ cycle detected — forcing wrap-up[/arc.warning]"
+                "[arc.warning]⚠ cycle detected — forcing wrap-up[/arc.warning]"
             )
 
         elif t == EventType.SUBAGENT_DISPATCHED:
@@ -354,6 +380,7 @@ class TUIApp:
             self._console.print(render.render_help())
             return False
         if cmd == "/clear":
+            self._rewind_target = None  # a cleared conversation has no turns to branch at
             self._handle_clear()
             return False
         if cmd == "/sessions":
@@ -362,8 +389,209 @@ class TUIApp:
         if cmd == "/replay":
             self._handle_replay_menu()
             return False
+        if cmd == "/rewind":
+            self._handle_rewind(text)
+            return False
+        if cmd == "/retry":
+            self._handle_retry()
+            return False
         self._console.print(f"[arc.error]unknown command: {cmd}  (try /help)[/arc.error]")
         return False
+
+    # ── Time travel (0026) ────────────────────────────────────────────────
+
+    def _handle_rewind(self, text: str) -> None:
+        """`/rewind` — print the turn map. `/rewind N` — arm a branch at N.
+
+        Arming is UI-only: nothing is created until the user submits a
+        prompt (branch-on-submit). Empty input at the armed prompt cancels.
+        """
+        if self._paths is None:
+            self._console.print(
+                "[arc.dim]/rewind unavailable — session has no home paths "
+                "(headless/test wiring)[/arc.dim]"
+            )
+            return
+        from arc.resume import count_completed_turns
+
+        source_dir = self._paths.sessions_dir / self._session.session_id
+        total = count_completed_turns(source_dir)
+        if total == 0:
+            self._console.print("[arc.dim]no completed turns to rewind to yet[/arc.dim]")
+            return
+
+        parts = text.split()
+        if len(parts) == 1:
+            from arc.replay.compare import extract_turns
+            self._console.print(render.render_turn_map(extract_turns(source_dir)))
+            return
+
+        try:
+            n = int(parts[1])
+        except ValueError:
+            self._console.print(f"[arc.error]/rewind: not a turn number: {parts[1]}[/arc.error]")
+            return
+        if n < 0:
+            self._console.print("[arc.error]/rewind: turn must be >= 0[/arc.error]")
+            return
+        if n > total:
+            self._console.print(
+                f"[arc.dim]/rewind: only {total} completed turns; clamping to {total}[/arc.dim]"
+            )
+            n = total
+
+        self._rewind_target = n
+        self._console.print(
+            f"[arc.brand]⑂[/arc.brand] rewound to turn {n}/{total} — "
+            f"next prompt branches there  [arc.dim](empty input cancels)[/arc.dim]"
+        )
+
+    def _handle_retry(self) -> None:
+        """`/retry` — rewind one turn and re-ask the same prompt verbatim."""
+        if self._paths is None:
+            self._console.print(
+                "[arc.dim]/retry unavailable — session has no home paths "
+                "(headless/test wiring)[/arc.dim]"
+            )
+            return
+        from arc.resume import count_completed_turns
+
+        source_dir = self._paths.sessions_dir / self._session.session_id
+        total = count_completed_turns(source_dir)
+        if total == 0:
+            self._console.print("[arc.dim]no completed turn to retry[/arc.dim]")
+            return
+
+        last_input = self._recorded_user_input(source_dir, total)
+        if last_input is None:
+            self._console.print("[arc.error]/retry: could not recover the last prompt[/arc.error]")
+            return
+
+        self._rewind_target = None
+        if self._rebuild_session(total - 1, retry_of_turn=total):
+            self._run_one_turn(last_input)
+
+    def _rebuild_session(self, max_turns: int, *, retry_of_turn: int | None = None) -> bool:
+        """The 0026 core primitive: end the current session, start a new one
+        seeded with the first `max_turns` turns of its recording, stamp
+        lineage. The TUI process (and this app instance) keep running.
+        """
+        if self._paths is None:
+            self._console.print("[arc.error]branch unavailable — no home paths[/arc.error]")
+            return False
+        from arc.cli.wiring import build_session
+        from arc.resume import count_completed_turns, messages_from_session
+        from arc.tools import build as build_tools
+        from arc.user_gate import TUIGate
+
+        old_sid = self._session.session_id
+        source_dir = self._paths.sessions_dir / old_sid
+
+        # Finalize the parent first so its recording is complete, then
+        # truncate from the recording — the same code path as
+        # `arc resume --at-turn`, so branch semantics match exactly.
+        self._end_session_and_stamp()
+
+        n = max(0, min(max_turns, count_completed_turns(source_dir)))
+        try:
+            own_messages = messages_from_session(source_dir, max_turns=n)
+        except FileNotFoundError:
+            self._console.print(
+                "[arc.error]branch failed: no recording found (recorder disabled?) — "
+                "session ended; restart arc[/arc.error]"
+            )
+            return False
+        # A branched/resumed session's recording contains only its OWN turns —
+        # the inherited prefix lives in initial_messages and never becomes
+        # events. Prepend it or a second-generation branch silently loses
+        # everything before the previous branch point. Turn numbers stay
+        # session-local: /rewind 0 in a branch = back to its branch point.
+        messages = list(self._session.initial_messages or []) + own_messages
+
+        # Fresh tools + plugins per session (plugin lifecycle contract:
+        # provides_tools re-merges on start). The provider instance carries
+        # no session state — reuse it. Sub-agent specs are static config —
+        # rediscovery would be redundant.
+        built = build_session(
+            self._cfg, self._paths,
+            provider=self._session.provider,
+            tools=build_tools(self._cfg.tools),
+            subagent_registry=self._session.subagent_registry,
+            gate=TUIGate(console=self._console),
+            initial_messages=messages,
+        )
+        self._session = built.session
+        self._session.registry.register(self, hooks_order={"on_event": 200})
+        self._session.start()
+
+        payload = {
+            "source_session_id": old_sid,
+            "branched_at_turn": n,
+            "restored_message_count": len(messages),
+        }
+        if retry_of_turn is not None:
+            payload["retry_of_turn"] = retry_of_turn
+        self._session.bus.emit(RuntimeEvent(
+            type=EventType.SESSION_BRANCHED,
+            stage="TUIApp",
+            payload=payload,
+            session_id=self._session.session_id,
+        ))
+
+        # Lineage stamps land on meta.json after THIS session ends (the
+        # recorder rewrites meta at on_session_end; see stamp_session_meta).
+        self._pending_meta = {
+            "resumed_from": old_sid,
+            "branched_at_turn": n,
+            "restored_message_count": len(messages),
+        }
+        if retry_of_turn is not None:
+            self._pending_meta["retry_of_turn"] = retry_of_turn
+
+        # Per-session TUI counters restart with the new session
+        self._last_tokens_in = 0
+        self._last_tokens_out = 0
+        self._session_tokens_in = 0
+        self._session_tokens_out = 0
+        self._session_turn_count = 0
+
+        self._console.print(render.render_branch_notice(
+            old_sid, n, self._session.session_id, len(messages),
+        ))
+        return True
+
+    def _end_session_and_stamp(self) -> None:
+        """End the current session, then apply any pending lineage stamps
+        (must come after end — the recorder rewrites meta.json there)."""
+        sid = self._session.session_id
+        self._session.end()
+        if self._pending_meta and self._paths is not None:
+            from arc.cli.wiring import stamp_session_meta
+            stamp_session_meta(self._paths.sessions_dir, sid, self._pending_meta)
+        self._pending_meta = None
+
+    def _recorded_user_input(self, source_dir, turn_n: int) -> str | None:
+        """The user input of completed turn `turn_n` (1-based), from events."""
+        import json
+        events_path = source_dir / "events.jsonl"
+        if not events_path.is_file():
+            return None
+        inputs: list[str] = []
+        for line in events_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                e = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if e.get("type") == EventType.TURN_STARTED:
+                ui = e.get("content", {}).get("user_input")
+                if ui:
+                    inputs.append(ui)
+        if len(inputs) < turn_n:
+            return None
+        return inputs[turn_n - 1]
 
     def _handle_replay_menu(self) -> None:
         """Drop into the 0019 replay menu mid-session.
@@ -374,7 +602,7 @@ class TUIApp:
         """
         import os
         import subprocess
-        import sys
+
         from arc.bootstrap import resolve_home
         home = resolve_home()
         argv = [sys.executable, "-m", "arc.cli", "--home", str(home), "replay"]
@@ -483,7 +711,6 @@ class TUIApp:
         KeyboardInterrupt — that path already exits the TUI cleanly.
         """
         import signal
-        pause_plugin = self._find_pause_plugin()
 
         def _handler(signum, frame):
             try:
@@ -493,6 +720,9 @@ class TUIApp:
             except Exception:
                 pass
             # stage 2: bail the turn (pause), or default-bail if no pause plugin.
+            # Resolved at fire time — self._session may have been rebuilt by
+            # a /rewind branch since the handler was installed (0026).
+            pause_plugin = self._find_pause_plugin()
             if pause_plugin is not None:
                 try:
                     pause_plugin.request_pause()
@@ -550,7 +780,8 @@ class TUIApp:
 
         # Tab-completion for slash commands
         slash_completer = WordCompleter(
-            ["/help", "/exit", "/quit", "/clear", "/sessions", "/replay"],
+            ["/help", "/exit", "/quit", "/clear", "/sessions", "/replay",
+             "/rewind", "/retry"],
             ignore_case=True,
         )
 
@@ -584,7 +815,6 @@ class TUIApp:
         # Note: we never exit patch_stdout — it's bound to the lifetime of
         # the TUI app. The CLI process exits when the loop ends.
 
-        import sys
 
         def _prompt(prefix: str) -> str:
             # Blank line above the prompt so the input doesn't sit flush
@@ -652,6 +882,11 @@ class TUIApp:
         # turn count
         yield ("class:toolbar.turn", f"turn {self._session_turn_count} ")
         yield ("class:toolbar.sep", "· ")
+
+        # armed rewind target (0026)
+        if self._rewind_target is not None:
+            yield ("class:toolbar.turn", f"⑂ branch@{self._rewind_target} ")
+            yield ("class:toolbar.sep", "· ")
 
         # tokens (last turn / cumulative session)
         in_t = self._last_tokens_in

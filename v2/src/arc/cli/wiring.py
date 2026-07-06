@@ -68,6 +68,22 @@ def build_session(cfg, paths, *, provider, tools, subagent_registry,
                         plugins=plugins, session_id=sid)
 
 
+def stamp_session_meta(sessions_dir: Path, session_id: str, fields: dict) -> None:
+    """Merge lineage/audit fields into a session's meta.json on disk.
+
+    Must run AFTER the session has ended — the recorder rewrites meta.json
+    from its own dict at on_session_end and doesn't merge what's on disk.
+    No-op if meta.json doesn't exist (recorder disabled).
+    """
+    import json
+    meta_path = Path(sessions_dir) / session_id / "meta.json"
+    if not meta_path.exists():
+        return
+    meta = json.loads(meta_path.read_text())
+    meta.update(fields)
+    meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False))
+
+
 # ── Sub-agent registry helper ──────────────────────────────────────────────
 
 

@@ -82,6 +82,11 @@ class EventType:
     # User typed /clear in the TUI; conversation reset in place mid-session
     CONVERSATION_CLEARED = "runtime.conversation_cleared"
 
+    # Interactive time travel (0026). Emitted in the NEW session right after
+    # start when the TUI branches via /rewind or /retry — the recorded twin
+    # of the meta.json lineage stamps (resumed_from / branched_at_turn).
+    SESSION_BRANCHED = "session.branched"
+
     # Destructive-action gate (0012). Pattern matched a destructive command;
     # plugin asked the user via UserGate. Three terminal states:
     #   requested → allowed (scope=once|session|remembered)

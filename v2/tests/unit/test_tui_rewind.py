@@ -1,0 +1,317 @@
+"""Tests for interactive time travel (0026 phase a): /rewind + /retry.
+
+Unlike test_tui.py these wire the full build_session path with a real
+jsonl-recorder into a tmp ARC_HOME — branching truncates from the recording,
+so a recorder is part of the feature under test.
+"""
+from __future__ import annotations
+
+import io
+import json
+from collections import deque
+from pathlib import Path
+
+from rich.console import Console
+
+from arc.bootstrap import paths_for
+from arc.cli.wiring import build_session, stamp_session_meta
+from arc.config import (
+    BootstrapConfig,
+    Config,
+    PluginEntry,
+    PluginsConfig,
+    ProviderConfig,
+    RetryConfig,
+    RuntimeConfig,
+    ToolsConfig,
+    TUIConfig,
+)
+from arc.runtime.events import EventType
+from arc.runtime.hooks import ContentBlock, LLMResponse
+from arc.tools import build as build_tools
+from arc.tui.app import TUIApp
+
+
+def _cfg() -> Config:
+    return Config(
+        runtime=RuntimeConfig(
+            workspace=".", max_iterations=10, max_tool_calls_per_turn=5,
+            show_thinking=True, log_level="info",
+            system_prompt="be concise",
+            iteration_cap_message="wrap up", tool_call_cap_message="wrap up",
+            cycle_detection_threshold=3, cycle_detected_message="cycle stop",
+        ),
+        provider=ProviderConfig(
+            name="fake", model="fake-1", api_key_env="FAKE_KEY", base_url=None,
+            timeout_seconds=10.0,
+            retry=RetryConfig(max_attempts=1, backoff_base_seconds=0.01,
+                              backoff_max_seconds=0.05),
+            params={},
+        ),
+        tools=ToolsConfig(enabled=[], config={}),
+        plugins=PluginsConfig(
+            failure_threshold=3, exception_message_max_chars=500,
+            enabled=[PluginEntry(name="jsonl-recorder", enabled=True,
+                                 config={}, hooks_order={})],
+        ),
+        tui=TUIConfig(
+            enabled=True, theme="default", inline_mode=True,
+            spinner_style="dots", prompt_prefix="❯ ",
+            show_token_counts=True, show_event_count=False,
+            show_thinking=True, tool_output_max_lines=30,
+            toolbar_enabled=False, input_history_enabled=False,
+        ),
+        bootstrap=BootstrapConfig(create_workspace_dir=False,
+                                  write_example_session=False),
+        source_path=None,  # type: ignore[arg-type]
+    )
+
+
+class FakeProvider:
+    name = "fake"
+    def __init__(self, responses):
+        self._q = deque(responses)
+    def chat(self, req):
+        return self._q.popleft()
+
+
+def _resp(text: str) -> LLMResponse:
+    return LLMResponse(content=[ContentBlock(type="text", text=text)],
+                       stop_reason="end_turn", input_tokens=5,
+                       output_tokens=3, raw={})
+
+
+def _build_app(tmp_path: Path, inputs: list[str], provider):
+    """TUIApp over a real tmp ARC_HOME with the recorder enabled."""
+    home = tmp_path / "arc_home"
+    home.mkdir()
+    (home / "config.yml").write_text("# test config snapshot\n")
+    paths = paths_for(home)
+    paths.sessions_dir.mkdir()
+
+    cfg = _cfg()
+    built = build_session(
+        cfg, paths,
+        provider=provider,
+        tools=build_tools(cfg.tools),
+        subagent_registry=None,
+        gate=None,
+    )
+
+    out = io.StringIO()
+    console = Console(file=out, force_terminal=False, width=120, color_system=None)
+    queue = deque(inputs)
+
+    def prompt_fn(prefix: str) -> str:
+        if not queue:
+            raise EOFError
+        return queue.popleft()
+
+    app = TUIApp(
+        config=cfg, session=built.session, home_display=str(home),
+        prompt_fn=prompt_fn, console=console, paths=paths,
+    )
+    return app, out, paths
+
+
+def _session_metas(paths) -> dict[str, dict]:
+    """sid → meta.json for every recorded session dir."""
+    out = {}
+    for d in paths.sessions_dir.iterdir():
+        meta = d / "meta.json"
+        if meta.is_file():
+            out[d.name] = json.loads(meta.read_text())
+    return out
+
+
+def _events(paths, sid: str) -> list[dict]:
+    lines = (paths.sessions_dir / sid / "events.jsonl").read_text().splitlines()
+    return [json.loads(ln) for ln in lines if ln.strip()]
+
+
+def _find_child(metas: dict[str, dict]) -> tuple[str, dict]:
+    for sid, meta in metas.items():
+        if "resumed_from" in meta:
+            return sid, meta
+    raise AssertionError(f"no branched session found in {list(metas)}")
+
+
+# ── /rewind ───────────────────────────────────────────────────────────────
+
+
+def test_rewind_branches_into_new_session(tmp_path):
+    provider = FakeProvider([_resp("answer one"), _resp("answer two"),
+                             _resp("branch answer")])
+    app, out, paths = _build_app(
+        tmp_path, ["one", "two", "/rewind 1", "branch prompt"], provider)
+    app.run()
+
+    metas = _session_metas(paths)
+    assert len(metas) == 2
+    child_sid, child_meta = _find_child(metas)
+    parent_sid = child_meta["resumed_from"]
+
+    assert child_meta["branched_at_turn"] == 1
+    assert child_meta["restored_message_count"] == 2  # user + assistant of turn 1
+
+    parent_events = _events(paths, parent_sid)
+    assert sum(e["type"] == EventType.TURN_ENDED for e in parent_events) == 2
+
+    child_events = _events(paths, child_sid)
+    branched = [e for e in child_events if e["type"] == EventType.SESSION_BRANCHED]
+    assert len(branched) == 1
+    assert branched[0]["payload"]["source_session_id"] == parent_sid
+    assert branched[0]["payload"]["branched_at_turn"] == 1
+
+    child_turns = [e for e in child_events if e["type"] == EventType.TURN_STARTED]
+    assert [t["content"]["user_input"] for t in child_turns] == ["branch prompt"]
+
+    assert "branch answer" in out.getvalue()
+    assert "branched" in out.getvalue()
+
+
+def test_rewind_empty_input_cancels_without_branching(tmp_path):
+    provider = FakeProvider([_resp("a1"), _resp("a2")])
+    app, out, paths = _build_app(
+        tmp_path, ["one", "/rewind 0", "", "still here"], provider)
+    app.run()
+
+    metas = _session_metas(paths)
+    assert len(metas) == 1  # no branch was created
+    assert "rewind cancelled" in out.getvalue()
+    (sid,) = metas
+    events = _events(paths, sid)
+    turns = [e["content"]["user_input"] for e in events
+             if e["type"] == EventType.TURN_STARTED]
+    assert turns == ["one", "still here"]  # second prompt ran in the SAME session
+
+
+def test_rewind_armed_but_never_submitted_creates_nothing(tmp_path):
+    provider = FakeProvider([_resp("a1")])
+    app, out, paths = _build_app(tmp_path, ["one", "/rewind 9"], provider)
+    app.run()
+
+    assert "clamping" in out.getvalue()
+    assert len(_session_metas(paths)) == 1  # branch-on-submit: EOF ≠ submit
+
+
+def test_rewind_no_arg_prints_turn_map(tmp_path):
+    # Multi-space input: the map collapses whitespace, the normal echo does
+    # not — so finding the collapsed form proves the MAP rendered the text
+    # (not just the echo). Guards the extract_turns payload/content split.
+    provider = FakeProvider([_resp("the answer is 42")])
+    app, out, paths = _build_app(
+        tmp_path, ["what    is    the    answer", "/rewind"], provider)
+    app.run()
+
+    text = out.getvalue()
+    assert "turn map" in text
+    assert "what is the answer" in text   # collapsed → came from the map
+    assert "the answer is 42" in text     # assistant summary line
+    assert "/rewind N" in text
+    assert len(_session_metas(paths)) == 1
+
+
+def test_rewind_before_any_turn(tmp_path):
+    provider = FakeProvider([])
+    app, out, paths = _build_app(tmp_path, ["/rewind 1"], provider)
+    app.run()
+    assert "no completed turns" in out.getvalue()
+
+
+def test_rewind_unavailable_without_paths():
+    # test_tui.py-style wiring (no recorder/paths) must degrade gracefully
+    from arc.runtime.bus import EventBus, HookRegistry
+    from arc.runtime.loop import AgentSession
+    from arc.tools.base import ToolRegistry
+
+    out = io.StringIO()
+    console = Console(file=out, force_terminal=False, width=120, color_system=None)
+    registry = HookRegistry(failure_threshold=3, exception_message_max_chars=500)
+    sess = AgentSession(config=_cfg(), provider=FakeProvider([]),
+                        tools=ToolRegistry(), registry=registry,
+                        bus=EventBus(registry), session_id="SES_test")
+    queue = deque(["/rewind 1"])
+
+    def prompt_fn(prefix):
+        if not queue:
+            raise EOFError
+        return queue.popleft()
+
+    app = TUIApp(config=_cfg(), session=sess, home_display="x",
+                 prompt_fn=prompt_fn, console=console)
+    app.run()
+    assert "/rewind unavailable" in out.getvalue()
+
+
+# ── /retry ────────────────────────────────────────────────────────────────
+
+
+def test_retry_resends_last_prompt_on_a_branch(tmp_path):
+    provider = FakeProvider([_resp("first roll"), _resp("second roll")])
+    app, out, paths = _build_app(tmp_path, ["ask me something", "/retry"], provider)
+    app.run()
+
+    metas = _session_metas(paths)
+    assert len(metas) == 2
+    child_sid, child_meta = _find_child(metas)
+    assert child_meta["branched_at_turn"] == 0
+    assert child_meta["retry_of_turn"] == 1
+    assert child_meta["restored_message_count"] == 0
+
+    child_events = _events(paths, child_sid)
+    turns = [e["content"]["user_input"] for e in child_events
+             if e["type"] == EventType.TURN_STARTED]
+    assert turns == ["ask me something"]  # verbatim resend
+    assert "second roll" in out.getvalue()
+
+
+def test_second_generation_branch_keeps_inherited_prefix(tmp_path):
+    # /retry inside a branched session must not lose the messages the branch
+    # itself inherited — the child's recording only holds its OWN turns.
+    provider = FakeProvider([_resp("r1"), _resp("r2"), _resp("r3"), _resp("r4")])
+    app, out, paths = _build_app(
+        tmp_path, ["one", "two", "/rewind 1", "branch prompt", "/retry"], provider)
+    app.run()
+
+    metas = _session_metas(paths)
+    assert len(metas) == 3
+    grandchild_sid, grandchild = next(
+        (sid, m) for sid, m in metas.items() if "retry_of_turn" in m)
+    child = metas[grandchild["resumed_from"]]
+
+    assert child["branched_at_turn"] == 1
+    assert child["restored_message_count"] == 2       # turn 1 of the parent
+    # retry rewound the child's own single turn, but kept its inherited prefix
+    assert grandchild["branched_at_turn"] == 0
+    assert grandchild["restored_message_count"] == 2  # inherited, not 0
+
+    turns = [e["content"]["user_input"] for e in _events(paths, grandchild_sid)
+             if e["type"] == EventType.TURN_STARTED]
+    assert turns == ["branch prompt"]
+
+
+def test_retry_with_no_turns(tmp_path):
+    provider = FakeProvider([])
+    app, out, paths = _build_app(tmp_path, ["/retry"], provider)
+    app.run()
+    assert "no completed turn to retry" in out.getvalue()
+
+
+# ── stamp helper ──────────────────────────────────────────────────────────
+
+
+def test_stamp_session_meta_merges_not_clobbers(tmp_path):
+    sdir = tmp_path / "sessions" / "SES_X"
+    sdir.mkdir(parents=True)
+    (sdir / "meta.json").write_text(json.dumps({"session_id": "SES_X", "ended_at": "t"}))
+
+    stamp_session_meta(tmp_path / "sessions", "SES_X", {"resumed_from": "SES_Y"})
+
+    meta = json.loads((sdir / "meta.json").read_text())
+    assert meta == {"session_id": "SES_X", "ended_at": "t", "resumed_from": "SES_Y"}
+
+
+def test_stamp_session_meta_noop_when_missing(tmp_path):
+    (tmp_path / "sessions").mkdir()
+    stamp_session_meta(tmp_path / "sessions", "SES_NOPE", {"x": 1})  # must not raise

@@ -10,14 +10,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from rich.console import Console, Group
+from rich.console import Group
 from rich.markdown import Markdown
 from rich.panel import Panel
-from rich.syntax import Syntax
 from rich.text import Text
 
 from arc.tui.themes import active as _active_theme
-
 
 # ── Logo ────────────────────────────────────────────────────────────────────
 # ANSI Shadow figlet font, hand-trimmed. Six lines for the wordmark, with a
@@ -189,6 +187,15 @@ def render_help() -> Group:
         Text("  /replay               cross-provider replay menu — pick a session "
              "and re-run it against any provider/model (0019)"),
         Text(),
+        Text("time travel (0026)", style="bold"),
+        Text("  /rewind               show the turn map of this conversation"),
+        Text("  /rewind N             arm a branch at turn N — the next prompt "
+             "forks the conversation there (empty input cancels)"),
+        Text("  /retry                re-ask the last prompt on a fresh branch "
+             "(same question, new roll)"),
+        Text("  note: branching starts a new session; the original stays "
+             "recorded and resumable"),
+        Text(),
         Text("keybinds", style="bold"),
         Text("  Tab                   autocomplete slash commands"),
         Text("  ↑ / ↓                 recall input history"),
@@ -232,6 +239,44 @@ def render_help() -> Group:
         Text("  arc wipe              clean sessions (default) / --all / --llm / "
              "--history / --dry-run"),
         Text(),
+    )
+
+
+def render_turn_map(turns: list[Any]) -> Group:
+    """Compact one-line-per-turn map for /rewind — index, user ask, answer.
+
+    `turns` are replay.compare.Turn objects (duck-typed: index, user_input,
+    assistant_text).
+    """
+    def _short(s: str, n: int = 58) -> str:
+        s = " ".join((s or "").split())
+        return s if len(s) <= n else s[: n - 1] + "…"
+
+    lines: list[Text] = [Text(), Text("turn map", style="bold")]
+    for t in turns:
+        row = Text()
+        row.append(f"  {t.index:>3}  ", style="arc.brand")
+        row.append(_short(t.user_input), style="arc.user.prefix")
+        lines.append(row)
+        answer = _short(t.assistant_text)
+        if answer:
+            lines.append(Text(f"       {answer}", style="arc.dim"))
+    lines.append(Text())
+    lines.append(Text("  /rewind N to branch at turn N", style="arc.dim"))
+    return Group(*lines)
+
+
+def render_branch_notice(source_sid: str, at_turn: int, new_sid: str,
+                         n_messages: int) -> Group:
+    """Divider printed after a /rewind or /retry branch lands."""
+    return Group(
+        Text(),
+        Text.assemble(
+            ("⑂ ", "arc.brand"),
+            (f"branched {source_sid} @ turn {at_turn} → ", "arc.dim"),
+            (new_sid, "arc.info"),
+            (f"  ({n_messages} messages restored)", "arc.dim"),
+        ),
     )
 
 
@@ -336,6 +381,7 @@ def render_turn_separator() -> Text:
 def render_sessions_table(sessions_dir, index_path) -> Any:
     """Render sessions/index.jsonl as a Rich table for /sessions command."""
     import json
+
     from rich.table import Table
 
     table = Table(show_header=True, header_style="arc.table.header", box=None)

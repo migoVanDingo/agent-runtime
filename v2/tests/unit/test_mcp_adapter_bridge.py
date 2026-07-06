@@ -93,3 +93,19 @@ def test_bridge_lifecycle(monkeypatch):
     bridge.on_session_end(ctx=None)
     assert fake.disconnected is True
     assert bridge.provides_tools() == []
+
+
+def test_bridge_drops_adapted_name_collision(monkeypatch):
+    # Two tool names that sanitize to the same arc name — the bridge must drop
+    # the dup, not let it crash session startup at merge_plugin_tools (M9).
+    tools = [_td("a.b", "s1"), _td("a/b", "s1")]  # both → s1_a_b
+    fake = FakeManager(tools=tools)
+    import arc.mcp.bridge as bridge_mod
+    monkeypatch.setattr(bridge_mod, "McpManager", lambda cfg, bus=None: fake)
+
+    cfg = parse_mcp_config({"servers": [
+        {"name": "s1", "transport": "http", "url": "http://x", "tool_prefix": "s1"}]})
+    bridge = McpBridge(cfg)
+    bridge.on_session_start(ctx=None)
+    names = [t.name for t in bridge.provides_tools()]
+    assert names == ["s1_a_b"]  # collision dropped, session not crashed

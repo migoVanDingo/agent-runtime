@@ -14,12 +14,13 @@ component. Line numbers were current at review time.*
 > RE workflow deliberately handles.** Every Critical/High below is exploitable
 > under one of those three.
 
-> **✅ Mitigations applied (2026-07-05/06), three passes.** Fixed: **C1, C3, C4,
-> C5, C6, H1, H3, H4, H8, H9, H10, M2, M4, M5** and partially **H2** — see the
-> `_mitigation/` directory (files 01–10) and the `MITIGATED` tags inline. Still
-> open: **C2/H5** (cos + ghidra unauth services — deprioritized by the owner),
-> the **H2 residual** (replace the sub-agent's `bash_exec` with scoped tools),
-> and the tail of Mediums (M1, M3, M6, M7, M8, M9, M10, M11).
+> **✅ Mitigations applied (2026-07-05/06).** Fixed: **C1, C3, C4, C5, C6, H1,
+> H3, H4, H8, H9, H10, M2, M4, M5, M6, M9, M14** + several Lows (safety_gate
+> `->`, gcs/angr/ghidra error disclosure); **H2** and **M11** partial. See
+> `_mitigation/` (01–10) and the `MITIGATED` tags inline. Still open: **C2/H5**
+> (cos + ghidra *auth* — deprioritized by the owner), the **H2 residual**
+> (accepted — keep `bash_exec`), and a thinner tail of Mediums (M1, M3, M7, M8,
+> M10, M12/M13 angr). ghidra's 500-body fix needs a `gradle` rebuild to deploy.
 
 ---
 
@@ -102,9 +103,9 @@ arc session. websearch has no response-size cap → decompression bomb.
 | M6 | cos | `core/backend.py` `build`/`build_image` | Build `context` is an unvalidated host path (`context="/"` tars the whole host FS). — ✅ **MITIGATED** (reuses `is_forbidden_host_path`; sensitive-root contexts rejected). |
 | M7 | v2 runtime | `llm/process.py:200-231` | `arc llm stop` SIGKILLs by PID with only existence check → after PID reuse, kills an unrelated process. Verify start-time/cmdline against `PidState`. |
 | M8 | v2 runtime | `providers/openai_compat.py:351-368` | `.raw` fallback `{"_repr": repr(resp)}` is not JSON-reconstructable → **breaks byte-faithful replay** for compat/local servers. |
-| M9 | subagents (runtime) | `mcp/adapter.py:19-22` + `plugins/__init__.py` merge | MCP tool-name sanitization can collapse two server tools to one arc name; the resulting `merge_plugin_tools` `ValueError` is **not** isolated → crashes session startup, defeating per-server isolation. |
+| M9 | subagents (runtime) | `mcp/adapter.py:19-22` + `plugins/__init__.py` merge | MCP tool-name sanitization can collapse two server tools to one arc name → uncaught `merge_plugin_tools` `ValueError` crashes session startup. — ✅ **MITIGATED** (bridge drops adapted-name collisions with an event before merge). |
 | M10 | mcp | `mcp/manager.py:166-178` | A hung server's in-flight `call_tool` isn't cancelled (only the waiter is) → the actor loop wedges; subsequent calls each burn full timeout before quarantine. |
-| M11 | gcs | `plugin.py:205-216` | Budget guard is inert by default (`session_budget` unset → all caps `None`). Advertised cost cap does nothing unless configured. |
+| M11 | gcs | `plugin.py:205-216` | Budget guard is inert by default (`session_budget` unset → all caps `None`). — ⚠️ **PARTIAL** (now emits a `gcs.budget.uncapped` warn event + `budget_uncapped` flag on ready; conservative default caps not shipped — that's a policy call). |
 | M12 | angr | `spec.py:50-52` | `Budget.validate()` bounds only `max_seconds`; `max_steps`/`max_states` accept `1e12`, defeating two of three brakes. |
 | M13 | angr | `engine.py:65-83` | Arbitrary host binary path into `angr.Project` (CLE parsers on attacker bytes), no workspace confinement. Mitigated by `auto_load_libs=False`. |
 | M14 | briefbot | `dal.py:164,192-195` | `get_top_topics` orders by `last_seen_at`, absent from `REQUIRED_TOPIC_COLUMNS` → raw `sqlite3` error mid-turn. — ✅ **MITIGATED** (added to the required set; schema check now covers it). |
@@ -114,8 +115,8 @@ arc session. websearch has no response-size cap → decompression bomb.
 - **cos** `spec.py:105` provision steps line-injected into a synthesized Dockerfile (newline → extra directives); `labels.py` labels forgeable + `reap(owner=None)` cross-owner; `_combined_logs` dup.
 - **v2** `llama_cpp/provider.py:298-304` `.raw` mutated with synthetic keys + non-deterministic tool-call id (replay drift); `cli.py` `session_id` path-join accepts `../` traversal; `llm/process.py` parent leaks log fd; several hardcoded tunables bypass `defaults.py` (`term_timeout`, pricing cache age, health poll).
 - **websearch** Google PSE API key in URL query (log exposure); upstream error body echoed into ToolError.
-- **gcs** 24h signed URL flows into model context; allowlist-denial ToolError discloses full bucket list.
-- **ghidra** unbounded request-body read (JVM OOM); raw `e.getMessage()` in 500 body discloses local paths.
+- **gcs** 24h signed URL flows into model context; allowlist-denial ToolError discloses full bucket list. — ✅ **allowlist echo removed from the error**; angr `EngineError` no longer leaks the raw loader exception either.
+- **ghidra** unbounded request-body read (JVM OOM); raw `e.getMessage()` in 500 body discloses local paths. — ✅ **500 body now generic** (detail logged via `Msg.error`); ⚠️ needs a `gradle` rebuild of the extension to take effect. Body-size cap still open.
 - **briefbot** `immutable=1` disables locking vs. the concurrent ingestor (torn reads); DB path in event payloads.
 - **safety_gate** `catalog.py:69` `redirect-overwrite` regex false-positives on `->` (nuisance prompts → blind-approve training). — ✅ **MITIGATED** (`-` added to the lookbehind).
 
